@@ -71,6 +71,7 @@ body {
   line-height: 1.5;
   color: var(--text);
   min-height: 0;
+  white-space: pre-line;
 }
 .ask-answer:not(:empty) {
   background: rgba(124, 156, 255, 0.08);

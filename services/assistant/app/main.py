@@ -23,6 +23,9 @@ DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
+# Two-way Telegram: if both are set, Bones answers questions you text it.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -80,6 +83,38 @@ async def _auto_sync_loop():
         await asyncio.sleep(AUTO_SYNC_SECONDS)
 
 
+async def _telegram_listen_loop():
+    """Long-poll Telegram for messages from the owner and answer them with
+    the same offline Q&A the dashboard's ask box uses.
+
+    Long-polling (not a webhook) so nothing here needs to be reachable from
+    the internet — this box just makes outbound calls to Telegram's API,
+    same as sending a digest already does.
+    """
+    offset = 0
+    async with httpx.AsyncClient(timeout=35) as client:
+        while True:
+            try:
+                r = await client.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                    params={"offset": offset, "timeout": 25},
+                )
+                for u in r.json().get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message") or {}
+                    text = msg.get("text")
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    if not text or chat_id != TELEGRAM_CHAT_ID:
+                        continue  # ignore anyone but the owner
+                    answer = (await ask(text)).get("answer", "Not sure about that one.")
+                    await client.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={"chat_id": chat_id, "text": answer},
+                    )
+            except Exception:  # noqa: BLE001 - never let the loop die
+                await asyncio.sleep(5)
+
+
 @app.on_event("startup")
 async def startup():
     await pool.open(wait=True, timeout=30)
@@ -87,6 +122,8 @@ async def startup():
         await conn.execute(SCHEMA)
     if AUTO_SYNC_SECONDS > 0:
         asyncio.create_task(_auto_sync_loop())
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        asyncio.create_task(_telegram_listen_loop())
 
 
 @app.on_event("shutdown")
@@ -283,6 +320,18 @@ async def notify_now(text: str | None = None):
     return {"message": msg, **result}
 
 
+def _sender_name(addr: str) -> str:
+    """'Yeji Jong <yeji.jong@meetelise.com>' -> 'Yeji Jong'. Falls back to the
+    address itself (or its domain) when there's no display name to show."""
+    name = addr.split("<")[0].strip().strip('"')
+    return name or addr
+
+
+def _short(text: str, limit: int = 48) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 @app.get("/ask")
 async def ask(q: str = ""):
     """A lightweight, offline Q&A over your apps — intent-matched, no LLM needed."""
@@ -312,9 +361,13 @@ async def ask(q: str = ""):
     if has("email", "reply", "inbox", "mail"):
         ems = emails.get("emails", [])
         if not ems:
-            return {"answer": "Your inbox is clear — nothing needs a reply right now."}
-        top = "; ".join(f"“{e['subject']}” — {e['from']}" for e in ems[:3])
-        return {"answer": f"{len(ems)} email(s) need a reply: {top}."}
+            return {"answer": "Inbox's clear — nothing needs a reply."}
+        shown = ems[:5]
+        lines = [f"{len(ems)} email(s) need a reply:"]
+        lines += [f"• {_short(e['subject'])} — {_sender_name(e['from'])}" for e in shown]
+        if len(ems) > len(shown):
+            lines.append(f"…and {len(ems) - len(shown)} more.")
+        return {"answer": "\n".join(lines)}
 
     if has("task", "todo", "to-do", "to do"):
         top = ", ".join(tasks.get("top", []))
