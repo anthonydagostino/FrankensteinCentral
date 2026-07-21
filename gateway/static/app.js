@@ -53,12 +53,45 @@ function renderBriefing(items) {
   }
 }
 
+function timeAgo(iso) {
+  if (!iso) return "never";
+  const secs = Math.max(0, (Date.now() - new Date(iso + "Z").getTime()) / 1000);
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
+async function loadOverview() {
+  const el = document.querySelector("#overview");
+  let o;
+  try {
+    o = await fetch("/api/assistant/overview").then((r) => r.json());
+  } catch {
+    return;
+  }
+  const evt = o.next_event
+    ? `${o.next_event}`.slice(0, 18) + (o.next_event.length > 18 ? "…" : "")
+    : "—";
+  const tiles = [
+    { n: o.emails_to_reply ?? 0, l: "Emails to reply", cls: o.emails_to_reply ? "warn" : "" },
+    { n: `$${o.expected_profit ?? 0}`, l: "Expected profit", cls: "good" },
+    { n: o.unpaid ?? 0, l: "Unpaid buys", cls: o.unpaid ? "warn" : "" },
+    { n: o.bills_due ?? 0, l: "Bills due soon", cls: o.bills_due ? "alert" : "" },
+    { n: o.today_focus ?? "Rest", l: "Today's workout", cls: "" },
+    { n: evt, l: "Next up", cls: "" },
+  ];
+  el.innerHTML = tiles
+    .map((t) => `<div class="ov ${t.cls}"><div class="n">${t.n}</div><div class="l">${t.l}</div></div>`)
+    .join("");
+}
+
 async function loadBriefing() {
   const sub = $("#assistant-sub");
   try {
     const data = await fetch("/api/assistant/briefing").then((r) => r.json());
     renderBriefing(data.items);
-    sub.textContent = data.summary ?? `${(data.items || []).length} things on your plate.`;
+    const base = data.summary ?? `${(data.items || []).length} things on your plate.`;
+    sub.textContent = `${base} · synced ${timeAgo(data.synced_at)}`;
   } catch (e) {
     sub.textContent = "Assistant is offline.";
     renderBriefing([]);
@@ -71,8 +104,7 @@ $("#sync-btn").onclick = async () => {
   btn.textContent = "Syncing…";
   try {
     await fetch("/api/assistant/sync", { method: "POST" });
-    await loadBriefing();
-    await loadApps();
+    await Promise.all([loadBriefing(), loadApps(), loadOverview()]);
   } finally {
     btn.disabled = false;
     btn.textContent = "Sync now";
@@ -281,3 +313,12 @@ async function renderGeneric(app, body) {
 
 loadApps();
 loadBriefing();
+loadOverview();
+
+// Keep the hub live — reflects the assistant's own auto-sync without a refresh.
+setInterval(() => {
+  if (!$("#overlay").classList.contains("open")) {
+    loadBriefing();
+    loadOverview();
+  }
+}, 20000);

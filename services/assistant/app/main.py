@@ -181,6 +181,35 @@ async def briefing():
     return STATE
 
 
+async def build_overview() -> dict:
+    """A glanceable set of numbers across every app — the command-center row."""
+    async with httpx.AsyncClient() as client:
+        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
+        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
+        cal = await _get(client, f"{SCHEDULE_URL}/events")
+        fitness = await _get(client, f"{FITNESS_URL}/plan")
+        finance = await _get(client, f"{FINANCE_URL}/summary")
+    pb = powerbuy.get("summary", {})
+    tp = fitness.get("today_plan") or {}
+    events = cal.get("events", [])
+    return {
+        "emails_to_reply": len(emails.get("emails", [])),
+        "expected_profit": pb.get("expected_profit", 0),
+        "unpaid": pb.get("unpaid_count", 0),
+        "bills_due": len(finance.get("upcoming", [])),
+        "monthly_bills": finance.get("monthly_total", 0),
+        "next_event": events[0]["title"] if events else None,
+        "next_event_at": events[0]["starts_at"] if events else None,
+        "today_focus": tp.get("focus"),
+        "synced_at": STATE.get("synced_at"),
+    }
+
+
+@app.get("/overview")
+async def overview():
+    return await build_overview()
+
+
 @app.get("/agents")
 async def agents():
     """The roster the lounge renders: manager + one worker per station."""
@@ -293,6 +322,7 @@ async def sync():
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."
+        STATE["synced_at"] = datetime.utcnow().isoformat()
         note = f"Synced — {STATE['summary']} ({booked} booked, {len(mails)} to reply)."
         await _remember(conn, note)
 
