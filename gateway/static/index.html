@@ -28,7 +28,7 @@
             <h2>Assistant briefing</h2>
             <p class="muted" id="assistant-sub">Pulling everything together…</p>
           </div>
-          <a href="/lounge.html" class="btn btn-ghost">🎮 Assistant HQ</a>
+          <a href="#hq" class="btn btn-ghost">🎮 Jump to HQ</a>
           <button id="text-btn" class="btn btn-ghost">📱 Text me</button>
           <button id="sync-btn" class="btn">Sync now</button>
         </div>
@@ -38,6 +38,43 @@
           <button class="btn" id="ask-btn">Ask</button>
         </div>
         <p id="ask-answer" class="ask-answer"></p>
+      </section>
+
+      <section class="hq-panel" id="hq">
+        <div class="hq-head">
+          <span class="assistant-avatar">🎮</span>
+          <div>
+            <h2>Assistant HQ</h2>
+            <p class="muted">Bones runs the floor. Workers fetch from your apps.</p>
+          </div>
+          <label class="hq-toggle">
+            <input type="checkbox" id="auto" /> Auto every 12s
+          </label>
+          <button class="btn" id="dispatch">Dispatch team ▶</button>
+        </div>
+        <div class="hq-body">
+          <div class="stage-wrap">
+            <canvas id="stage"></canvas>
+          </div>
+          <aside class="hq-aside">
+            <div class="hq-card">
+              <h4>Bones' Notebook</h4>
+              <div id="notes"><p class="empty">No notes yet. Hit Dispatch.</p></div>
+            </div>
+            <div class="hq-card">
+              <h4>Deadlines spotted</h4>
+              <div id="deadlines"><p class="empty">Nothing tracked yet.</p></div>
+            </div>
+            <div class="hq-card">
+              <h4>Floor activity</h4>
+              <div id="feed" class="feed"><p class="empty">Quiet on the floor.</p></div>
+            </div>
+            <div class="hq-card">
+              <h4>The team</h4>
+              <div class="hq-legend" id="legend"></div>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <h2 class="section-title">Your apps</h2>
