@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-frank}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frank}
+      POSTGRES_DB: ${POSTGRES_DB:-frankensteincentral}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-frank}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  gateway:
+    build: ./gateway
+    environment:
+      POWERBUY_URL: http://powerbuy:8000
+      FITNESS_URL: http://fitness:8000
+      GMAIL_URL: http://gmail:8000
+      SCHEDULE_URL: http://schedule:8000
+      ASSISTANT_URL: http://assistant:8000
+    ports:
+      - "8080:8000"
+    depends_on:
+      - powerbuy
+      - fitness
+      - gmail
+      - schedule
+      - assistant
+
+  powerbuy:
+    build: ./services/powerbuy
+    environment:
+      # Point this at your real PowerBuy API. When unset, mock data is served.
+      POWERBUY_UPSTREAM_URL: ${POWERBUY_UPSTREAM_URL:-}
+      POWERBUY_API_KEY: ${POWERBUY_API_KEY:-}
+    ports:
+      - "8081:8000"
+
+  fitness:
+    build: ./services/fitness
+    ports:
+      - "8082:8000"
+
+  gmail:
+    build: ./services/gmail
+    environment:
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8083/auth/callback}
+    ports:
+      - "8083:8000"
+
+  schedule:
+    build: ./services/schedule
+    ports:
+      - "8084:8000"
+
+  assistant:
+    build: ./services/assistant
+    environment:
+      POWERBUY_URL: http://powerbuy:8000
+      FITNESS_URL: http://fitness:8000
+      GMAIL_URL: http://gmail:8000
+      SCHEDULE_URL: http://schedule:8000
+    ports:
+      - "8085:8000"
+    depends_on:
+      - powerbuy
+      - fitness
+      - gmail
+      - schedule
+
+volumes:
+  db_data:

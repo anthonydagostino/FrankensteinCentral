@@ -1,0 +1,57 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SubApp:
+    key: str
+    name: str
+    description: str
+    icon: str
+    url: str
+
+
+def load_registry() -> list[SubApp]:
+    """The catalog of sub-apps the hub knows about.
+
+    Each sub-app is an independent service reachable at its own URL. Adding a
+    new sub-app to FrankensteinCentral means adding a service here (and a
+    container in docker-compose).
+    """
+    return [
+        SubApp(
+            key="assistant",
+            name="Assistant",
+            description="Your manager. Reads across every sub-app, surfaces deadlines, and routes info where it belongs.",
+            icon="🧠",
+            url=os.environ.get("ASSISTANT_URL", "http://assistant:8000"),
+        ),
+        SubApp(
+            key="powerbuy",
+            name="PowerBuy",
+            description="Your purchasing app. Deals, watchlist, and buy signals.",
+            icon="🛒",
+            url=os.environ.get("POWERBUY_URL", "http://powerbuy:8000"),
+        ),
+        SubApp(
+            key="fitness",
+            name="Fitness",
+            description="Tracks your gym visits, plans the optimal week, and tells you what to eat and buy.",
+            icon="💪",
+            url=os.environ.get("FITNESS_URL", "http://fitness:8000"),
+        ),
+        SubApp(
+            key="gmail",
+            name="Gmail Checker",
+            description="Scans your inbox for what actually needs a reply and flags deadlines.",
+            icon="📬",
+            url=os.environ.get("GMAIL_URL", "http://gmail:8000"),
+        ),
+        SubApp(
+            key="schedule",
+            name="Schedule",
+            description="Your calendar. The assistant drops interviews, deadlines, and workouts here.",
+            icon="🗓️",
+            url=os.environ.get("SCHEDULE_URL", "http://schedule:8000"),
+        ),
+    ]

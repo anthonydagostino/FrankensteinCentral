@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FrankensteinCentral</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="bolt">⚡</span>
+        <div>
+          <h1>FrankensteinCentral</h1>
+          <p class="tagline">One brain for all your apps.</p>
+        </div>
+      </div>
+      <div id="clock" class="clock"></div>
+    </header>
+
+    <main>
+      <section class="assistant-panel" id="assistant-panel">
+        <div class="assistant-head">
+          <span class="assistant-avatar">🧠</span>
+          <div>
+            <h2>Assistant briefing</h2>
+            <p class="muted" id="assistant-sub">Pulling everything together…</p>
+          </div>
+          <button id="sync-btn" class="btn">Sync now</button>
+        </div>
+        <ul id="briefing" class="briefing"></ul>
+      </section>
+
+      <h2 class="section-title">Your apps</h2>
+      <section id="apps" class="grid"></section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
