@@ -482,10 +482,23 @@ async def sync():
                 await _add_deadline(conn, f"{b['name']} bill (${b['amount']})", None,
                                     "finance", f"bill:{b['id']}")
 
-            # Tess -> Tasks
-            tsk = await _get(client, f"{TASKS_URL}/summary")
+            # Tess -> Tasks (turn deadline emails into real, checkable to-dos)
             tess = _BY_STATION["tasks"]
+            new_tasks = 0
+            for e in mails:
+                if e.get("category") != "deadline":
+                    continue
+                resp = await client.post(
+                    f"{TASKS_URL}/tasks",
+                    json={"title": e["subject"], "external_id": f"mail:{e['id']}"},
+                    timeout=8,
+                )
+                if resp.status_code < 300 and resp.json().get("created"):
+                    new_tasks += 1
+            tsk = await _get(client, f"{TASKS_URL}/summary")
             tess_summary = f"{tsk.get('open', 0)} open" if tsk else "no tasks"
+            if new_tasks:
+                tess_summary += f" ({new_tasks} new from email)"
             await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
             jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
                          "summary": tess_summary})

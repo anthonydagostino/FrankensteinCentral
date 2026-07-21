@@ -13,11 +13,13 @@ pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
-    id         SERIAL PRIMARY KEY,
-    title      TEXT NOT NULL,
-    done       BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TEXT NOT NULL
+    id          SERIAL PRIMARY KEY,
+    title       TEXT NOT NULL,
+    done        BOOLEAN NOT NULL DEFAULT FALSE,
+    external_id TEXT UNIQUE,
+    created_at  TEXT NOT NULL
 );
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_id TEXT UNIQUE;
 """
 
 SEED = ["Renew passport", "Reply to landlord", "Book dentist"]
@@ -25,6 +27,7 @@ SEED = ["Renew passport", "Reply to landlord", "Book dentist"]
 
 class Task(BaseModel):
     title: str
+    external_id: str | None = None  # e.g. a gmail message id, for dedupe on auto-add
 
 
 @app.on_event("startup")
@@ -68,13 +71,33 @@ async def get_tasks():
 
 @app.post("/tasks")
 async def add_task(task: Task):
+    """Add a task. If external_id is set (auto-added from another app), this
+    is idempotent so re-syncs don't create duplicates."""
     async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        if task.external_id:
+            cur = await conn.execute(
+                "SELECT id, title, done FROM tasks WHERE external_id = %s", (task.external_id,)
+            )
+            existing = await cur.fetchone()
+            if existing:
+                return {"added": existing, "created": False}
         cur = await conn.execute(
-            "INSERT INTO tasks (title, created_at) VALUES (%s, %s) RETURNING id",
-            (task.title, datetime.utcnow().isoformat()),
+            "INSERT INTO tasks (title, external_id, created_at) VALUES (%(title)s, %(external_id)s, %(created_at)s) "
+            "ON CONFLICT (external_id) DO NOTHING RETURNING id, title, done",
+            {
+                "title": task.title,
+                "external_id": task.external_id,
+                "created_at": datetime.utcnow().isoformat(),
+            },
         )
-        (new_id,) = await cur.fetchone()
-    return {"added": {"id": new_id, "title": task.title, "done": False}}
+        row = await cur.fetchone()
+        if row is None:  # lost a race on external_id; return the existing winner
+            cur = await conn.execute(
+                "SELECT id, title, done FROM tasks WHERE external_id = %s", (task.external_id,)
+            )
+            return {"added": await cur.fetchone(), "created": False}
+    return {"added": row, "created": True}
 
 
 @app.post("/tasks/{task_id}/toggle")
