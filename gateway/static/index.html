@@ -7,58 +7,50 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <span class="bolt">⚡</span>
-        <div>
-          <h1>FrankensteinCentral</h1>
-          <p class="tagline">One brain for all your apps.</p>
-        </div>
+    <div class="hq-screen" id="hq">
+      <div class="stage-wrap">
+        <canvas id="stage"></canvas>
       </div>
-      <div id="clock" class="clock"></div>
-    </header>
 
-    <main>
-      <section class="hq-panel" id="hq">
-        <div class="hq-head">
-          <span class="assistant-avatar">🎮</span>
+      <header class="hud-top">
+        <div class="brand">
+          <span class="bolt">⚡</span>
           <div>
-            <h2>Assistant HQ</h2>
-            <p class="muted">Bones runs the floor. Click a station to open it — click Bones' Desk for your briefing.</p>
+            <h1>FrankensteinCentral</h1>
+            <p class="tagline">Bones runs the floor. Click a station to open it — click Bones' Desk for your briefing.</p>
           </div>
-          <label class="hq-toggle">
-            <input type="checkbox" id="auto" /> Auto every 12s
-          </label>
-          <button class="btn" id="dispatch">Dispatch team ▶</button>
         </div>
+        <div id="clock" class="clock"></div>
+      </header>
 
-        <section id="overview" class="overview"></section>
+      <section id="overview" class="overview hud-overview"></section>
 
-        <div class="hq-body">
-          <div class="stage-wrap">
-            <canvas id="stage"></canvas>
-          </div>
-          <aside class="hq-aside">
-            <div class="hq-card">
-              <h4>Bones' Notebook</h4>
-              <div id="notes"><p class="empty">No notes yet. Hit Dispatch.</p></div>
-            </div>
-            <div class="hq-card">
-              <h4>Deadlines spotted</h4>
-              <div id="deadlines"><p class="empty">Nothing tracked yet.</p></div>
-            </div>
-            <div class="hq-card">
-              <h4>Floor activity</h4>
-              <div id="feed" class="feed"><p class="empty">Quiet on the floor.</p></div>
-            </div>
-            <div class="hq-card">
-              <h4>The team</h4>
-              <div class="hq-legend" id="legend"></div>
-            </div>
-          </aside>
+      <div class="hud-controls">
+        <button class="btn" id="dispatch">Dispatch team ▶</button>
+        <label class="hq-toggle">
+          <input type="checkbox" id="auto" /> Auto every 12s
+        </label>
+      </div>
+
+      <aside class="hq-aside hud-aside">
+        <div class="hq-card">
+          <h4>Bones' Notebook</h4>
+          <div id="notes"><p class="empty">No notes yet. Hit Dispatch.</p></div>
         </div>
-      </section>
-    </main>
+        <div class="hq-card">
+          <h4>Deadlines spotted</h4>
+          <div id="deadlines"><p class="empty">Nothing tracked yet.</p></div>
+        </div>
+        <div class="hq-card">
+          <h4>Floor activity</h4>
+          <div id="feed" class="feed"><p class="empty">Quiet on the floor.</p></div>
+        </div>
+        <div class="hq-card">
+          <h4>The team</h4>
+          <div class="hq-legend" id="legend"></div>
+        </div>
+      </aside>
+    </div>
 
     <div class="overlay" id="overlay">
       <div class="modal" role="dialog" aria-modal="true">
