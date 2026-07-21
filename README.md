@@ -84,6 +84,14 @@ Nothing resets on restart:
 
 To wipe everything and start clean: `docker compose down -v`.
 
+## Bones texts you
+
+The manager can text you a digest — on demand (**📱 Text me** on the hub) or
+automatically after each sync. Supports Telegram, WhatsApp (Twilio), SMS
+(Twilio), or a generic webhook. Pick a channel and add credentials per
+[docs/SETUP-NOTIFICATIONS.md](docs/SETUP-NOTIFICATIONS.md). (iMessage isn't
+possible from a self-hosted app — no Apple API.)
+
 ## Auto-pilot
 
 Set `AUTO_SYNC_SECONDS` in `.env` (e.g. `900` for every 15 min) and the

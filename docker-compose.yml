@@ -122,6 +122,17 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
+      # Bones texts you. Channel: telegram | whatsapp | sms | webhook (empty = off).
+      NOTIFY_CHANNEL: ${NOTIFY_CHANNEL:-}
+      NOTIFY_ON_SYNC: ${NOTIFY_ON_SYNC:-false}
+      NOTIFY_TO: ${NOTIFY_TO:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
+      TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
     ports:
       - "8085:8000"
     depends_on:

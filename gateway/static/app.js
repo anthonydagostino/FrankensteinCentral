@@ -418,6 +418,24 @@ async function askAssistant() {
 $("#ask-btn").onclick = askAssistant;
 $("#ask-input").addEventListener("keydown", (e) => e.key === "Enter" && askAssistant());
 
+$("#text-btn").onclick = async () => {
+  const btn = $("#text-btn");
+  btn.disabled = true;
+  const original = btn.textContent;
+  try {
+    const r = await api("/assistant/notify", { method: "POST" });
+    btn.textContent = r.sent ? "✓ Sent" : "⚠ Not set up";
+    if (!r.sent) {
+      $("#ask-answer").textContent =
+        "Texting isn't set up yet. See docs/SETUP-NOTIFICATIONS.md to connect Telegram, WhatsApp, or SMS.";
+    }
+  } catch {
+    btn.textContent = "⚠ Failed";
+  } finally {
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  }
+};
+
 loadApps();
 loadBriefing();
 loadOverview();

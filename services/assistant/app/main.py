@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from . import notify
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -19,6 +20,8 @@ FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
+# Text a digest automatically after each sync (only when it changed). Off by default.
+NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -239,6 +242,34 @@ async def overview():
     return await build_overview()
 
 
+async def compose_digest() -> str:
+    """A short, texty summary from Bones — the message the manager sends you."""
+    o = await build_overview()
+    bits = []
+    if o.get("emails_to_reply"):
+        bits.append(f"{o['emails_to_reply']} emails to reply")
+    if o.get("open_tasks"):
+        bits.append(f"{o['open_tasks']} open tasks")
+    if o.get("bills_due"):
+        bits.append(f"{o['bills_due']} bills due soon")
+    if o.get("budget_over"):
+        bits.append("over budget")
+    if o.get("unpaid"):
+        bits.append(f"{o['unpaid']} unpaid buys")
+    head = "; ".join(bits) if bits else "you're all clear"
+    tail = f" Next up: {o['next_event']}." if o.get("next_event") else ""
+    focus = o.get("today_focus") or "rest"
+    return f"🦴 Bones here — {head}. Today is {focus} day.{tail}"
+
+
+@app.post("/notify")
+async def notify_now(text: str | None = None):
+    """Have Bones text you now (custom text, or the current digest)."""
+    msg = text or await compose_digest()
+    result = await notify.send(msg)
+    return {"message": msg, **result}
+
+
 @app.get("/ask")
 async def ask(q: str = ""):
     """A lightweight, offline Q&A over your apps — intent-matched, no LLM needed."""
@@ -455,7 +486,19 @@ async def sync():
         note = f"Synced — {STATE['summary']} ({booked} booked, {len(mails)} to reply)."
         await _remember(conn, note)
 
-    return {"synced": True, "events_created": created, "jobs": jobs, "briefing": STATE}
+    # Optionally have Bones text a digest — but only when it actually changed,
+    # so auto-sync doesn't spam the same message.
+    notified = False
+    if NOTIFY_ON_SYNC and notify.configured():
+        digest = await compose_digest()
+        if digest != STATE.get("last_digest"):
+            result = await notify.send(digest)
+            if result.get("sent"):
+                STATE["last_digest"] = digest
+                notified = True
+
+    return {"synced": True, "events_created": created, "jobs": jobs,
+            "briefing": STATE, "notified": notified}
 
 
 @app.get("/")
