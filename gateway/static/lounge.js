@@ -239,6 +239,83 @@ function drawStation(key, s) {
   ctx.fillText(s.name, s.x, s.y + 54);
 }
 
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const clamp = (v) => Math.max(0, Math.min(255, v));
+  const r = clamp(((n >> 16) & 255) + amt);
+  const g = clamp(((n >> 8) & 255) + amt);
+  const b = clamp((n & 255) + amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+const NINJA_BODY = "#22323f"; // dark navy, like the reference
+
+// Manager keeps the round body + crown.
+function drawManager(a, x, y) {
+  ctx.fillStyle = a.color;
+  roundRect(x - 12, y - 4, 24, 24, 9); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.18)";
+  roundRect(x - 8, y - 2, 16, 8, 4); ctx.fill();
+  ctx.fillStyle = "#f4d9b8";
+  ctx.beginPath(); ctx.arc(x, y - 12, 9, 0, 7); ctx.fill();
+  ctx.fillStyle = a.color;
+  ctx.beginPath(); ctx.arc(x, y - 14, 9, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = "#2a2233";
+  ctx.beginPath(); ctx.arc(x + a.facing * 2 - 3, y - 12, 1.5, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + a.facing * 2 + 3, y - 12, 1.5, 0, 7); ctx.fill();
+  ctx.fillStyle = "#ffd85e";
+  ctx.beginPath();
+  ctx.moveTo(x - 7, y - 20); ctx.lineTo(x - 4, y - 27); ctx.lineTo(x, y - 21);
+  ctx.lineTo(x + 4, y - 27); ctx.lineTo(x + 7, y - 20); ctx.closePath();
+  ctx.fill();
+}
+
+// Workers: blocky ninja with a per-agent bandana + matching cape.
+function drawNinja(a, x, y) {
+  const dir = a.facing;
+  const cape = shade(a.color, -70);
+
+  // cape flowing out behind (trailing side), with a gentle flutter
+  ctx.save();
+  ctx.translate(x - dir * 13, y + 6);
+  ctx.rotate(-dir * (0.18 + Math.sin(t * 3 + a.bob) * 0.05));
+  ctx.fillStyle = cape;
+  roundRect(-10, -15, 20, 34, 9); ctx.fill();
+  ctx.restore();
+
+  // pointy ears
+  ctx.fillStyle = NINJA_BODY;
+  ctx.beginPath();
+  ctx.moveTo(x - 14, y - 6); ctx.lineTo(x - 8, y - 24); ctx.lineTo(x - 2, y - 8);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + 2, y - 8); ctx.lineTo(x + 8, y - 24); ctx.lineTo(x + 14, y - 6);
+  ctx.closePath(); ctx.fill();
+
+  // blocky body
+  ctx.fillStyle = NINJA_BODY;
+  roundRect(x - 15, y - 10, 30, 30, 7); ctx.fill();
+
+  // legs
+  roundRect(x - 11, y + 18, 7, 6, 2); ctx.fill();
+  roundRect(x + 4, y + 18, 7, 6, 2); ctx.fill();
+
+  // bandana across the face (per-agent colour) with a little side knot
+  ctx.fillStyle = a.color;
+  roundRect(x - 16, y - 3, 32, 9, 2); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x - dir * 15, y - 2); ctx.lineTo(x - dir * 24, y - 5);
+  ctx.lineTo(x - dir * 22, y + 5); ctx.closePath(); ctx.fill();
+
+  // big eyes below the bandana
+  for (const ex of [-6, 6]) {
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.ellipse(x + ex, y + 11, 4.6, 5.6, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "#1b2730";
+    ctx.beginPath(); ctx.arc(x + ex + dir * 1.4, y + 12, 2.1, 0, 7); ctx.fill();
+  }
+}
+
 function drawAgent(a) {
   const bob = a.state === "traveling" || a.state === "returning"
     ? Math.abs(Math.sin(a.bob)) * 3 : Math.sin(t * 2 + a.bob) * 1.5;
@@ -246,33 +323,10 @@ function drawAgent(a) {
 
   // shadow
   ctx.fillStyle = "#00000040";
-  ctx.beginPath(); ctx.ellipse(a.x, a.y + 16, 14, 5, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(a.x, a.y + 16, 15, 5, 0, 0, 7); ctx.fill();
 
-  // body
-  ctx.fillStyle = a.color;
-  roundRect(x - 12, y - 4, 24, 24, 9); ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.18)";
-  roundRect(x - 8, y - 2, 16, 8, 4); ctx.fill();
-
-  // head
-  ctx.fillStyle = "#f4d9b8";
-  ctx.beginPath(); ctx.arc(x, y - 12, 9, 0, 7); ctx.fill();
-  // hair cap in agent color
-  ctx.fillStyle = a.color;
-  ctx.beginPath(); ctx.arc(x, y - 14, 9, Math.PI, 0); ctx.fill();
-  // eyes (face direction)
-  ctx.fillStyle = "#2a2233";
-  ctx.beginPath(); ctx.arc(x + a.facing * 2 - 3, y - 12, 1.5, 0, 7); ctx.fill();
-  ctx.beginPath(); ctx.arc(x + a.facing * 2 + 3, y - 12, 1.5, 0, 7); ctx.fill();
-
-  // manager crown
-  if (a.role === "manager") {
-    ctx.fillStyle = "#ffd85e";
-    ctx.beginPath();
-    ctx.moveTo(x - 7, y - 20); ctx.lineTo(x - 4, y - 27); ctx.lineTo(x, y - 21);
-    ctx.lineTo(x + 4, y - 27); ctx.lineTo(x + 7, y - 20); ctx.closePath();
-    ctx.fill();
-  }
+  if (a.role === "manager") drawManager(a, x, y);
+  else drawNinja(a, x, y);
 
   // name tag
   ctx.fillStyle = "rgba(0,0,0,0.55)";
