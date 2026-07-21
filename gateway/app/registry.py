@@ -82,4 +82,11 @@ def load_registry() -> list[SubApp]:
             icon="🏷️",
             url=os.environ.get("DEALS_URL", "http://deals:8000"),
         ),
+        SubApp(
+            key="networth",
+            name="Net Worth",
+            description="Chase, Marcus, Robinhood, Fidelity, TSP — individual balances and the total.",
+            icon="💎",
+            url=os.environ.get("NETWORTH_URL", "http://networth:8000"),
+        ),
     ]

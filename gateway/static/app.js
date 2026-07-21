@@ -49,6 +49,7 @@ async function loadOverview() {
     ? `${o.next_event}`.slice(0, 18) + (o.next_event.length > 18 ? "…" : "")
     : "—";
   const tiles = [
+    { n: `$${(o.net_worth ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, l: "Net worth", cls: "good" },
     { n: o.emails_to_reply ?? 0, l: "Emails to reply", cls: o.emails_to_reply ? "warn" : "" },
     { n: `$${o.expected_profit ?? 0}`, l: "Expected profit", cls: "good" },
     { n: o.unpaid ?? 0, l: "Unpaid buys", cls: o.unpaid ? "warn" : "" },
@@ -421,6 +422,99 @@ const RENDERERS = {
       openApp(app);
     };
   },
+
+  async networth(app, body) {
+    const [accts, rec] = await Promise.all([api("/networth/accounts"), api("/networth/recurring")]);
+    setMode();
+    const total = (accts.accounts || []).reduce((s, a) => s + Number(a.balance), 0);
+    const acctOptions = (accts.accounts || [])
+      .map((a) => `<option value="${a.id}">${esc(a.name)}</option>`)
+      .join("");
+    const acctRows = (accts.accounts || [])
+      .map(
+        (a) => `<div class="row" data-id="${a.id}">
+          <div class="grow"><b>${esc(a.name)}</b></div>
+          <span class="right">$${Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          <input type="number" class="acct-set" placeholder="New balance" style="max-width:110px" />
+          <button class="btn" data-set="${a.id}">Set</button>
+        </div>`
+      )
+      .join("");
+    const recRows = (rec.recurring || [])
+      .map(
+        (r) => `<div class="row" data-rid="${r.id}"><div class="grow">
+          <b>+$${Number(r.amount).toLocaleString()}</b> every ${r.interval_days}d to ${esc(r.account)}
+          <div class="sub">next: ${esc(r.next_due_at)}</div></div>
+          <button class="btn btn-ghost" data-del="${r.id}">Remove</button></div>`
+      )
+      .join("");
+    body.innerHTML = `
+      <div class="tiles">
+        <div class="tile good"><div class="n">$${total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div><div class="l">Total net worth</div></div>
+        <div class="tile"><div class="n">${(accts.accounts || []).length}</div><div class="l">Accounts</div></div>
+      </div>
+      <h4>Accounts</h4>
+      <div class="rows">${acctRows || '<p class="empty">No accounts yet.</p>'}</div>
+      <h4>Recurring contributions</h4>
+      <div class="rows">${recRows || '<p class="empty">None set up — add one below.</p>'}</div>
+      <div class="inline-form">
+        <select id="rec-account" style="flex:1;min-width:140px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px 11px;">
+          ${acctOptions}
+        </select>
+        <input id="rec-amount" type="number" placeholder="$ amount" style="max-width:100px" />
+        <input id="rec-days" type="number" placeholder="Every N days" value="14" style="max-width:120px" />
+        <button class="btn" id="rec-add">Add recurring</button>
+      </div>
+      <h4>Add an account</h4>
+      <div class="inline-form">
+        <input id="acct-name" placeholder="Account name" />
+        <input id="acct-balance" type="number" placeholder="Starting balance" style="max-width:130px" />
+        <button class="btn" id="acct-add">Add</button>
+      </div>`;
+
+    body.querySelectorAll("[data-set]").forEach((btn) => {
+      btn.onclick = async () => {
+        const row = body.querySelector(`.row[data-id="${btn.dataset.set}"]`);
+        const val = parseFloat(row.querySelector(".acct-set").value);
+        if (Number.isNaN(val)) return;
+        await api(`/networth/accounts/${btn.dataset.set}/balance`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ balance: val }),
+        });
+        openApp(app);
+      };
+    });
+    body.querySelectorAll("[data-del]").forEach((btn) => {
+      btn.onclick = async () => {
+        await api(`/networth/recurring/${btn.dataset.del}`, { method: "DELETE" });
+        openApp(app);
+      };
+    });
+    $("#rec-add").onclick = async () => {
+      const account_id = parseInt($("#rec-account").value);
+      const amount = parseFloat($("#rec-amount").value);
+      const interval_days = parseInt($("#rec-days").value) || 14;
+      if (!account_id || !amount) return;
+      await api("/networth/recurring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_id, amount, interval_days }),
+      });
+      openApp(app);
+    };
+    $("#acct-add").onclick = async () => {
+      const name = $("#acct-name").value.trim();
+      const balance = parseFloat($("#acct-balance").value) || 0;
+      if (!name) return;
+      await api("/networth/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, balance }),
+      });
+      openApp(app);
+    };
+  },
 };
 
 async function renderGeneric(app, body) {
@@ -460,6 +554,7 @@ const STATIONS = {
   deals:    { name: "Deals",        color: "#a3e635", x: 620, y: 566, spot: { x: 600, y: 512 } },
   tasks:    { name: "Tasks",        color: "#f2b8d0", x: 120, y: 325, spot: { x: 210, y: 325 } },
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
+  networth: { name: "Net Worth",    color: "#38bdf8", x: 300, y: 200, spot: { x: 300, y: 258 } },
 };
 
 // Maps a station to the /api/apps entry it opens when clicked.
@@ -473,12 +568,14 @@ const STATION_APP_KEY = {
   deals: "deals",
   tasks: "tasks",
   budget: "budget",
+  networth: "networth",
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
 const HOME = [
   { x: 430, y: 390 }, { x: 570, y: 390 }, { x: 430, y: 450 }, { x: 570, y: 450 },
   { x: 500, y: 420 }, { x: 470, y: 420 }, { x: 530, y: 420 }, { x: 500, y: 450 },
+  { x: 460, y: 460 },
 ];
 
 const WALK = { minX: 90, maxX: 910, minY: 150, maxY: 560 };
@@ -540,6 +637,7 @@ async function loadRoster() {
       { id: "tess", name: "Tess", role: "worker", station: "tasks", color: "#f2b8d0" },
       { id: "buck", name: "Buck", role: "worker", station: "budget", color: "#f5c542" },
       { id: "scout", name: "Scout", role: "worker", station: "deals", color: "#a3e635" },
+      { id: "wade", name: "Wade", role: "worker", station: "networth", color: "#38bdf8" },
     ];
   }
   let wi = 0;

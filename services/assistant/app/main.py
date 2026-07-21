@@ -20,6 +20,7 @@ FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
+NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
@@ -54,6 +55,8 @@ AGENTS = [
      "color": "#f5c542", "blurb": "Budget desk — spending by category, what's left."},
     {"id": "scout", "name": "Scout", "role": "worker", "station": "deals",
      "color": "#a3e635", "blurb": "Deal hunter — flags real discounts from your inbox."},
+    {"id": "wade", "name": "Wade", "role": "worker", "station": "networth",
+     "color": "#38bdf8", "blurb": "Wealth desk — account balances, applies recurring contributions."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -182,6 +185,7 @@ async def build_briefing() -> list[dict]:
         tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
+        networth = await _get(client, f"{NETWORTH_URL}/summary")
 
     for e in emails.get("emails", []):
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -246,6 +250,11 @@ async def build_briefing() -> list[dict]:
             {"source": "deals", "message": f"Deals spotted: {', '.join(deals['top'])}."}
         )
 
+    if networth.get("total") is not None:
+        items.append(
+            {"source": "networth", "message": f"Net worth: ${networth['total']:,.2f}."}
+        )
+
     return items
 
 
@@ -265,6 +274,7 @@ async def build_overview() -> dict:
         tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
+        networth = await _get(client, f"{NETWORTH_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     events = cal.get("events", [])
@@ -278,6 +288,7 @@ async def build_overview() -> dict:
         "budget_left": budget.get("remaining", 0),
         "budget_over": len(budget.get("over_budget", [])),
         "deals_count": deals.get("count", 0),
+        "net_worth": networth.get("total", 0),
         "next_event": events[0]["title"] if events else None,
         "next_event_at": events[0]["starts_at"] if events else None,
         "today_focus": tp.get("focus"),
@@ -309,7 +320,8 @@ async def compose_digest() -> str:
     head = "; ".join(bits) if bits else "you're all clear"
     tail = f" Next up: {o['next_event']}." if o.get("next_event") else ""
     focus = o.get("today_focus") or "rest"
-    return f"🦴 Bones here — {head}. Today is {focus} day.{tail}"
+    worth = f" Net worth: ${o['net_worth']:,.2f}." if o.get("net_worth") is not None else ""
+    return f"🦴 Bones here — {head}. Today is {focus} day.{tail}{worth}"
 
 
 @app.post("/notify")
@@ -345,6 +357,7 @@ async def ask(q: str = ""):
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
+        networth = await _get(client, f"{NETWORTH_URL}/summary")
 
     def has(*words):
         return any(w in ql for w in words)
@@ -405,6 +418,14 @@ async def ask(q: str = ""):
         if not top:
             return {"answer": "No real deals spotted in your inbox lately."}
         return {"answer": f"Deals spotted: {'; '.join(top)}."}
+
+    if has("net worth", "worth", "balance", "chase", "marcus", "robinhood", "fidelity", "tsp", "savings"):
+        accts = networth.get("accounts", [])
+        if not accts:
+            return {"answer": "No accounts set up yet."}
+        lines = [f"Net worth: ${networth.get('total', 0):,.2f}"]
+        lines += [f"• {a['name']}: ${a['balance']:,.2f}" for a in accts]
+        return {"answer": "\n".join(lines)}
 
     # default: a full rundown
     ov = await build_overview()
@@ -587,6 +608,23 @@ async def sync():
             await _log(conn, scout["name"], "deals", "scanned for discounts", scout_summary)
             jobs.append({"agent": scout["id"], "name": scout["name"], "station": "deals",
                          "summary": scout_summary})
+
+            # Wade -> Net Worth (apply any recurring contributions that came due)
+            wade = _BY_STATION["networth"]
+            resp = await client.post(f"{NETWORTH_URL}/recurring/apply", timeout=8)
+            applied = resp.json().get("applied", []) if resp.status_code < 300 else []
+            if applied:
+                total_in = sum(a["amount"] for a in applied)
+                wade_summary = f"applied ${total_in:,.0f} across {len(applied)} contribution(s)"
+            else:
+                nw = await _get(client, f"{NETWORTH_URL}/summary")
+                wade_summary = f"${nw.get('total', 0):,.0f} total — nothing due"
+            await _log(conn, wade["name"], "networth", "checked contributions", wade_summary)
+            for a in applied:
+                await _remember(conn, f"💰 +${a['amount']:,.0f} contributed to {a['account']} "
+                                       f"(now ${a['new_balance']:,.0f}).")
+            jobs.append({"agent": wade["id"], "name": wade["name"], "station": "networth",
+                         "summary": wade_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."
