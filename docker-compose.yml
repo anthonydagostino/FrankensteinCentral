@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-frank}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frank}
@@ -17,6 +18,7 @@ services:
 
   gateway:
     build: ./gateway
+    restart: unless-stopped
     environment:
       POWERBUY_URL: http://powerbuy:8000
       FITNESS_URL: http://fitness:8000
@@ -34,6 +36,7 @@ services:
 
   powerbuy:
     build: ./services/powerbuy
+    restart: unless-stopped
     environment:
       # Your real PowerBuy backend (the Render API). Login pulls your purchases.
       POWERBUY_API_URL: ${POWERBUY_API_URL:-https://powerbuy.onrender.com/api}
@@ -44,6 +47,7 @@ services:
 
   fitness:
     build: ./services/fitness
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     depends_on:
@@ -54,6 +58,7 @@ services:
 
   finance:
     build: ./services/finance
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     depends_on:
@@ -64,6 +69,7 @@ services:
 
   tasks:
     build: ./services/tasks
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     depends_on:
@@ -74,6 +80,7 @@ services:
 
   budget:
     build: ./services/budget
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     depends_on:
@@ -84,6 +91,7 @@ services:
 
   gmail:
     build: ./services/gmail
+    restart: unless-stopped
     environment:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
@@ -101,6 +109,7 @@ services:
 
   schedule:
     build: ./services/schedule
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     depends_on:
@@ -111,6 +120,7 @@ services:
 
   assistant:
     build: ./services/assistant
+    restart: unless-stopped
     environment:
       POWERBUY_URL: http://powerbuy:8000
       FITNESS_URL: http://fitness:8000
