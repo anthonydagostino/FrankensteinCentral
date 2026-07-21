@@ -1,4 +1,4 @@
-// Assistant HQ — a little top-down lounge where the manager (Frank) dispatches
+// Assistant HQ — a little top-down lounge where the manager (Bones) dispatches
 // worker agents to API "stations". Idle agents wander; working agents walk to
 // their station, do the job, then walk back. All rendered on a canvas.
 
@@ -8,7 +8,7 @@ const ctx = canvas.getContext("2d");
 
 // Stations around the lounge. spot = where the worker stands to work.
 const STATIONS = {
-  desk:     { name: "Frank's Desk", color: "#f5c542", x: 500, y: 96,  spot: { x: 500, y: 170 } },
+  desk:     { name: "Bones' Desk", color: "#e23b5a", x: 500, y: 96,  spot: { x: 500, y: 170 } },
   gmail:    { name: "Gmail",        color: "#4aa3ff", x: 120, y: 150, spot: { x: 210, y: 190 } },
   schedule: { name: "Schedule",     color: "#7bd88f", x: 880, y: 150, spot: { x: 790, y: 190 } },
   powerbuy: { name: "PowerBuy",     color: "#ff8a5b", x: 120, y: 500, spot: { x: 210, y: 460 } },
@@ -40,7 +40,16 @@ function makeAgent(def, home) {
     pause: rnd(0.5, 2.5),
     work: 0,
     bubble: null, bubbleT: 0,
+    blink: rnd(2, 6), blinking: 0,   // eye blinks
+    gaze: 0, gazeT: rnd(1, 3),       // idle look-around
+    dustT: 0,                        // footstep-dust throttle
   };
+}
+
+// Little floor dust puffs kicked up while walking.
+const dust = [];
+function puff(x, y) {
+  dust.push({ x: x + rnd(-3, 3), y, life: 0.5, max: 0.5, r: rnd(3, 6) });
 }
 
 async function loadRoster() {
@@ -50,7 +59,7 @@ async function loadRoster() {
     roster = (await r.json()).agents;
   } catch (e) {
     roster = [
-      { id: "frank", name: "Frank", role: "manager", station: "desk", color: "#f5c542" },
+      { id: "bones", name: "Bones", role: "manager", station: "desk", color: "#e23b5a" },
       { id: "posty", name: "Posty", role: "worker", station: "gmail", color: "#4aa3ff" },
       { id: "cal", name: "Cal", role: "worker", station: "schedule", color: "#7bd88f" },
       { id: "rep", name: "Rep", role: "worker", station: "powerbuy", color: "#ff8a5b" },
@@ -90,8 +99,34 @@ function moveToward(a, dt) {
 }
 
 function update(dt) {
+  // dust particles
+  for (let i = dust.length - 1; i >= 0; i--) {
+    dust[i].life -= dt;
+    if (dust[i].life <= 0) dust.splice(i, 1);
+  }
+
   for (const a of agents) {
     if (a.bubbleT > 0) a.bubbleT -= dt;
+
+    // blink
+    a.blink -= dt;
+    if (a.blink <= 0) { a.blinking = 0.12; a.blink = rnd(2.5, 6); }
+    if (a.blinking > 0) a.blinking -= dt;
+
+    // idle look-around (only when not walking)
+    if (a.state === "idle" || a.state === "working") {
+      a.gazeT -= dt;
+      if (a.gazeT <= 0) { a.gaze = [-1, 0, 0, 1][Math.floor(rnd(0, 4))]; a.gazeT = rnd(1, 3); }
+    } else {
+      a.gaze = 0;
+    }
+
+    // footstep dust while moving
+    const moving = a.state === "traveling" || a.state === "returning";
+    if (moving) {
+      a.dustT -= dt;
+      if (a.dustT <= 0) { puff(a.x - a.facing * 6, a.y + 15); a.dustT = 0.15; }
+    }
 
     if (a.state === "idle") {
       if (moveToward(a, dt)) {
@@ -250,24 +285,81 @@ function shade(hex, amt) {
 
 const NINJA_BODY = "#22323f"; // dark navy, like the reference
 
-// Manager keeps the round body + crown.
+// Manager: a skeleton knight — red-helmeted skull, bone body, sword + shield.
+const BONE = "#eef1f3";
+const BONE_SH = "#c9d2d7";
+const HELM = "#d81f4a";
+
 function drawManager(a, x, y) {
-  ctx.fillStyle = a.color;
-  roundRect(x - 12, y - 4, 24, 24, 9); ctx.fill();
-  ctx.fillStyle = "rgba(255,255,255,0.18)";
-  roundRect(x - 8, y - 2, 16, 8, 4); ctx.fill();
-  ctx.fillStyle = "#f4d9b8";
-  ctx.beginPath(); ctx.arc(x, y - 12, 9, 0, 7); ctx.fill();
-  ctx.fillStyle = a.color;
-  ctx.beginPath(); ctx.arc(x, y - 14, 9, Math.PI, 0); ctx.fill();
-  ctx.fillStyle = "#2a2233";
-  ctx.beginPath(); ctx.arc(x + a.facing * 2 - 3, y - 12, 1.5, 0, 7); ctx.fill();
-  ctx.beginPath(); ctx.arc(x + a.facing * 2 + 3, y - 12, 1.5, 0, 7); ctx.fill();
-  ctx.fillStyle = "#ffd85e";
+  const dir = a.facing;
+
+  // shield behind, on the trailing side
+  const sx = x - dir * 20;
+  ctx.fillStyle = "#9c1636";
   ctx.beginPath();
-  ctx.moveTo(x - 7, y - 20); ctx.lineTo(x - 4, y - 27); ctx.lineTo(x, y - 21);
-  ctx.lineTo(x + 4, y - 27); ctx.lineTo(x + 7, y - 20); ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(sx - 9, y + 2); ctx.lineTo(sx + 9, y + 2);
+  ctx.lineTo(sx + 9, y + 12); ctx.quadraticCurveTo(sx, y + 24, sx - 9, y + 12);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = HELM;
+  ctx.beginPath();
+  ctx.moveTo(sx - 6, y + 3); ctx.lineTo(sx + 7, y + 3);
+  ctx.lineTo(sx + 7, y + 11); ctx.quadraticCurveTo(sx, y + 20, sx - 6, y + 11);
+  ctx.closePath(); ctx.fill();
+
+  // sword in the leading hand, blade pointing out
+  ctx.save();
+  ctx.translate(x + dir * 15, y + 10);
+  ctx.scale(dir, 1);
+  ctx.fillStyle = HELM; // guard
+  roundRect(-2, -5, 4, 12, 1); ctx.fill();
+  ctx.fillStyle = BONE_SH; // pommel
+  ctx.beginPath(); ctx.arc(0, 8, 3, 0, 7); ctx.fill();
+  ctx.fillStyle = BONE;   // blade
+  ctx.beginPath();
+  ctx.moveTo(3, -4); ctx.lineTo(34, -2); ctx.lineTo(38, 0); ctx.lineTo(34, 2);
+  ctx.lineTo(3, 3); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // legs
+  ctx.fillStyle = BONE;
+  roundRect(x - 9, y + 18, 7, 8, 2); ctx.fill();
+  roundRect(x + 2, y + 18, 7, 8, 2); ctx.fill();
+
+  // bone torso with ribs + spine
+  ctx.fillStyle = BONE;
+  roundRect(x - 12, y + 1, 24, 20, 6); ctx.fill();
+  ctx.strokeStyle = BONE_SH; ctx.lineWidth = 2; ctx.lineCap = "round";
+  for (const ry of [6, 11, 16]) {
+    ctx.beginPath(); ctx.moveTo(x - 7, y + ry); ctx.lineTo(x + 7, y + ry); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(x, y + 3); ctx.lineTo(x, y + 19); ctx.stroke();
+
+  // skull
+  ctx.fillStyle = BONE;
+  roundRect(x - 11, y - 18, 22, 20, 9); ctx.fill();
+  // jaw / cheek notch
+  ctx.fillStyle = BONE_SH;
+  roundRect(x - 5, y - 1, 10, 4, 2); ctx.fill();
+
+  // red domed helmet over the top of the skull
+  ctx.fillStyle = HELM;
+  ctx.beginPath(); ctx.arc(x, y - 8, 12, Math.PI, 0); ctx.fill();
+  roundRect(x - 12, y - 9, 24, 4, 2); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.4)"; // helmet shine
+  ctx.beginPath(); ctx.ellipse(x - 4, y - 13, 2.5, 5, -0.5, 0, 7); ctx.fill();
+
+  // eye sockets (big, black) — blink shrinks them
+  const eh = a.blinking > 0 ? 1.2 : 5;
+  const g = a.gaze * 1.4;
+  ctx.fillStyle = "#12181d";
+  for (const ex of [-4.5, 4.5]) {
+    ctx.beginPath();
+    ctx.ellipse(x + ex + g, y - 4, 3, eh, 0, 0, 7); ctx.fill();
+  }
+  // nose
+  ctx.beginPath();
+  ctx.moveTo(x - 2, y + 1); ctx.lineTo(x + 2, y + 1); ctx.lineTo(x, y - 2);
+  ctx.closePath(); ctx.fill();
 }
 
 // Workers: blocky ninja with a per-agent bandana + matching cape.
@@ -300,19 +392,36 @@ function drawNinja(a, x, y) {
   roundRect(x - 11, y + 18, 7, 6, 2); ctx.fill();
   roundRect(x + 4, y + 18, 7, 6, 2); ctx.fill();
 
-  // bandana across the face (per-agent colour) with a little side knot
+  // bandana across the face (per-agent colour)
   ctx.fillStyle = a.color;
   roundRect(x - 16, y - 3, 32, 9, 2); ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(x - dir * 15, y - 2); ctx.lineTo(x - dir * 24, y - 5);
-  ctx.lineTo(x - dir * 22, y + 5); ctx.closePath(); ctx.fill();
 
-  // big eyes below the bandana
+  // knot + two trailing tails that wiggle as they move
+  const wig = Math.sin(t * 6 + a.bob) * 4;
+  const kx = x - dir * 15;
+  ctx.beginPath();
+  ctx.moveTo(kx, y - 2); ctx.lineTo(kx - dir * 8, y - 5);
+  ctx.lineTo(kx - dir * 7, y + 4); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = a.color; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(kx - dir * 4, y - 1);
+  ctx.quadraticCurveTo(kx - dir * 14, y + 2 + wig, kx - dir * 20, y + 6 - wig);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(kx - dir * 4, y + 3);
+  ctx.quadraticCurveTo(kx - dir * 13, y + 8 - wig, kx - dir * 18, y + 12 + wig);
+  ctx.stroke();
+
+  // big eyes below the bandana (blink shrinks, gaze shifts the pupils)
+  const eh = a.blinking > 0 ? 1 : 5.6;
+  const g = a.gaze * 1.6;
   for (const ex of [-6, 6]) {
     ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.ellipse(x + ex, y + 11, 4.6, 5.6, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = "#1b2730";
-    ctx.beginPath(); ctx.arc(x + ex + dir * 1.4, y + 12, 2.1, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + ex, y + 11, 4.6, eh, 0, 0, 7); ctx.fill();
+    if (a.blinking <= 0) {
+      ctx.fillStyle = "#1b2730";
+      ctx.beginPath(); ctx.arc(x + ex + dir * 1.4 + g, y + 12, 2.1, 0, 7); ctx.fill();
+    }
   }
 }
 
@@ -368,6 +477,15 @@ function draw() {
   drawLounge();
   for (const key in STATIONS) if (key !== "desk") drawStation(key, STATIONS[key]);
   drawStation("desk", STATIONS.desk);
+  // footstep dust (under the agents)
+  for (const d of dust) {
+    ctx.globalAlpha = (d.life / d.max) * 0.4;
+    ctx.fillStyle = "#b9a9c9";
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r * (1.4 - d.life / d.max), 0, 7);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
   // draw agents sorted by y so lower ones overlap correctly
   for (const a of [...agents].sort((p, q) => p.y - q.y)) drawAgent(a);
 }

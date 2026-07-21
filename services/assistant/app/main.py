@@ -24,12 +24,12 @@ STATE: dict = {"items": [], "summary": "Not synced yet."}
 # The floor: one manager plus a worker specialised to each sub-app. The lounge
 # UI renders these; each worker walks to its station when it has a job.
 AGENTS = [
-    {"id": "frank", "name": "Frank", "role": "manager", "station": "desk",
-     "color": "#f5c542", "blurb": "Runs the floor. Assigns jobs and keeps your notes."},
+    {"id": "bones", "name": "Bones", "role": "manager", "station": "desk",
+     "color": "#e23b5a", "blurb": "Runs the floor. Assigns jobs and keeps your notes."},
     {"id": "posty", "name": "Posty", "role": "worker", "station": "gmail",
      "color": "#4aa3ff", "blurb": "Inbox runner — triages what needs a reply."},
     {"id": "cal", "name": "Cal", "role": "worker", "station": "schedule",
-     "color": "#7bd88f", "blurb": "Calendar keeper — books what Frank finds."},
+     "color": "#7bd88f", "blurb": "Calendar keeper — books what Bones finds."},
     {"id": "rep", "name": "Rep", "role": "worker", "station": "powerbuy",
      "color": "#ff8a5b", "blurb": "Deals desk — profit, unpaid, expiring."},
     {"id": "coach", "name": "Coach", "role": "worker", "station": "fitness",
@@ -184,7 +184,7 @@ async def sync():
     """Core orchestration pass, now narrated as agent jobs for the lounge.
 
     Each worker "visits" its station: Posty reads the inbox, Cal books any
-    interview found, Rep checks purchases, Coach checks the plan. Frank writes a
+    interview found, Rep checks purchases, Coach checks the plan. Bones writes a
     note summarising. Everything is logged to the persistent space, and the list
     of jobs is returned so the lounge can animate the workers walking out.
     """
