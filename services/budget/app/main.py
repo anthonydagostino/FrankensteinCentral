@@ -21,16 +21,6 @@ CREATE TABLE IF NOT EXISTS budget (
 );
 """
 
-# Seed a typical monthly budget (one is intentionally over, to show the alert).
-SEED = [
-    ("Groceries", 500, 320),
-    ("Dining out", 200, 240),
-    ("Transport", 150, 90),
-    ("Entertainment", 100, 60),
-    ("Shopping", 200, 110),
-]
-
-
 class Category(BaseModel):
     name: str
     limit: float = 0
@@ -45,15 +35,6 @@ async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
-        cur = await conn.execute("SELECT COUNT(*) FROM budget")
-        (count,) = await cur.fetchone()
-        if count == 0:
-            for name, lim, spent in SEED:
-                await conn.execute(
-                    "INSERT INTO budget (name, limit_amount, spent, created_at) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (name, lim, spent, datetime.utcnow().isoformat()),
-                )
 
 
 @app.on_event("shutdown")

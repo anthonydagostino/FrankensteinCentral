@@ -22,16 +22,6 @@ CREATE TABLE IF NOT EXISTS bills (
 );
 """
 
-# A few common recurring bills so the app isn't empty on first run.
-SEED = [
-    ("Rent", 1600, 1, "housing"),
-    ("Phone", 45, 12, "utilities"),
-    ("Gym", 40, 5, "health"),
-    ("Netflix", 16, 18, "subscriptions"),
-    ("Spotify", 12, 22, "subscriptions"),
-]
-
-
 class Bill(BaseModel):
     name: str
     amount: float = 0
@@ -44,15 +34,6 @@ async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
-        cur = await conn.execute("SELECT COUNT(*) FROM bills")
-        (count,) = await cur.fetchone()
-        if count == 0:
-            for name, amount, due_day, category in SEED:
-                await conn.execute(
-                    "INSERT INTO bills (name, amount, due_day, category, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (name, amount, due_day, category, datetime.utcnow().isoformat()),
-                )
 
 
 @app.on_event("shutdown")
