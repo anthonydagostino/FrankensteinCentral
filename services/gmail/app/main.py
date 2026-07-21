@@ -57,7 +57,7 @@ _load_saved_token()
 
 # Senders/subjects that are almost never worth a human reply.
 _NOREPLY = re.compile(r"no[-_]?reply|do[-_]?not[-_]?reply|notifications?@|mailer@", re.I)
-_INTERVIEW = re.compile(r"\binterview\b|recruiter|hiring|phone screen|onsite", re.I)
+_INTERVIEW = re.compile(r"\binterview\b|phone screen|onsite interview", re.I)
 _DEADLINE = re.compile(
     r"respond by|reply by|due |deadline|expires?|by (mon|tue|wed|thu|fri|sat|sun|jan|feb|"
     r"mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
