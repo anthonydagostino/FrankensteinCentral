@@ -53,6 +53,10 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8083/auth/callback}
+      # Reuse the Gmail connection PowerBuy already has (headless, no browser click).
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
+      # Override which slice of the inbox to triage (default: primary tab, last 7d).
+      GMAIL_QUERY: ${GMAIL_QUERY:-}
     ports:
       - "8083:8000"
 

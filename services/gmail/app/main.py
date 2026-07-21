@@ -1,4 +1,6 @@
 import os
+import re
+import time
 import urllib.parse
 
 import httpx
@@ -10,49 +12,125 @@ app = FastAPI(title="Gmail Checker Service")
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8083/auth/callback")
-SCOPES = "https://www.googleapis.com/auth/gmail.readonly"
+# gmail.modify matches the scope your PowerBuy app already holds, so its
+# existing refresh token can be reused here (and lets us label/archive later).
+SCOPES = "https://www.googleapis.com/auth/gmail.modify"
 
-# In-memory token store for a single user. Swap for encrypted DB storage later.
+# How much of the inbox to look at. category:primary drops promotions/social/
+# updates automatically, so this is the real inbox — not just receipts.
+INBOX_QUERY = os.environ.get("GMAIL_QUERY") or "category:primary newer_than:7d -from:me"
+
+# Token store. Seeded from GOOGLE_REFRESH_TOKEN (reuse PowerBuy's connection with
+# zero browser clicks) or filled by the OAuth flow below.
 TOKENS: dict[str, str] = {}
+if os.environ.get("GOOGLE_REFRESH_TOKEN"):
+    TOKENS["refresh_token"] = os.environ["GOOGLE_REFRESH_TOKEN"]
+_ACCESS: dict[str, float] = {}  # {"token": ..., "exp": epoch_seconds}
 
-# Sample inbox until OAuth is connected. One item is a scheduled interview so
-# the assistant's cross-app routing has something to act on.
-MOCK_NEEDS_REPLY = [
+# Senders/subjects that are almost never worth a human reply.
+_NOREPLY = re.compile(r"no[-_]?reply|do[-_]?not[-_]?reply|notifications?@|mailer@", re.I)
+_INTERVIEW = re.compile(r"\binterview\b|recruiter|hiring|phone screen|onsite", re.I)
+_DEADLINE = re.compile(
+    r"respond by|reply by|due |deadline|expires?|by (mon|tue|wed|thu|fri|sat|sun|jan|feb|"
+    r"mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+    re.I,
+)
+
+MOCK_INBOX = [
     {
         "id": "m1",
         "from": "recruiter@acme.io",
         "subject": "Interview scheduled: Fri Jul 25, 2:00 PM",
-        "snippet": "We'd love to move forward. Your interview is set for Friday July 25 at 2:00 PM.",
-        "category": "interview",
-        "needs_reply": True,
+        "snippet": "We'd love to move forward. Your interview is set for Friday July 25 at 2:00 PM. Can you confirm?",
     },
     {
         "id": "m2",
         "from": "landlord@rentals.com",
         "subject": "Lease renewal — respond by Jul 30",
         "snippet": "Please confirm whether you'd like to renew by July 30.",
-        "category": "deadline",
-        "needs_reply": True,
     },
     {
         "id": "m3",
-        "from": "newsletter@stuff.com",
+        "from": "mom@family.com",
+        "subject": "dinner sunday?",
+        "snippet": "Are you free to come over this Sunday evening?",
+    },
+    {
+        "id": "m4",
+        "from": "no-reply@newsletter.com",
         "subject": "This week in tech",
-        "snippet": "Top stories...",
-        "category": "fyi",
-        "needs_reply": False,
+        "snippet": "Top stories you might have missed...",
     },
 ]
 
 
+def triage(msg: dict) -> dict:
+    """Classify one message: category, whether it wants a reply, and a priority."""
+    sender = msg.get("from", "")
+    text = f"{msg.get('subject', '')} {msg.get('snippet', '')}"
+    automated = bool(_NOREPLY.search(sender))
+
+    if _INTERVIEW.search(text):
+        category = "interview"
+    elif _DEADLINE.search(text):
+        category = "deadline"
+    elif automated:
+        category = "fyi"
+    else:
+        category = "personal"
+
+    asks_something = "?" in text or _DEADLINE.search(text) is not None
+    needs_reply = (not automated) and (asks_something or category in ("interview", "deadline"))
+
+    priority = {"interview": 3, "deadline": 3, "personal": 2, "fyi": 0}[category]
+    if needs_reply and priority < 1:
+        priority = 1
+
+    return {**msg, "category": category, "needs_reply": needs_reply, "priority": priority}
+
+
+def triage_all(messages: list[dict]) -> list[dict]:
+    return sorted((triage(m) for m in messages), key=lambda m: m["priority"], reverse=True)
+
+
+async def _access_token() -> str | None:
+    """Return a valid access token, refreshing from the refresh token as needed."""
+    if _ACCESS.get("token") and _ACCESS.get("exp", 0) > time.time() + 30:
+        return _ACCESS["token"]
+    refresh = TOKENS.get("refresh_token")
+    if not (refresh and CLIENT_ID and CLIENT_SECRET):
+        return TOKENS.get("access_token")  # may exist straight from the OAuth flow
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "refresh_token": refresh,
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "grant_type": "refresh_token",
+            },
+            timeout=15,
+        )
+    if r.status_code != 200:
+        return None
+    tok = r.json()
+    _ACCESS["token"] = tok.get("access_token", "")
+    _ACCESS["exp"] = time.time() + int(tok.get("expires_in", 3600))
+    return _ACCESS["token"]
+
+
+def _connected() -> bool:
+    return bool(TOKENS.get("refresh_token") or TOKENS.get("access_token"))
+
+
 @app.get("/health")
 async def health():
-    return {"service": "gmail", "connected": bool(TOKENS.get("access_token"))}
+    return {"service": "gmail", "connected": _connected(), "query": INBOX_QUERY}
 
 
 @app.get("/auth/login")
 async def login():
-    """Kick off Google OAuth. Requires GOOGLE_CLIENT_ID/SECRET to be set."""
+    """Kick off Google OAuth. Only needed if you're NOT reusing a refresh token."""
     if not CLIENT_ID:
         return JSONResponse(
             {"error": "Set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to connect Gmail."},
@@ -97,21 +175,21 @@ async def callback(code: str | None = None, error: str | None = None):
     return RedirectResponse("http://localhost:8080/")
 
 
-async def _fetch_real_inbox() -> list[dict]:
-    """Fetch unread threads via the Gmail API. Returns [] on any failure."""
-    token = TOKENS.get("access_token")
+async def _fetch_inbox() -> list[dict] | None:
+    """Pull recent primary-inbox messages (not just receipts). None on failure."""
+    token = await _access_token()
     if not token:
-        return []
+        return None
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient() as client:
         r = await client.get(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-            params={"q": "is:unread -category:promotions", "maxResults": 15},
+            params={"q": INBOX_QUERY, "maxResults": 25},
             headers=headers,
             timeout=15,
         )
         if r.status_code != 200:
-            return []
+            return None
         ids = [m["id"] for m in r.json().get("messages", [])]
         out = []
         for mid in ids:
@@ -131,27 +209,44 @@ async def _fetch_real_inbox() -> list[dict]:
                     "from": hdrs.get("From", ""),
                     "subject": hdrs.get("Subject", ""),
                     "snippet": payload.get("snippet", ""),
-                    "category": "inbox",
-                    "needs_reply": True,
                 }
             )
         return out
 
 
+async def _current_inbox() -> tuple[list[dict], str]:
+    if _connected():
+        real = await _fetch_inbox()
+        if real is not None:
+            return triage_all(real), "live"
+    return triage_all(MOCK_INBOX), "mock"
+
+
 @app.get("/needs-reply")
 async def needs_reply():
-    """Emails that actually want a response. Real inbox when connected, else sample."""
-    if TOKENS.get("access_token"):
-        real = await _fetch_real_inbox()
-        if real:
-            return {"emails": real, "mode": "live"}
-    pending = [m for m in MOCK_NEEDS_REPLY if m["needs_reply"]]
-    return {"emails": pending, "mode": "mock"}
+    """Triaged emails that actually want a response, most important first."""
+    items, mode = await _current_inbox()
+    return {"emails": [m for m in items if m["needs_reply"]], "mode": mode}
+
+
+@app.get("/summary")
+async def summary():
+    """Counts across the whole primary inbox, by category."""
+    items, mode = await _current_inbox()
+    by_cat: dict[str, int] = {}
+    for m in items:
+        by_cat[m["category"]] = by_cat.get(m["category"], 0) + 1
+    return {
+        "total": len(items),
+        "needs_reply": sum(1 for m in items if m["needs_reply"]),
+        "by_category": by_cat,
+        "mode": mode,
+    }
 
 
 @app.get("/")
 async def root():
     return {
         "app": "Gmail Checker",
-        "endpoints": ["/auth/login", "/needs-reply", "/health"],
+        "endpoints": ["/needs-reply", "/summary", "/auth/login", "/health"],
     }
