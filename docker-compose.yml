@@ -72,6 +72,16 @@ services:
     ports:
       - "8087:8000"
 
+  budget:
+    build: ./services/budget
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8088:8000"
+
   gmail:
     build: ./services/gmail
     environment:
@@ -108,6 +118,7 @@ services:
       SCHEDULE_URL: http://schedule:8000
       FINANCE_URL: http://finance:8000
       TASKS_URL: http://tasks:8000
+      BUDGET_URL: http://budget:8000
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
@@ -127,6 +138,8 @@ services:
       finance:
         condition: service_started
       tasks:
+        condition: service_started
+      budget:
         condition: service_started
 
 volumes:

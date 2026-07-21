@@ -216,6 +216,14 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px; }
   background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
   border-radius: 9px; padding: 9px 11px; font-size: 13px; flex: 1; min-width: 120px;
 }
+.bar-row { margin: 10px 0; }
+.bar-row .top { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+.bar-row .top .amt { color: var(--muted); }
+.bar { height: 9px; background: rgba(255,255,255,0.08); border-radius: 6px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent-2); border-radius: 6px; }
+.bar.over > span { background: var(--down); }
+.bar.warn > span { background: #ffcc66; }
+
 .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
 .empty { color: var(--muted); font-size: 13px; font-style: italic; }

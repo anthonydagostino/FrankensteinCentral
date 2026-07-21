@@ -17,6 +17,7 @@ GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
 SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
+BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -42,6 +43,8 @@ AGENTS = [
      "color": "#5bd6c0", "blurb": "Money desk — bills, subscriptions, what's due."},
     {"id": "tess", "name": "Tess", "role": "worker", "station": "tasks",
      "color": "#f2b8d0", "blurb": "To-do runner — tracks what's still open."},
+    {"id": "buck", "name": "Buck", "role": "worker", "station": "budget",
+     "color": "#f5c542", "blurb": "Budget desk — spending by category, what's left."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -134,6 +137,7 @@ async def build_briefing() -> list[dict]:
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         finance = await _get(client, f"{FINANCE_URL}/summary")
         tasks = await _get(client, f"{TASKS_URL}/summary")
+        budget = await _get(client, f"{BUDGET_URL}/summary")
 
     for e in emails.get("emails", []):
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -183,6 +187,16 @@ async def build_briefing() -> list[dict]:
             {"source": "tasks", "message": f"{tasks['open']} open to-dos: {top}."}
         )
 
+    over = budget.get("over_budget", [])
+    if over:
+        items.append(
+            {"source": "budget", "message": f"Over budget on: {', '.join(over)}."}
+        )
+    elif budget.get("remaining") is not None:
+        items.append(
+            {"source": "budget", "message": f"${budget['remaining']} left in this month's budget."}
+        )
+
     return items
 
 
@@ -200,6 +214,7 @@ async def build_overview() -> dict:
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         finance = await _get(client, f"{FINANCE_URL}/summary")
         tasks = await _get(client, f"{TASKS_URL}/summary")
+        budget = await _get(client, f"{BUDGET_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     events = cal.get("events", [])
@@ -210,6 +225,8 @@ async def build_overview() -> dict:
         "bills_due": len(finance.get("upcoming", [])),
         "monthly_bills": finance.get("monthly_total", 0),
         "open_tasks": tasks.get("open", 0),
+        "budget_left": budget.get("remaining", 0),
+        "budget_over": len(budget.get("over_budget", [])),
         "next_event": events[0]["title"] if events else None,
         "next_event_at": events[0]["starts_at"] if events else None,
         "today_focus": tp.get("focus"),
@@ -233,9 +250,19 @@ async def ask(q: str = ""):
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         pb = await _get(client, f"{POWERBUY_URL}/summary")
         cal = await _get(client, f"{SCHEDULE_URL}/events")
+        budget = await _get(client, f"{BUDGET_URL}/summary")
 
     def has(*words):
         return any(w in ql for w in words)
+
+    if has("budget", "spending", "spent", "over budget", "left to spend"):
+        over = budget.get("over_budget", [])
+        base = (f"You've spent ${budget.get('total_spent', 0)} of "
+                f"${budget.get('total_budget', 0)} ({budget.get('percent_used', 0)}%), "
+                f"${budget.get('remaining', 0)} left.")
+        if over:
+            base += f" Over budget on: {', '.join(over)}."
+        return {"answer": base}
 
     if has("email", "reply", "inbox", "mail"):
         ems = emails.get("emails", [])
@@ -409,6 +436,18 @@ async def sync():
             await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
             jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
                          "summary": tess_summary})
+
+            # Buck -> Budget
+            bud = await _get(client, f"{BUDGET_URL}/summary")
+            buck = _BY_STATION["budget"]
+            over = bud.get("over_budget", [])
+            buck_summary = (
+                f"over on {', '.join(over)}" if over
+                else f"${bud.get('remaining', 0)} left this month"
+            )
+            await _log(conn, buck["name"], "budget", "checked budget", buck_summary)
+            jobs.append({"agent": buck["id"], "name": buck["name"], "station": "budget",
+                         "summary": buck_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

@@ -78,6 +78,7 @@ async function loadOverview() {
     { n: o.unpaid ?? 0, l: "Unpaid buys", cls: o.unpaid ? "warn" : "" },
     { n: o.bills_due ?? 0, l: "Bills due soon", cls: o.bills_due ? "alert" : "" },
     { n: o.open_tasks ?? 0, l: "Open tasks", cls: o.open_tasks ? "warn" : "" },
+    { n: `$${o.budget_left ?? 0}`, l: "Budget left", cls: o.budget_over ? "alert" : "good" },
     { n: o.today_focus ?? "Rest", l: "Today's workout", cls: "" },
     { n: evt, l: "Next up", cls: "" },
   ];
@@ -285,6 +286,58 @@ const RENDERERS = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, amount, due_day, category: "other" }),
+      });
+      openApp(app);
+    };
+  },
+
+  async budget(app, body) {
+    const [sum, list] = await Promise.all([api("/budget/summary"), api("/budget/categories")]);
+    setMode();
+    const bars = (list.categories || [])
+      .map((c) => {
+        const lim = Number(c.limit_amount) || 0;
+        const spent = Number(c.spent) || 0;
+        const pct = lim ? Math.min(100, Math.round((spent / lim) * 100)) : 0;
+        const cls = spent > lim ? "over" : pct >= 80 ? "warn" : "";
+        return `<div class="bar-row" data-id="${c.id}" style="cursor:pointer" title="Click to add $10 spent">
+          <div class="top"><b>${esc(c.name)}</b><span class="amt">$${esc(spent)} / $${esc(lim)}</span></div>
+          <div class="bar ${cls}"><span style="width:${pct}%"></span></div></div>`;
+      })
+      .join("");
+    body.innerHTML = `
+      <div class="tiles">
+        <div class="tile good"><div class="n">$${esc(sum.remaining ?? 0)}</div><div class="l">Left this month</div></div>
+        <div class="tile"><div class="n">${esc(sum.percent_used ?? 0)}%</div><div class="l">Of budget used</div></div>
+        <div class="tile ${sum.over_budget?.length ? "alert" : ""}"><div class="n">${esc(sum.over_budget?.length ?? 0)}</div><div class="l">Over budget</div></div>
+      </div>
+      <h4>Spending by category</h4>
+      <div id="bud-rows">${bars || '<p class="empty">No categories yet.</p>'}</div>
+      <p class="empty" style="margin-top:8px">Click a category to add $10 spent.</p>
+      <h4>Add a category</h4>
+      <div class="inline-form">
+        <input id="bud-name" placeholder="Category (e.g. Coffee)" />
+        <input id="bud-limit" type="number" placeholder="Monthly $" style="max-width:110px" />
+        <button class="btn" id="bud-add">Add</button>
+      </div>`;
+    body.querySelectorAll("#bud-rows .bar-row").forEach((r) => {
+      r.onclick = async () => {
+        await api(`/budget/categories/${r.dataset.id}/spend`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount: 10 }),
+        });
+        openApp(app);
+      };
+    });
+    $("#bud-add").onclick = async () => {
+      const name = $("#bud-name").value.trim();
+      const limit = parseFloat($("#bud-limit").value) || 0;
+      if (!name) return;
+      await api("/budget/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, limit }),
       });
       openApp(app);
     };
