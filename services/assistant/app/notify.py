@@ -51,7 +51,14 @@ async def _twilio(text: str, from_key: str, whatsapp: bool) -> dict:
             auth=(sid, token),
             timeout=15,
         )
-    return {"sent": r.status_code < 300, "status": r.status_code}
+    ok = r.status_code < 300
+    out = {"sent": ok, "status": r.status_code}
+    if not ok:  # Twilio explains failures in the body — surface it
+        try:
+            out["reason"] = r.json().get("message", r.text[:200])
+        except Exception:  # noqa: BLE001
+            out["reason"] = r.text[:200]
+    return out
 
 
 async def _webhook(text: str) -> dict:

@@ -424,10 +424,14 @@ $("#text-btn").onclick = async () => {
   const original = btn.textContent;
   try {
     const r = await api("/assistant/notify", { method: "POST" });
-    btn.textContent = r.sent ? "✓ Sent" : "⚠ Not set up";
-    if (!r.sent) {
+    btn.textContent = r.sent ? "✓ Sent" : "⚠ Failed";
+    if (r.sent) {
+      $("#ask-answer").textContent = `Bones sent: “${r.message}”`;
+    } else if (r.reason && !/NOTIFY_CHANNEL/.test(r.reason)) {
+      $("#ask-answer").textContent = `Couldn't send (${r.reason}). See docs/SETUP-NOTIFICATIONS.md.`;
+    } else {
       $("#ask-answer").textContent =
-        "Texting isn't set up yet. See docs/SETUP-NOTIFICATIONS.md to connect Telegram, WhatsApp, or SMS.";
+        "WhatsApp texting isn't set up yet. See docs/SETUP-NOTIFICATIONS.md.";
     }
   } catch {
     btn.textContent = "⚠ Failed";
