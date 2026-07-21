@@ -47,9 +47,9 @@ endpoints at `/` and `/health`.
 |------------|------|-----------------------------------------------------------|--------|
 | Assistant  | 8085 | Reads all sub-apps, builds briefing, routes info          | live (mock inputs) |
 | PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring | live via login, mock fallback |
-| Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | mock (in-memory) |
-| Gmail      | 8083 | Emails needing a reply. Own Google OAuth                  | OAuth wired, mock fallback |
-| Schedule   | 8084 | Your calendar. Idempotent event creation                  | in-memory |
+| Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | visits persisted (Postgres) |
+| Gmail      | 8083 | Whole-inbox triage. Own Google OAuth                      | OAuth wired, token persisted |
+| Schedule   | 8084 | Your calendar. Idempotent event creation                  | persisted (Postgres) |
 
 ## Wiring in the real integrations
 
@@ -70,7 +70,12 @@ endpoints at `/` and `/health`.
 
 That's it — it shows up on the dashboard automatically.
 
-## Notes
+## Persistence
 
-State is in-memory for now (fitness visits, calendar, gmail tokens). A Postgres
-container is already in compose (`db`) for when we persist these.
+Nothing resets on restart:
+
+- **Calendar events** and **gym visits** live in the `db` Postgres service
+  (tables auto-created on startup, backed by the `db_data` volume).
+- **Gmail connection** (refresh token) is saved to the `gmail_token` volume.
+
+To wipe everything and start clean: `docker compose down -v`.

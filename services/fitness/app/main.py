@@ -1,12 +1,23 @@
+import os
 from datetime import date, datetime
 
 from fastapi import FastAPI
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 app = FastAPI(title="Fitness Service")
 
-# In-memory store for now. Swap for Postgres later.
-VISITS: list[dict] = []
+DATABASE_URL = os.environ["DATABASE_URL"]
+pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS visits (
+    id      SERIAL PRIMARY KEY,
+    when_at TEXT NOT NULL,
+    note    TEXT NOT NULL DEFAULT ''
+);
+"""
 
 WEEKLY_PLAN = {
     "Monday": {"focus": "Push", "lifts": ["Bench", "Overhead press", "Triceps"]},
@@ -33,24 +44,49 @@ class Visit(BaseModel):
     note: str = ""
 
 
+@app.on_event("startup")
+async def startup():
+    await pool.open(wait=True, timeout=30)
+    async with pool.connection() as conn:
+        await conn.execute(SCHEMA)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await pool.close()
+
+
 @app.get("/health")
 async def health():
-    return {"service": "fitness", "visits_logged": len(VISITS)}
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM visits")
+        (count,) = await cur.fetchone()
+    return {"service": "fitness", "visits_logged": count}
 
 
 @app.get("/visits")
 async def get_visits():
-    return {"visits": VISITS, "count": len(VISITS)}
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "SELECT id, when_at AS when, note FROM visits ORDER BY when_at DESC"
+        )
+        rows = await cur.fetchall()
+    return {"visits": rows, "count": len(rows)}
 
 
 @app.post("/visits")
 async def log_visit(visit: Visit):
-    entry = {
-        "when": (visit.when or datetime.utcnow()).isoformat(),
-        "note": visit.note,
-    }
-    VISITS.append(entry)
-    return {"logged": entry, "total": len(VISITS)}
+    when_at = (visit.when or datetime.utcnow()).isoformat()
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO visits (when_at, note) VALUES (%s, %s) RETURNING id",
+            (when_at, visit.note),
+        )
+        (new_id,) = await cur.fetchone()
+        cur = await conn.execute("SELECT COUNT(*) FROM visits")
+        (total,) = await cur.fetchone()
+    return {"logged": {"id": new_id, "when": when_at, "note": visit.note}, "total": total}
 
 
 @app.get("/plan")
