@@ -63,6 +63,28 @@ _DEADLINE = re.compile(
     r"mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
     re.I,
 )
+# An actual discount/promo, not just marketing noise — a real deal has a
+# concrete offer (a percentage, a dollar amount, a code, or "free X").
+_DEAL = re.compile(
+    r"\d{1,3}\s?%\s*off|\$\d+(\.\d+)?\s*off|\bfree shipping\b|\bbogo\b|"
+    r"buy one get one|promo\s*code|coupon\s*code|\buse code\b|flash sale|"
+    r"\bclearance\b|\bdiscount\b",
+    re.I,
+)
+
+
+def _extract_deal(subject: str, snippet: str, sender: str) -> tuple[str, str | None]:
+    """Best-effort merchant name + the matched offer text, from sender/subject."""
+    text = f"{subject} {snippet}"
+    m = _DEAL.search(text)
+    offer = m.group(0).strip() if m else None
+    name_match = re.match(r'^"?([^"<]+?)"?\s*<', sender)
+    if name_match:
+        merchant = name_match.group(1).strip()
+    else:
+        domain_match = re.search(r"@([\w.-]+)", sender)
+        merchant = domain_match.group(1) if domain_match else sender
+    return merchant, offer
 
 MOCK_INBOX = [
     {
@@ -89,32 +111,49 @@ MOCK_INBOX = [
         "subject": "This week in tech",
         "snippet": "Top stories you might have missed...",
     },
+    {
+        "id": "m5",
+        "from": "deals@grubhub.com",
+        "subject": "20% off your next order",
+        "snippet": "Use code SAVE20 at checkout. Free delivery on orders over $15.",
+    },
 ]
 
 
 def triage(msg: dict) -> dict:
     """Classify one message: category, whether it wants a reply, and a priority."""
     sender = msg.get("from", "")
-    text = f"{msg.get('subject', '')} {msg.get('snippet', '')}"
+    subject = msg.get("subject", "")
+    snippet = msg.get("snippet", "")
+    text = f"{subject} {snippet}"
     automated = bool(_NOREPLY.search(sender))
 
+    extra: dict = {}
     if _INTERVIEW.search(text):
         category = "interview"
     elif _DEADLINE.search(text):
         category = "deadline"
+    elif _DEAL.search(text):
+        category = "deal"
+        merchant, offer = _extract_deal(subject, snippet, sender)
+        extra = {"merchant": merchant, "offer": offer}
     elif automated:
         category = "fyi"
     else:
         category = "personal"
 
     asks_something = "?" in text or _DEADLINE.search(text) is not None
-    needs_reply = (not automated) and (asks_something or category in ("interview", "deadline"))
+    needs_reply = (
+        not automated
+        and category not in ("deal", "fyi")
+        and (asks_something or category in ("interview", "deadline"))
+    )
 
-    priority = {"interview": 3, "deadline": 3, "personal": 2, "fyi": 0}[category]
+    priority = {"interview": 3, "deadline": 3, "personal": 2, "deal": 1, "fyi": 0}[category]
     if needs_reply and priority < 1:
         priority = 1
 
-    return {**msg, "category": category, "needs_reply": needs_reply, "priority": priority}
+    return {**msg, **extra, "category": category, "needs_reply": needs_reply, "priority": priority}
 
 
 def triage_all(messages: list[dict]) -> list[dict]:
@@ -262,6 +301,13 @@ async def needs_reply():
     return {"emails": [m for m in items if m["needs_reply"]], "mode": mode}
 
 
+@app.get("/deals")
+async def deals():
+    """Real discounts/promos spotted in the inbox — never needs a reply."""
+    items, mode = await _current_inbox()
+    return {"deals": [m for m in items if m["category"] == "deal"], "mode": mode}
+
+
 @app.get("/summary")
 async def summary():
     """Counts across the whole primary inbox, by category."""
@@ -281,5 +327,5 @@ async def summary():
 async def root():
     return {
         "app": "Gmail Checker",
-        "endpoints": ["/needs-reply", "/summary", "/auth/login", "/health"],
+        "endpoints": ["/needs-reply", "/deals", "/summary", "/auth/login", "/health"],
     }

@@ -19,6 +19,7 @@ SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
+DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
@@ -39,7 +40,7 @@ AGENTS = [
     {"id": "cal", "name": "Cal", "role": "worker", "station": "schedule",
      "color": "#7bd88f", "blurb": "Calendar keeper — books what Bones finds."},
     {"id": "rep", "name": "Rep", "role": "worker", "station": "powerbuy",
-     "color": "#ff8a5b", "blurb": "Deals desk — profit, unpaid, expiring."},
+     "color": "#ff8a5b", "blurb": "Arbitrage desk — profit, unpaid, expiring."},
     {"id": "coach", "name": "Coach", "role": "worker", "station": "fitness",
      "color": "#c58cff", "blurb": "Gym & food — today's plan and groceries."},
     {"id": "penny", "name": "Penny", "role": "worker", "station": "finance",
@@ -48,6 +49,8 @@ AGENTS = [
      "color": "#f2b8d0", "blurb": "To-do runner — tracks what's still open."},
     {"id": "buck", "name": "Buck", "role": "worker", "station": "budget",
      "color": "#f5c542", "blurb": "Budget desk — spending by category, what's left."},
+    {"id": "scout", "name": "Scout", "role": "worker", "station": "deals",
+     "color": "#a3e635", "blurb": "Deal hunter — flags real discounts from your inbox."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -141,6 +144,7 @@ async def build_briefing() -> list[dict]:
         finance = await _get(client, f"{FINANCE_URL}/summary")
         tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
+        deals = await _get(client, f"{DEALS_URL}/summary")
 
     for e in emails.get("emails", []):
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -200,6 +204,11 @@ async def build_briefing() -> list[dict]:
             {"source": "budget", "message": f"${budget['remaining']} left in this month's budget."}
         )
 
+    if deals.get("top"):
+        items.append(
+            {"source": "deals", "message": f"Deals spotted: {', '.join(deals['top'])}."}
+        )
+
     return items
 
 
@@ -218,6 +227,7 @@ async def build_overview() -> dict:
         finance = await _get(client, f"{FINANCE_URL}/summary")
         tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
+        deals = await _get(client, f"{DEALS_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     events = cal.get("events", [])
@@ -230,6 +240,7 @@ async def build_overview() -> dict:
         "open_tasks": tasks.get("open", 0),
         "budget_left": budget.get("remaining", 0),
         "budget_over": len(budget.get("over_budget", [])),
+        "deals_count": deals.get("count", 0),
         "next_event": events[0]["title"] if events else None,
         "next_event_at": events[0]["starts_at"] if events else None,
         "today_focus": tp.get("focus"),
@@ -256,6 +267,8 @@ async def compose_digest() -> str:
         bits.append("over budget")
     if o.get("unpaid"):
         bits.append(f"{o['unpaid']} unpaid buys")
+    if o.get("deals_count"):
+        bits.append(f"{o['deals_count']} deals spotted")
     head = "; ".join(bits) if bits else "you're all clear"
     tail = f" Next up: {o['next_event']}." if o.get("next_event") else ""
     focus = o.get("today_focus") or "rest"
@@ -282,6 +295,7 @@ async def ask(q: str = ""):
         pb = await _get(client, f"{POWERBUY_URL}/summary")
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         budget = await _get(client, f"{BUDGET_URL}/summary")
+        deals = await _get(client, f"{DEALS_URL}/summary")
 
     def has(*words):
         return any(w in ql for w in words)
@@ -333,6 +347,12 @@ async def ask(q: str = ""):
         nxt = events[0]
         return {"answer": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
 
+    if has("deal", "discount", "coupon", "promo", "sale", "offer"):
+        top = deals.get("top", [])
+        if not top:
+            return {"answer": "No real deals spotted in your inbox lately."}
+        return {"answer": f"Deals spotted: {'; '.join(top)}."}
+
     # default: a full rundown
     ov = await build_overview()
     parts = []
@@ -344,6 +364,8 @@ async def ask(q: str = ""):
         parts.append(f"{ov['bills_due']} bills due soon")
     if ov["unpaid"]:
         parts.append(f"{ov['unpaid']} unpaid buys")
+    if ov.get("deals_count"):
+        parts.append(f"{ov['deals_count']} deals spotted")
     rundown = "; ".join(parts) if parts else "nothing urgent"
     nxt = f" Next up: {ov['next_event']}." if ov["next_event"] else ""
     return {"answer": f"Here's your plate: {rundown}. Today is "
@@ -479,6 +501,26 @@ async def sync():
             await _log(conn, buck["name"], "budget", "checked budget", buck_summary)
             jobs.append({"agent": buck["id"], "name": buck["name"], "station": "budget",
                          "summary": buck_summary})
+
+            # Scout -> Deals (real discounts Posty spotted while triaging)
+            gmail_deals = await _get(client, f"{GMAIL_URL}/deals")
+            spotted = gmail_deals.get("deals", [])
+            scout = _BY_STATION["deals"]
+            new_deals = 0
+            for d in spotted:
+                resp = await client.post(
+                    f"{DEALS_URL}/deals",
+                    json={"merchant": d.get("merchant") or d.get("from", "Unknown"),
+                          "offer": d.get("offer") or d.get("subject", ""),
+                          "source": "gmail", "external_id": d["id"]},
+                    timeout=8,
+                )
+                if resp.status_code < 300 and resp.json().get("created"):
+                    new_deals += 1
+            scout_summary = f"{new_deals} new deal(s)" if new_deals else "no new deals"
+            await _log(conn, scout["name"], "deals", "scanned for discounts", scout_summary)
+            jobs.append({"agent": scout["id"], "name": scout["name"], "station": "deals",
+                         "summary": scout_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

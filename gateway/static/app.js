@@ -389,6 +389,38 @@ const RENDERERS = {
       }
     };
   },
+
+  async deals(app, body) {
+    const data = await api("/deals/deals");
+    setMode();
+    const rows = (data.deals || [])
+      .map(
+        (d) => `<div class="row"><div class="grow"><b>${esc(d.merchant)}</b>
+          <div class="sub">${esc(d.offer)}</div></div>
+          <span class="right">${esc(d.source)}</span></div>`
+      )
+      .join("");
+    body.innerHTML = `
+      <h4>Real deals spotted</h4>
+      <div class="rows">${rows || '<p class="empty">Nothing yet — Scout checks your inbox on every sync.</p>'}</div>
+      <h4>Add one manually</h4>
+      <div class="inline-form">
+        <input id="deal-merchant" placeholder="Merchant (e.g. Grubhub)" />
+        <input id="deal-offer" placeholder="Offer (e.g. 20% off)" />
+        <button class="btn" id="deal-add">Add</button>
+      </div>`;
+    $("#deal-add").onclick = async () => {
+      const merchant = $("#deal-merchant").value.trim();
+      const offer = $("#deal-offer").value.trim();
+      if (!merchant || !offer) return;
+      await api("/deals/deals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchant, offer, source: "manual" }),
+      });
+      openApp(app);
+    };
+  },
 };
 
 async function renderGeneric(app, body) {
@@ -424,7 +456,8 @@ const STATIONS = {
   schedule: { name: "Schedule",     color: "#7bd88f", x: 880, y: 150, spot: { x: 790, y: 190 } },
   powerbuy: { name: "PowerBuy",     color: "#ff8a5b", x: 120, y: 500, spot: { x: 210, y: 460 } },
   fitness:  { name: "Fitness",      color: "#c58cff", x: 880, y: 500, spot: { x: 790, y: 460 } },
-  finance:  { name: "Finance",      color: "#5bd6c0", x: 500, y: 566, spot: { x: 500, y: 512 } },
+  finance:  { name: "Finance",      color: "#5bd6c0", x: 380, y: 566, spot: { x: 400, y: 512 } },
+  deals:    { name: "Deals",        color: "#a3e635", x: 620, y: 566, spot: { x: 600, y: 512 } },
   tasks:    { name: "Tasks",        color: "#f2b8d0", x: 120, y: 325, spot: { x: 210, y: 325 } },
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
 };
@@ -437,6 +470,7 @@ const STATION_APP_KEY = {
   powerbuy: "powerbuy",
   fitness: "fitness",
   finance: "finance",
+  deals: "deals",
   tasks: "tasks",
   budget: "budget",
 };
@@ -444,7 +478,7 @@ const STATION_APP_KEY = {
 // Cozy home spots around the central rug where idle workers hang out.
 const HOME = [
   { x: 430, y: 390 }, { x: 570, y: 390 }, { x: 430, y: 450 }, { x: 570, y: 450 },
-  { x: 500, y: 420 }, { x: 470, y: 420 }, { x: 530, y: 420 },
+  { x: 500, y: 420 }, { x: 470, y: 420 }, { x: 530, y: 420 }, { x: 500, y: 450 },
 ];
 
 const WALK = { minX: 90, maxX: 910, minY: 150, maxY: 560 };
@@ -505,6 +539,7 @@ async function loadRoster() {
       { id: "penny", name: "Penny", role: "worker", station: "finance", color: "#5bd6c0" },
       { id: "tess", name: "Tess", role: "worker", station: "tasks", color: "#f2b8d0" },
       { id: "buck", name: "Buck", role: "worker", station: "budget", color: "#f5c542" },
+      { id: "scout", name: "Scout", role: "worker", station: "deals", color: "#a3e635" },
     ];
   }
   let wi = 0;

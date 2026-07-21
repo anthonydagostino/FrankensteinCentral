@@ -75,4 +75,11 @@ def load_registry() -> list[SubApp]:
             icon="📊",
             url=os.environ.get("BUDGET_URL", "http://budget:8000"),
         ),
+        SubApp(
+            key="deals",
+            name="Deals",
+            description="Real discounts spotted in your inbox — merchant, offer, source email.",
+            icon="🏷️",
+            url=os.environ.get("DEALS_URL", "http://deals:8000"),
+        ),
     ]
