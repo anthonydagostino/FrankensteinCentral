@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Assistant HQ — FrankensteinCentral</title>
+    <style>
+      :root {
+        --bg: #14121b;
+        --panel: #1e1b29;
+        --panel-2: #262233;
+        --ink: #ece7f7;
+        --muted: #9a93ad;
+        --line: #332d44;
+        --accent: #f5c542;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        height: 100vh;
+        overflow: hidden;
+      }
+      .hq {
+        display: grid;
+        grid-template-columns: 1fr 340px;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      header {
+        grid-column: 1 / 3;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, #221d30, #191622);
+      }
+      header .logo { font-size: 22px; }
+      header h1 { font-size: 16px; margin: 0; letter-spacing: 0.3px; }
+      header .sub { color: var(--muted); font-size: 12px; margin: 0; }
+      header .spacer { flex: 1; }
+      a.back { color: var(--muted); text-decoration: none; font-size: 13px; }
+      a.back:hover { color: var(--ink); }
+      .stage-wrap {
+        position: relative;
+        overflow: hidden;
+        background:
+          radial-gradient(1200px 600px at 50% -10%, #241f33, transparent),
+          #14121b;
+      }
+      canvas { display: block; width: 100%; height: 100%; }
+      .controls {
+        position: absolute;
+        left: 16px;
+        bottom: 16px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      button.btn {
+        background: var(--accent);
+        color: #241a02;
+        border: none;
+        padding: 10px 16px;
+        border-radius: 10px;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 4px 0 #b8901f;
+        transition: transform 0.05s;
+      }
+      button.btn:active { transform: translateY(2px); box-shadow: 0 2px 0 #b8901f; }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--muted);
+        background: #00000055;
+        padding: 8px 12px;
+        border-radius: 10px;
+      }
+      aside {
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        padding: 16px;
+        overflow-y: auto;
+      }
+      .card {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px 14px;
+        margin-bottom: 14px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+      }
+      .note { font-size: 13px; line-height: 1.4; margin: 6px 0; }
+      .dl {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 13px;
+        padding: 6px 0;
+        border-bottom: 1px dashed var(--line);
+      }
+      .dl:last-child { border-bottom: 0; }
+      .dl .when { color: var(--accent); white-space: nowrap; font-size: 12px; }
+      .feed { font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+      .feed b { color: var(--ink); }
+      .empty { color: var(--muted); font-size: 13px; font-style: italic; }
+      .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+      .chip {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 12px; color: var(--muted);
+      }
+      .dot { width: 10px; height: 10px; border-radius: 50%; }
+    </style>
+  </head>
+  <body>
+    <div class="hq">
+      <header>
+        <span class="logo">🎮</span>
+        <div>
+          <h1>Assistant HQ</h1>
+          <p class="sub">Frank runs the floor. Workers fetch from your apps.</p>
+        </div>
+        <div class="spacer"></div>
+        <a class="back" href="/">← Back to hub</a>
+      </header>
+
+      <div class="stage-wrap">
+        <canvas id="stage"></canvas>
+        <div class="controls">
+          <button class="btn" id="dispatch">Dispatch team ▶</button>
+          <label class="toggle">
+            <input type="checkbox" id="auto" /> Auto every 12s
+          </label>
+        </div>
+      </div>
+
+      <aside>
+        <div class="card">
+          <h3>Frank's Notebook</h3>
+          <div id="notes"><p class="empty">No notes yet. Hit Dispatch.</p></div>
+        </div>
+        <div class="card">
+          <h3>Deadlines spotted</h3>
+          <div id="deadlines"><p class="empty">Nothing tracked yet.</p></div>
+        </div>
+        <div class="card">
+          <h3>Floor activity</h3>
+          <div id="feed" class="feed"><p class="empty">Quiet on the floor.</p></div>
+        </div>
+        <div class="card">
+          <h3>The team</h3>
+          <div class="legend" id="legend"></div>
+        </div>
+      </aside>
+    </div>
+
+    <script src="/lounge.js"></script>
+  </body>
+</html>

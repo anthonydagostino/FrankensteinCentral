@@ -47,7 +47,13 @@ main { max-width: 1080px; margin: 0 auto; padding: 28px; }
 .assistant-head { display: flex; align-items: center; gap: 14px; }
 .assistant-head h2 { margin: 0; font-size: 18px; }
 .assistant-avatar { font-size: 30px; }
-.assistant-head .btn { margin-left: auto; }
+.assistant-head .btn { margin-left: 8px; text-decoration: none; }
+.assistant-head .btn-ghost { margin-left: auto; }
+.btn-ghost {
+  background: transparent;
+  color: var(--accent-2);
+  box-shadow: inset 0 0 0 1px var(--accent-2);
+}
 .muted { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
 
 .btn {

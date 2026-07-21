@@ -86,13 +86,20 @@ services:
       FITNESS_URL: http://fitness:8000
       GMAIL_URL: http://gmail:8000
       SCHEDULE_URL: http://schedule:8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
     ports:
       - "8085:8000"
     depends_on:
-      - powerbuy
-      - fitness
-      - gmail
-      - schedule
+      db:
+        condition: service_healthy
+      powerbuy:
+        condition: service_started
+      fitness:
+        condition: service_started
+      gmail:
+        condition: service_started
+      schedule:
+        condition: service_started
 
 volumes:
   db_data:
