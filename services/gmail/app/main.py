@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -5,9 +6,12 @@ import urllib.parse
 
 import httpx
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 app = FastAPI(title="Gmail Checker Service")
+
+# Where the refresh token is saved so the one-time "Allow" survives restarts.
+TOKEN_FILE = os.environ.get("GMAIL_TOKEN_FILE", "/data/token.json")
 
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -20,12 +24,36 @@ SCOPES = "https://www.googleapis.com/auth/gmail.modify"
 # updates automatically, so this is the real inbox — not just receipts.
 INBOX_QUERY = os.environ.get("GMAIL_QUERY") or "category:primary newer_than:7d -from:me"
 
-# Token store. Seeded from GOOGLE_REFRESH_TOKEN (reuse PowerBuy's connection with
-# zero browser clicks) or filled by the OAuth flow below.
+# Token store. Priority: env override -> saved file -> filled by the OAuth flow.
 TOKENS: dict[str, str] = {}
 if os.environ.get("GOOGLE_REFRESH_TOKEN"):
     TOKENS["refresh_token"] = os.environ["GOOGLE_REFRESH_TOKEN"]
 _ACCESS: dict[str, float] = {}  # {"token": ..., "exp": epoch_seconds}
+
+
+def _load_saved_token() -> None:
+    """Load a previously saved refresh token so 'Allow' is truly one-time."""
+    if TOKENS.get("refresh_token"):
+        return
+    try:
+        with open(TOKEN_FILE) as f:
+            saved = json.load(f).get("refresh_token")
+            if saved:
+                TOKENS["refresh_token"] = saved
+    except (OSError, ValueError):
+        pass
+
+
+def _save_token(refresh_token: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(TOKEN_FILE) or ".", exist_ok=True)
+        with open(TOKEN_FILE, "w") as f:
+            json.dump({"refresh_token": refresh_token}, f)
+    except OSError:
+        pass  # non-fatal: falls back to in-memory for this run
+
+
+_load_saved_token()
 
 # Senders/subjects that are almost never worth a human reply.
 _NOREPLY = re.compile(r"no[-_]?reply|do[-_]?not[-_]?reply|notifications?@|mailer@", re.I)
@@ -172,7 +200,12 @@ async def callback(code: str | None = None, error: str | None = None):
     TOKENS["access_token"] = tok.get("access_token", "")
     if tok.get("refresh_token"):
         TOKENS["refresh_token"] = tok["refresh_token"]
-    return RedirectResponse("http://localhost:8080/")
+        _save_token(tok["refresh_token"])
+    return HTMLResponse(
+        "<h2>✅ Gmail connected</h2>"
+        "<p>Your inbox is now live in the hub. You can close this tab.</p>"
+        '<p><a href="http://localhost:8080/">← Back to the hub</a></p>'
+    )
 
 
 async def _fetch_inbox() -> list[dict] | None:

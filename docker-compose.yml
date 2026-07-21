@@ -57,6 +57,10 @@ services:
       GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
       # Override which slice of the inbox to triage (default: primary tab, last 7d).
       GMAIL_QUERY: ${GMAIL_QUERY:-}
+      GMAIL_TOKEN_FILE: /data/token.json
+    volumes:
+      # Persists the Gmail refresh token so the one-time "Allow" survives restarts.
+      - gmail_token:/data
     ports:
       - "8083:8000"
 
@@ -82,3 +86,4 @@ services:
 
 volumes:
   db_data:
+  gmail_token:
