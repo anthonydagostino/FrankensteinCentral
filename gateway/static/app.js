@@ -217,6 +217,46 @@ const RENDERERS = {
     };
   },
 
+  async finance(app, body) {
+    const [sum, list] = await Promise.all([api("/finance/summary"), api("/finance/bills")]);
+    setMode();
+    const nd = sum.next_due;
+    const rows = (list.bills || [])
+      .map(
+        (b) => `<div class="row"><div class="grow"><b>${esc(b.name)}</b>
+          <div class="sub">${esc(b.category)}</div></div>
+          <span class="right">$${esc(b.amount)} · day ${esc(b.due_day)}</span></div>`
+      )
+      .join("");
+    body.innerHTML = `
+      <div class="tiles">
+        <div class="tile"><div class="n">$${esc(sum.monthly_total ?? 0)}</div><div class="l">Per month</div></div>
+        <div class="tile"><div class="n">${esc(sum.bill_count ?? 0)}</div><div class="l">Bills tracked</div></div>
+        <div class="tile warn"><div class="n">${nd ? esc(nd.name) : "—"}</div><div class="l">Next due${nd ? ` · in ${esc(nd.days_until)}d` : ""}</div></div>
+      </div>
+      <h4>Bills & subscriptions</h4>
+      <div class="rows">${rows || '<p class="empty">No bills yet.</p>'}</div>
+      <h4>Add a bill</h4>
+      <div class="inline-form">
+        <input id="bill-name" placeholder="Name (e.g. Internet)" />
+        <input id="bill-amt" type="number" placeholder="$/mo" style="max-width:90px" />
+        <input id="bill-day" type="number" placeholder="Due day" style="max-width:90px" />
+        <button class="btn" id="bill-add">Add</button>
+      </div>`;
+    $("#bill-add").onclick = async () => {
+      const name = $("#bill-name").value.trim();
+      const amount = parseFloat($("#bill-amt").value) || 0;
+      const due_day = parseInt($("#bill-day").value) || 1;
+      if (!name) return;
+      await api("/finance/bills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, amount, due_day, category: "other" }),
+      });
+      openApp(app);
+    };
+  },
+
   async assistant(app, body) {
     const data = await api("/assistant/briefing");
     setMode();

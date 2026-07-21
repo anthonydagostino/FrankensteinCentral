@@ -54,4 +54,11 @@ def load_registry() -> list[SubApp]:
             icon="🗓️",
             url=os.environ.get("SCHEDULE_URL", "http://schedule:8000"),
         ),
+        SubApp(
+            key="finance",
+            name="Finance",
+            description="Your bills & subscriptions. Monthly spend and what's due soon.",
+            icon="💸",
+            url=os.environ.get("FINANCE_URL", "http://finance:8000"),
+        ),
     ]

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime
 
@@ -14,6 +15,8 @@ POWERBUY_URL = os.environ.get("POWERBUY_URL", "http://powerbuy:8000")
 FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000")
 GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
 SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
+FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
+AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -34,6 +37,8 @@ AGENTS = [
      "color": "#ff8a5b", "blurb": "Deals desk — profit, unpaid, expiring."},
     {"id": "coach", "name": "Coach", "role": "worker", "station": "fitness",
      "color": "#c58cff", "blurb": "Gym & food — today's plan and groceries."},
+    {"id": "penny", "name": "Penny", "role": "worker", "station": "finance",
+     "color": "#5bd6c0", "blurb": "Money desk — bills, subscriptions, what's due."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -52,11 +57,24 @@ CREATE TABLE IF NOT EXISTS activity (
 """
 
 
+async def _auto_sync_loop():
+    """Keep the floor and briefing fresh on their own, no browser needed."""
+    await asyncio.sleep(min(15, AUTO_SYNC_SECONDS))  # let siblings boot first
+    while True:
+        try:
+            await sync()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            pass
+        await asyncio.sleep(AUTO_SYNC_SECONDS)
+
+
 @app.on_event("startup")
 async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
+    if AUTO_SYNC_SECONDS > 0:
+        asyncio.create_task(_auto_sync_loop())
 
 
 @app.on_event("shutdown")
@@ -111,6 +129,7 @@ async def build_briefing() -> list[dict]:
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
         cal = await _get(client, f"{SCHEDULE_URL}/events")
+        finance = await _get(client, f"{FINANCE_URL}/summary")
 
     for e in emails.get("emails", []):
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -145,6 +164,13 @@ async def build_briefing() -> list[dict]:
         nxt = upcoming[0]
         items.append(
             {"source": "schedule", "message": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
+        )
+
+    due = finance.get("upcoming", [])
+    if due:
+        names = ", ".join(f"{b['name']} (${b['amount']})" for b in due[:3])
+        items.append(
+            {"source": "finance", "message": f"Bills due soon: {names}."}
         )
 
     return items
@@ -249,6 +275,21 @@ async def sync():
             await _log(conn, coach["name"], "fitness", "checked plan", coach_summary)
             jobs.append({"agent": coach["id"], "name": coach["name"], "station": "fitness",
                          "summary": coach_summary})
+
+            # Penny -> Finance
+            fin = await _get(client, f"{FINANCE_URL}/summary")
+            penny = _BY_STATION["finance"]
+            due = fin.get("upcoming", [])
+            penny_summary = (
+                f"{len(due)} bill(s) due soon" if due
+                else f"${fin.get('monthly_total', 0)}/mo tracked"
+            )
+            await _log(conn, penny["name"], "finance", "checked bills", penny_summary)
+            jobs.append({"agent": penny["id"], "name": penny["name"], "station": "finance",
+                         "summary": penny_summary})
+            for b in due:
+                await _add_deadline(conn, f"{b['name']} bill (${b['amount']})", None,
+                                    "finance", f"bill:{b['id']}")
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

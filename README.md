@@ -50,6 +50,7 @@ endpoints at `/` and `/health`.
 | Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | visits persisted (Postgres) |
 | Gmail      | 8083 | Whole-inbox triage. Own Google OAuth                      | OAuth wired, token persisted |
 | Schedule   | 8084 | Your calendar. Idempotent event creation                  | persisted (Postgres) |
+| Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon    | persisted (Postgres) |
 
 ## Wiring in the real integrations
 
@@ -81,3 +82,10 @@ Nothing resets on restart:
 - **Gmail connection** (refresh token) is saved to the `gmail_token` volume.
 
 To wipe everything and start clean: `docker compose down -v`.
+
+## Auto-pilot
+
+Set `AUTO_SYNC_SECONDS` in `.env` (e.g. `900` for every 15 min) and the
+assistant syncs itself on that interval — the floor stays busy and your
+briefing/deadlines stay current without opening the browser. `0` (default)
+means manual only (the "Sync now" / "Dispatch team" buttons).
