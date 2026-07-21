@@ -77,6 +77,7 @@ async function loadOverview() {
     { n: `$${o.expected_profit ?? 0}`, l: "Expected profit", cls: "good" },
     { n: o.unpaid ?? 0, l: "Unpaid buys", cls: o.unpaid ? "warn" : "" },
     { n: o.bills_due ?? 0, l: "Bills due soon", cls: o.bills_due ? "alert" : "" },
+    { n: o.open_tasks ?? 0, l: "Open tasks", cls: o.open_tasks ? "warn" : "" },
     { n: o.today_focus ?? "Rest", l: "Today's workout", cls: "" },
     { n: evt, l: "Next up", cls: "" },
   ];
@@ -284,6 +285,43 @@ const RENDERERS = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, amount, due_day, category: "other" }),
+      });
+      openApp(app);
+    };
+  },
+
+  async tasks(app, body) {
+    const data = await api("/tasks/tasks");
+    setMode();
+    const rows = (data.tasks || [])
+      .map(
+        (tk) => `<div class="row" data-id="${tk.id}" style="cursor:pointer">
+          <span class="chip" style="background:${tk.done ? "rgba(110,231,183,.16)" : "rgba(124,156,255,.15)"}">${tk.done ? "✓ done" : "open"}</span>
+          <div class="grow" style="${tk.done ? "opacity:.5;text-decoration:line-through" : ""}">${esc(tk.title)}</div></div>`
+      )
+      .join("");
+    body.innerHTML = `
+      <h4>To-do${data.count ? ` (${data.count})` : ""}</h4>
+      <div class="rows" id="task-rows">${rows || '<p class="empty">Nothing to do. 🎉</p>'}</div>
+      <p class="empty" style="margin-top:8px">Tap a task to toggle done.</p>
+      <h4>Add a task</h4>
+      <div class="inline-form">
+        <input id="task-title" placeholder="What needs doing?" />
+        <button class="btn" id="task-add">Add</button>
+      </div>`;
+    body.querySelectorAll("#task-rows .row").forEach((r) => {
+      r.onclick = async () => {
+        await api(`/tasks/tasks/${r.dataset.id}/toggle`, { method: "POST" });
+        openApp(app);
+      };
+    });
+    $("#task-add").onclick = async () => {
+      const title = $("#task-title").value.trim();
+      if (!title) return;
+      await api("/tasks/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
       });
       openApp(app);
     };

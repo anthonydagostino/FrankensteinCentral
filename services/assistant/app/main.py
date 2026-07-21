@@ -16,6 +16,7 @@ FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000")
 GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
 SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
+TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -39,6 +40,8 @@ AGENTS = [
      "color": "#c58cff", "blurb": "Gym & food — today's plan and groceries."},
     {"id": "penny", "name": "Penny", "role": "worker", "station": "finance",
      "color": "#5bd6c0", "blurb": "Money desk — bills, subscriptions, what's due."},
+    {"id": "tess", "name": "Tess", "role": "worker", "station": "tasks",
+     "color": "#f2b8d0", "blurb": "To-do runner — tracks what's still open."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -130,6 +133,7 @@ async def build_briefing() -> list[dict]:
         powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         finance = await _get(client, f"{FINANCE_URL}/summary")
+        tasks = await _get(client, f"{TASKS_URL}/summary")
 
     for e in emails.get("emails", []):
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -173,6 +177,12 @@ async def build_briefing() -> list[dict]:
             {"source": "finance", "message": f"Bills due soon: {names}."}
         )
 
+    if tasks.get("open"):
+        top = ", ".join(tasks.get("top", [])) or "see list"
+        items.append(
+            {"source": "tasks", "message": f"{tasks['open']} open to-dos: {top}."}
+        )
+
     return items
 
 
@@ -189,6 +199,7 @@ async def build_overview() -> dict:
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         finance = await _get(client, f"{FINANCE_URL}/summary")
+        tasks = await _get(client, f"{TASKS_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     events = cal.get("events", [])
@@ -198,6 +209,7 @@ async def build_overview() -> dict:
         "unpaid": pb.get("unpaid_count", 0),
         "bills_due": len(finance.get("upcoming", [])),
         "monthly_bills": finance.get("monthly_total", 0),
+        "open_tasks": tasks.get("open", 0),
         "next_event": events[0]["title"] if events else None,
         "next_event_at": events[0]["starts_at"] if events else None,
         "today_focus": tp.get("focus"),
@@ -319,6 +331,14 @@ async def sync():
             for b in due:
                 await _add_deadline(conn, f"{b['name']} bill (${b['amount']})", None,
                                     "finance", f"bill:{b['id']}")
+
+            # Tess -> Tasks
+            tsk = await _get(client, f"{TASKS_URL}/summary")
+            tess = _BY_STATION["tasks"]
+            tess_summary = f"{tsk.get('open', 0)} open" if tsk else "no tasks"
+            await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
+            jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
+                         "summary": tess_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

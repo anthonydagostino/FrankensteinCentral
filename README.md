@@ -51,6 +51,7 @@ endpoints at `/` and `/health`.
 | Gmail      | 8083 | Whole-inbox triage. Own Google OAuth                      | OAuth wired, token persisted |
 | Schedule   | 8084 | Your calendar. Idempotent event creation                  | persisted (Postgres) |
 | Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon    | persisted (Postgres) |
+| Tasks      | 8087 | Your to-do list — quick capture, check things off         | persisted (Postgres) |
 
 ## Wiring in the real integrations
 

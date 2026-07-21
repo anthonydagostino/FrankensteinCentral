@@ -14,12 +14,13 @@ const STATIONS = {
   powerbuy: { name: "PowerBuy",     color: "#ff8a5b", x: 120, y: 500, spot: { x: 210, y: 460 } },
   fitness:  { name: "Fitness",      color: "#c58cff", x: 880, y: 500, spot: { x: 790, y: 460 } },
   finance:  { name: "Finance",      color: "#5bd6c0", x: 500, y: 566, spot: { x: 500, y: 512 } },
+  tasks:    { name: "Tasks",        color: "#f2b8d0", x: 120, y: 325, spot: { x: 210, y: 325 } },
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
 const HOME = [
   { x: 430, y: 390 }, { x: 570, y: 390 }, { x: 430, y: 450 }, { x: 570, y: 450 },
-  { x: 500, y: 420 },
+  { x: 500, y: 420 }, { x: 470, y: 420 },
 ];
 
 const WALK = { minX: 90, maxX: 910, minY: 150, maxY: 560 };
@@ -78,6 +79,7 @@ async function loadRoster() {
       { id: "rep", name: "Rep", role: "worker", station: "powerbuy", color: "#ff8a5b" },
       { id: "coach", name: "Coach", role: "worker", station: "fitness", color: "#c58cff" },
       { id: "penny", name: "Penny", role: "worker", station: "finance", color: "#5bd6c0" },
+      { id: "tess", name: "Tess", role: "worker", station: "tasks", color: "#f2b8d0" },
     ];
   }
   let wi = 0;
