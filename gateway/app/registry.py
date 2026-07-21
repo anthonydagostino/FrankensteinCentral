@@ -29,7 +29,7 @@ def load_registry() -> list[SubApp]:
         SubApp(
             key="powerbuy",
             name="PowerBuy",
-            description="Your purchasing app. Deals, watchlist, and buy signals.",
+            description="Your arbitrage tracker. Purchases, profit, unpaid & expiring alerts.",
             icon="🛒",
             url=os.environ.get("POWERBUY_URL", "http://powerbuy:8000"),
         ),

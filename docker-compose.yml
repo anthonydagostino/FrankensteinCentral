@@ -35,9 +35,10 @@ services:
   powerbuy:
     build: ./services/powerbuy
     environment:
-      # Point this at your real PowerBuy API. When unset, mock data is served.
-      POWERBUY_UPSTREAM_URL: ${POWERBUY_UPSTREAM_URL:-}
-      POWERBUY_API_KEY: ${POWERBUY_API_KEY:-}
+      # Your real PowerBuy backend (the Render API). Login pulls your purchases.
+      POWERBUY_API_URL: ${POWERBUY_API_URL:-https://powerbuy.onrender.com/api}
+      POWERBUY_EMAIL: ${POWERBUY_EMAIL:-}
+      POWERBUY_PASSWORD: ${POWERBUY_PASSWORD:-}
     ports:
       - "8081:8000"
 

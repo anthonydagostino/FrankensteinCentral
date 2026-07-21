@@ -46,15 +46,18 @@ endpoints at `/` and `/health`.
 | App        | Port | What it does                                              | Status |
 |------------|------|-----------------------------------------------------------|--------|
 | Assistant  | 8085 | Reads all sub-apps, builds briefing, routes info          | live (mock inputs) |
-| PowerBuy   | 8081 | Deals / buy signals. Proxies your real API when set       | proxy-ready, mock fallback |
+| PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring | live via login, mock fallback |
 | Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | mock (in-memory) |
 | Gmail      | 8083 | Emails needing a reply. Own Google OAuth                  | OAuth wired, mock fallback |
 | Schedule   | 8084 | Your calendar. Idempotent event creation                  | in-memory |
 
 ## Wiring in the real integrations
 
-- **PowerBuy** — set `POWERBUY_UPSTREAM_URL` (and `POWERBUY_API_KEY`) in `.env`.
-  The service proxies `/deals` to your API; unset = mock data.
+- **PowerBuy** — set `POWERBUY_EMAIL` / `POWERBUY_PASSWORD` in `.env` (same
+  login you use at powerbuy.vercel.app). The service logs into
+  `https://powerbuy.onrender.com/api`, pulls your purchases, and exposes
+  `/purchases` and a rolled-up `/summary` (expected profit, unpaid, not
+  delivered, expiring soon). Empty creds = mock data.
 - **Gmail** — create OAuth credentials in Google Cloud, set `GOOGLE_CLIENT_ID`
   / `GOOGLE_CLIENT_SECRET`. Visit `http://localhost:8083/auth/login` to connect.
   Once connected, `/needs-reply` reads your real unread inbox.

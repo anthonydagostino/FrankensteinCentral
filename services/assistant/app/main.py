@@ -35,7 +35,7 @@ async def build_briefing() -> list[dict]:
     async with httpx.AsyncClient() as client:
         emails = await _get(client, f"{GMAIL_URL}/needs-reply")
         fitness = await _get(client, f"{FITNESS_URL}/plan")
-        deals = await _get(client, f"{POWERBUY_URL}/deals")
+        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
         cal = await _get(client, f"{SCHEDULE_URL}/events")
 
     for e in emails.get("emails", []):
@@ -51,10 +51,22 @@ async def build_briefing() -> list[dict]:
             {"source": "fitness", "message": f"Today is {tp['focus']} day: {lifts}."}
         )
 
-    buys = [d for d in deals.get("deals", []) if d.get("signal") == "buy"]
-    if buys:
-        names = ", ".join(d["item"] for d in buys)
-        items.append({"source": "powerbuy", "message": f"Buy signals: {names}."})
+    s = powerbuy.get("summary")
+    if s:
+        alerts = []
+        if s.get("unpaid_count"):
+            alerts.append(f"{s['unpaid_count']} unpaid")
+        if s.get("expiring_soon_count"):
+            alerts.append(f"{s['expiring_soon_count']} expiring soon")
+        if s.get("not_delivered_count"):
+            alerts.append(f"{s['not_delivered_count']} not delivered")
+        detail = "; ".join(alerts) if alerts else "all clear"
+        items.append(
+            {
+                "source": "powerbuy",
+                "message": f"Expected profit ${s.get('expected_profit', 0)} — {detail}.",
+            }
+        )
 
     upcoming = cal.get("events", [])
     if upcoming:
