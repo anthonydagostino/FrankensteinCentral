@@ -43,6 +43,8 @@ function makeAgent(def, home) {
     blink: rnd(2, 6), blinking: 0,   // eye blinks
     gaze: 0, gazeT: rnd(1, 3),       // idle look-around
     dustT: 0,                        // footstep-dust throttle
+    cheer: 0,                        // manager sword-raise on dispatch
+    sparkT: 0,                       // work-spark throttle
   };
 }
 
@@ -50,6 +52,15 @@ function makeAgent(def, home) {
 const dust = [];
 function puff(x, y) {
   dust.push({ x: x + rnd(-3, 3), y, life: 0.5, max: 0.5, r: rnd(3, 6) });
+}
+
+// Sparks that fly off a terminal while a worker is busy at it.
+const sparks = [];
+function spark(x, y, color) {
+  sparks.push({
+    x, y, vx: rnd(-30, 30), vy: rnd(-50, -15),
+    life: 0.6, max: 0.6, color,
+  });
 }
 
 async function loadRoster() {
@@ -104,9 +115,26 @@ function update(dt) {
     dust[i].life -= dt;
     if (dust[i].life <= 0) dust.splice(i, 1);
   }
+  // spark particles
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.life -= dt; s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 90 * dt;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
 
   for (const a of agents) {
     if (a.bubbleT > 0) a.bubbleT -= dt;
+    if (a.cheer > 0) a.cheer -= dt;
+
+    // throw sparks off the terminal while working
+    if (a.state === "working") {
+      a.sparkT -= dt;
+      if (a.sparkT <= 0) {
+        const st = STATIONS[a.station];
+        spark(st.x + rnd(-14, 14), st.y - 6, st.color);
+        a.sparkT = 0.12;
+      }
+    }
 
     // blink
     a.blink -= dt;
@@ -166,7 +194,7 @@ function dispatchJob(job) {
   a.bubble = job.summary;
   a.bubbleT = 6;
   const mgr = agents.find((x) => x.role === "manager");
-  if (mgr) { mgr.bubble = "On it, team!"; mgr.bubbleT = 3; }
+  if (mgr) { mgr.bubble = "On it, team!"; mgr.bubbleT = 3; mgr.cheer = 1; }
 }
 
 // ---- drawing ----------------------------------------------------------------
@@ -306,10 +334,12 @@ function drawManager(a, x, y) {
   ctx.lineTo(sx + 7, y + 11); ctx.quadraticCurveTo(sx, y + 20, sx - 6, y + 11);
   ctx.closePath(); ctx.fill();
 
-  // sword in the leading hand, blade pointing out
+  // sword in the leading hand — raises triumphantly when dispatching
+  const raise = a.cheer > 0 ? -1.2 : 0;
   ctx.save();
   ctx.translate(x + dir * 15, y + 10);
   ctx.scale(dir, 1);
+  ctx.rotate(raise);
   ctx.fillStyle = HELM; // guard
   roundRect(-2, -5, 4, 12, 1); ctx.fill();
   ctx.fillStyle = BONE_SH; // pommel
@@ -318,12 +348,18 @@ function drawManager(a, x, y) {
   ctx.beginPath();
   ctx.moveTo(3, -4); ctx.lineTo(34, -2); ctx.lineTo(38, 0); ctx.lineTo(34, 2);
   ctx.lineTo(3, 3); ctx.closePath(); ctx.fill();
+  if (a.cheer > 0) { // a glint on the raised blade
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.beginPath(); ctx.arc(30, 0, 2, 0, 7); ctx.fill();
+  }
   ctx.restore();
 
-  // legs
+  // legs with a walk cycle
+  const mv = a.state === "traveling" || a.state === "returning";
+  const ls = mv ? Math.sin(a.bob * 1.3) * 3 : 0;
   ctx.fillStyle = BONE;
-  roundRect(x - 9, y + 18, 7, 8, 2); ctx.fill();
-  roundRect(x + 2, y + 18, 7, 8, 2); ctx.fill();
+  roundRect(x - 9, y + 18 - Math.max(0, ls), 7, 8, 2); ctx.fill();
+  roundRect(x + 2, y + 18 - Math.max(0, -ls), 7, 8, 2); ctx.fill();
 
   // bone torso with ribs + spine
   ctx.fillStyle = BONE;
@@ -384,13 +420,16 @@ function drawNinja(a, x, y) {
   ctx.moveTo(x + 2, y - 8); ctx.lineTo(x + 8, y - 24); ctx.lineTo(x + 14, y - 6);
   ctx.closePath(); ctx.fill();
 
+  // legs with a little walk cycle (drawn first, so the body overlaps their tops)
+  const moving = a.state === "traveling" || a.state === "returning";
+  const sw = moving ? Math.sin(a.bob * 1.3) * 3 : 0;
+  ctx.fillStyle = NINJA_BODY;
+  roundRect(x - 10, y + 17 - Math.max(0, sw), 7, 8, 2); ctx.fill();
+  roundRect(x + 3, y + 17 - Math.max(0, -sw), 7, 8, 2); ctx.fill();
+
   // blocky body
   ctx.fillStyle = NINJA_BODY;
   roundRect(x - 15, y - 10, 30, 30, 7); ctx.fill();
-
-  // legs
-  roundRect(x - 11, y + 18, 7, 6, 2); ctx.fill();
-  roundRect(x + 4, y + 18, 7, 6, 2); ctx.fill();
 
   // bandana across the face (per-agent colour)
   ctx.fillStyle = a.color;
@@ -484,6 +523,13 @@ function draw() {
     ctx.beginPath();
     ctx.arc(d.x, d.y, d.r * (1.4 - d.life / d.max), 0, 7);
     ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // work sparks (above stations, behind agents is fine)
+  for (const s of sparks) {
+    ctx.globalAlpha = Math.max(0, s.life / s.max);
+    ctx.fillStyle = s.color;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 2.2, 0, 7); ctx.fill();
   }
   ctx.globalAlpha = 1;
   // draw agents sorted by y so lower ones overlap correctly
