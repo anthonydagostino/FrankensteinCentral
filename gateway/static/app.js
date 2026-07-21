@@ -349,6 +349,22 @@ async function renderGeneric(app, body) {
   body.innerHTML = `<p>${esc(app.description)}</p>`;
 }
 
+async function askAssistant() {
+  const input = $("#ask-input");
+  const out = $("#ask-answer");
+  const q = input.value.trim();
+  if (!q) return;
+  out.textContent = "Thinking…";
+  try {
+    const data = await api(`/assistant/ask?q=${encodeURIComponent(q)}`);
+    out.textContent = data.answer || "Not sure about that one.";
+  } catch {
+    out.textContent = "Couldn't reach the assistant.";
+  }
+}
+$("#ask-btn").onclick = askAssistant;
+$("#ask-input").addEventListener("keydown", (e) => e.key === "Enter" && askAssistant());
+
 loadApps();
 loadBriefing();
 loadOverview();

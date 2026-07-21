@@ -222,6 +222,76 @@ async def overview():
     return await build_overview()
 
 
+@app.get("/ask")
+async def ask(q: str = ""):
+    """A lightweight, offline Q&A over your apps — intent-matched, no LLM needed."""
+    ql = q.lower().strip()
+    async with httpx.AsyncClient() as client:
+        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
+        tasks = await _get(client, f"{TASKS_URL}/summary")
+        finance = await _get(client, f"{FINANCE_URL}/summary")
+        fitness = await _get(client, f"{FITNESS_URL}/plan")
+        pb = await _get(client, f"{POWERBUY_URL}/summary")
+        cal = await _get(client, f"{SCHEDULE_URL}/events")
+
+    def has(*words):
+        return any(w in ql for w in words)
+
+    if has("email", "reply", "inbox", "mail"):
+        ems = emails.get("emails", [])
+        if not ems:
+            return {"answer": "Your inbox is clear — nothing needs a reply right now."}
+        top = "; ".join(f"“{e['subject']}” — {e['from']}" for e in ems[:3])
+        return {"answer": f"{len(ems)} email(s) need a reply: {top}."}
+
+    if has("task", "todo", "to-do", "to do"):
+        top = ", ".join(tasks.get("top", []))
+        n = tasks.get("open", 0)
+        return {"answer": f"You have {n} open task(s)" + (f": {top}." if top else ".")}
+
+    if has("bill", "due", "subscription", "finance", "money", "spend", "budget"):
+        up = finance.get("upcoming", [])
+        if not up:
+            return {"answer": f"No bills due in the next week. You spend "
+                              f"${finance.get('monthly_total', 0)}/month total."}
+        names = ", ".join(f"{b['name']} (${b['amount']}, in {b['days_until']}d)" for b in up)
+        return {"answer": f"Coming up: {names}."}
+
+    if has("profit", "powerbuy", "arbitrage", "purchase", "unpaid"):
+        s = pb.get("summary", {})
+        return {"answer": f"Expected profit is ${s.get('expected_profit', 0)}, with "
+                          f"{s.get('unpaid_count', 0)} unpaid and "
+                          f"{s.get('expiring_soon_count', 0)} expiring soon."}
+
+    if has("workout", "gym", "lift", "train", "exercise", "today"):
+        tp = fitness.get("today_plan") or {}
+        lifts = ", ".join(tp.get("lifts", [])) or "recovery"
+        return {"answer": f"Today is {tp.get('focus', 'rest')} day: {lifts}."}
+
+    if has("schedule", "calendar", "next", "event", "interview", "meeting", "coming up"):
+        events = cal.get("events", [])
+        if not events:
+            return {"answer": "Nothing on your calendar yet."}
+        nxt = events[0]
+        return {"answer": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
+
+    # default: a full rundown
+    ov = await build_overview()
+    parts = []
+    if ov["emails_to_reply"]:
+        parts.append(f"{ov['emails_to_reply']} emails to reply")
+    if ov["open_tasks"]:
+        parts.append(f"{ov['open_tasks']} open tasks")
+    if ov["bills_due"]:
+        parts.append(f"{ov['bills_due']} bills due soon")
+    if ov["unpaid"]:
+        parts.append(f"{ov['unpaid']} unpaid buys")
+    rundown = "; ".join(parts) if parts else "nothing urgent"
+    nxt = f" Next up: {ov['next_event']}." if ov["next_event"] else ""
+    return {"answer": f"Here's your plate: {rundown}. Today is "
+                      f"{ov.get('today_focus') or 'rest'} day.{nxt}"}
+
+
 @app.get("/agents")
 async def agents():
     """The roster the lounge renders: manager + one worker per station."""
