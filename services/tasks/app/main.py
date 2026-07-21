@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 from fastapi import FastAPI
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
@@ -34,6 +34,7 @@ class Task(BaseModel):
 async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
+        conn.row_factory = tuple_row
         await conn.execute(SCHEMA)
         cur = await conn.execute("SELECT COUNT(*) FROM tasks")
         (count,) = await cur.fetchone()
@@ -53,6 +54,7 @@ async def shutdown():
 @app.get("/health")
 async def health():
     async with pool.connection() as conn:
+        conn.row_factory = tuple_row
         cur = await conn.execute("SELECT COUNT(*) FROM tasks WHERE NOT done")
         (open_count,) = await cur.fetchone()
     return {"service": "tasks", "open": open_count}

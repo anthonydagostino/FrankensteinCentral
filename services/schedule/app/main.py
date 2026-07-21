@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import FastAPI
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
@@ -48,6 +48,7 @@ async def shutdown():
 @app.get("/health")
 async def health():
     async with pool.connection() as conn:
+        conn.row_factory = tuple_row
         cur = await conn.execute("SELECT COUNT(*) FROM events")
         (count,) = await cur.fetchone()
     return {"service": "schedule", "events": count}

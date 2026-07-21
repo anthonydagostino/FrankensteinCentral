@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 from fastapi import FastAPI
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
@@ -70,6 +70,7 @@ def _summarize(cats: list[dict]) -> dict:
 @app.get("/health")
 async def health():
     async with pool.connection() as conn:
+        conn.row_factory = tuple_row
         cur = await conn.execute("SELECT COUNT(*) FROM budget")
         (count,) = await cur.fetchone()
     return {"service": "budget", "categories": count}
@@ -84,6 +85,7 @@ async def get_categories():
 @app.post("/categories")
 async def add_category(cat: Category):
     async with pool.connection() as conn:
+        conn.row_factory = tuple_row
         cur = await conn.execute(
             "INSERT INTO budget (name, limit_amount, created_at) VALUES (%s, %s, %s) "
             "RETURNING id",
