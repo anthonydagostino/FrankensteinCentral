@@ -45,7 +45,7 @@ endpoints at `/` and `/health`.
 
 | App        | Port | What it does                                              | Status |
 |------------|------|-----------------------------------------------------------|--------|
-| Assistant  | 8085 | Reads all sub-apps, builds briefing, routes info          | live (mock inputs) |
+| Assistant  | 8085 | Reads all sub-apps, briefing, agent lounge (Assistant HQ) | live (mock inputs) |
 | PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring | live via login, mock fallback |
 | Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | visits persisted (Postgres) |
 | Gmail      | 8083 | Whole-inbox triage. Own Google OAuth                      | OAuth wired, token persisted |
@@ -68,7 +68,9 @@ endpoints at `/` and `/health`.
 2. Add it to `docker-compose.yml`.
 3. Register it in `gateway/app/registry.py`.
 
-That's it — it shows up on the dashboard automatically.
+That's it — it shows up on the dashboard automatically. Clicking a card opens a
+live detail view; add a renderer in `gateway/static/app.js` (`RENDERERS`) to
+give the new app a rich panel (otherwise it falls back to a generic one).
 
 ## Persistence
 
