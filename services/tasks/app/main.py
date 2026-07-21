@@ -105,12 +105,20 @@ async def add_task(task: Task):
 @app.post("/tasks/{task_id}/toggle")
 async def toggle_task(task_id: int):
     async with pool.connection() as conn:
+        conn.row_factory = dict_row
         cur = await conn.execute(
             "UPDATE tasks SET done = NOT done WHERE id = %s RETURNING id, title, done",
             (task_id,),
         )
         row = await cur.fetchone()
     return {"task": row}
+
+
+@app.delete("/tasks/{task_id}")
+async def delete_task(task_id: int):
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
+    return {"deleted": task_id}
 
 
 @app.get("/summary")

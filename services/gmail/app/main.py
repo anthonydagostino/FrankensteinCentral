@@ -57,6 +57,15 @@ _load_saved_token()
 
 # Senders/subjects that are almost never worth a human reply.
 _NOREPLY = re.compile(r"no[-_]?reply|do[-_]?not[-_]?reply|notifications?@|mailer@", re.I)
+# Job boards/recruiting-alert services — these send bulk "you might like this
+# job" mail that routinely contains real-looking deadline/interview language
+# ("Applications are due...") despite being unsolicited marketing, not
+# something the user applied to or committed to. Always treat as noise.
+_JOB_BOARD = re.compile(
+    r"joinhandshake\.com|linkedin\.com|indeed\.com|ziprecruiter\.com|"
+    r"glassdoor\.com|dice\.com|monster\.com|simplyhired\.com|lensa\.com|jobot\.com",
+    re.I,
+)
 _INTERVIEW = re.compile(r"\binterview\b|phone screen|onsite interview", re.I)
 _DEADLINE = re.compile(
     r"respond by|reply by|due |deadline|expires?|by (mon|tue|wed|thu|fri|sat|sun|jan|feb|"
@@ -126,6 +135,12 @@ def triage(msg: dict) -> dict:
     subject = msg.get("subject", "")
     snippet = msg.get("snippet", "")
     text = f"{subject} {snippet}"
+
+    if _JOB_BOARD.search(sender):
+        # Bulk "you might like this job" mail — never let it look like a real
+        # interview or deadline, no matter what language it uses.
+        return {**msg, "category": "fyi", "needs_reply": False, "priority": 0}
+
     automated = bool(_NOREPLY.search(sender))
 
     extra: dict = {}

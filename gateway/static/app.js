@@ -301,21 +301,30 @@ const RENDERERS = {
       .map(
         (tk) => `<div class="row" data-id="${tk.id}" style="cursor:pointer">
           <span class="chip" style="background:${tk.done ? "rgba(110,231,183,.16)" : "rgba(124,156,255,.15)"}">${tk.done ? "✓ done" : "open"}</span>
-          <div class="grow" style="${tk.done ? "opacity:.5;text-decoration:line-through" : ""}">${esc(tk.title)}</div></div>`
+          <div class="grow" style="${tk.done ? "opacity:.5;text-decoration:line-through" : ""}">${esc(tk.title)}</div>
+          <button class="btn btn-ghost" data-del="${tk.id}" style="padding:4px 10px;font-size:12px">✕</button></div>`
       )
       .join("");
     body.innerHTML = `
       <h4>To-do${data.count ? ` (${data.count})` : ""}</h4>
       <div class="rows" id="task-rows">${rows || '<p class="empty">Nothing to do. 🎉</p>'}</div>
-      <p class="empty" style="margin-top:8px">Tap a task to toggle done.</p>
+      <p class="empty" style="margin-top:8px">Tap a task to toggle done. ✕ to delete.</p>
       <h4>Add a task</h4>
       <div class="inline-form">
         <input id="task-title" placeholder="What needs doing?" />
         <button class="btn" id="task-add">Add</button>
       </div>`;
     body.querySelectorAll("#task-rows .row").forEach((r) => {
-      r.onclick = async () => {
+      r.onclick = async (e) => {
+        if (e.target.closest("[data-del]")) return;
         await api(`/tasks/tasks/${r.dataset.id}/toggle`, { method: "POST" });
+        openApp(app);
+      };
+    });
+    body.querySelectorAll("#task-rows [data-del]").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        await api(`/tasks/tasks/${btn.dataset.del}`, { method: "DELETE" });
         openApp(app);
       };
     });
