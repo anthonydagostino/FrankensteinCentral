@@ -19,39 +19,21 @@
     </header>
 
     <main>
-      <section id="overview" class="overview"></section>
-
-      <section class="assistant-panel" id="assistant-panel">
-        <div class="assistant-head">
-          <span class="assistant-avatar">🧠</span>
-          <div>
-            <h2>Assistant briefing</h2>
-            <p class="muted" id="assistant-sub">Pulling everything together…</p>
-          </div>
-          <a href="#hq" class="btn btn-ghost">🎮 Jump to HQ</a>
-          <button id="text-btn" class="btn btn-ghost">📱 Text me</button>
-          <button id="sync-btn" class="btn">Sync now</button>
-        </div>
-        <ul id="briefing" class="briefing"></ul>
-        <div class="ask">
-          <input id="ask-input" placeholder="Ask your assistant… (e.g. what's due? what should I do today?)" />
-          <button class="btn" id="ask-btn">Ask</button>
-        </div>
-        <p id="ask-answer" class="ask-answer"></p>
-      </section>
-
       <section class="hq-panel" id="hq">
         <div class="hq-head">
           <span class="assistant-avatar">🎮</span>
           <div>
             <h2>Assistant HQ</h2>
-            <p class="muted">Bones runs the floor. Workers fetch from your apps.</p>
+            <p class="muted">Bones runs the floor. Click a station to open it — click Bones' Desk for your briefing.</p>
           </div>
           <label class="hq-toggle">
             <input type="checkbox" id="auto" /> Auto every 12s
           </label>
           <button class="btn" id="dispatch">Dispatch team ▶</button>
         </div>
+
+        <section id="overview" class="overview"></section>
+
         <div class="hq-body">
           <div class="stage-wrap">
             <canvas id="stage"></canvas>
@@ -76,9 +58,6 @@
           </aside>
         </div>
       </section>
-
-      <h2 class="section-title">Your apps</h2>
-      <section id="apps" class="grid"></section>
     </main>
 
     <div class="overlay" id="overlay">

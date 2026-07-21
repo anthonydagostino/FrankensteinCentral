@@ -14,43 +14,19 @@ function tickClock() {
 setInterval(tickClock, 1000);
 tickClock();
 
-async function loadApps() {
-  const [apps, health] = await Promise.all([
-    fetch("/api/apps").then((r) => r.json()),
-    fetch("/api/health").then((r) => r.json()).catch(() => ({})),
-  ]);
-
-  const grid = $("#apps");
-  grid.innerHTML = "";
-  for (const app of apps) {
-    const h = health[app.key]?.status ?? "unknown";
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <div class="card-top">
-        <span class="card-icon">${app.icon}</span>
-        <h3>${app.name}</h3>
-      </div>
-      <p>${app.description}</p>
-      <span class="status"><span class="dot ${h}"></span>${h}</span>
-    `;
-    card.onclick = () => openApp(app);
-    grid.appendChild(card);
-  }
-}
-
-function renderBriefing(items) {
-  const list = $("#briefing");
-  list.innerHTML = "";
-  if (!items || items.length === 0) {
-    list.innerHTML = `<li>Nothing needs you right now. Nice.</li>`;
-    return;
-  }
-  for (const it of items) {
-    const li = document.createElement("li");
-    li.innerHTML = `<div class="src">${it.source ?? "assistant"}</div>${it.message}`;
-    list.appendChild(li);
-  }
+// Every sub-app's catalog entry + live health, fetched once and reused so
+// clicking a station on the HQ floor can open the right modal.
+let APPS = [];
+let HEALTH = {};
+async function loadAppsData() {
+  try {
+    const [apps, health] = await Promise.all([
+      fetch("/api/apps").then((r) => r.json()),
+      fetch("/api/health").then((r) => r.json()).catch(() => ({})),
+    ]);
+    APPS = apps;
+    HEALTH = health;
+  } catch {}
 }
 
 function timeAgo(iso) {
@@ -86,21 +62,6 @@ async function loadOverview() {
     .map((t) => `<div class="ov ${t.cls}"><div class="n">${t.n}</div><div class="l">${t.l}</div></div>`)
     .join("");
 }
-
-async function loadBriefing() {
-  const sub = $("#assistant-sub");
-  try {
-    const data = await fetch("/api/assistant/briefing").then((r) => r.json());
-    renderBriefing(data.items);
-    const base = data.summary ?? `${(data.items || []).length} things on your plate.`;
-    sub.textContent = `${base} · synced ${timeAgo(data.synced_at)}`;
-  } catch (e) {
-    sub.textContent = "Assistant is offline.";
-    renderBriefing([]);
-  }
-}
-
-$("#sync-btn").onclick = () => runSync();
 
 // ---- app detail modal -------------------------------------------------------
 
@@ -369,21 +330,64 @@ const RENDERERS = {
     };
   },
 
+  // Bones' Desk — the manager's own station. Opens the assistant's full
+  // briefing + ask box + text-me, in place of the old always-visible panel.
   async assistant(app, body) {
     const data = await api("/assistant/briefing");
     setMode();
     const rows = (data.items || [])
       .map(
-        (it) => `<div class="row"><span class="chip">${esc(it.source || "assistant")}</span>
-          <div class="grow">${esc(it.message)}</div></div>`
+        (it) => `<li><div class="src">${esc(it.source ?? "assistant")}</div>${esc(it.message)}</li>`
       )
       .join("");
+    const summary = data.summary ?? `${(data.items || []).length} things on your plate.`;
     body.innerHTML = `
-      <p>${esc(data.summary || "")}</p>
-      <a href="#hq" class="btn" id="open-hq" style="display:inline-block;text-decoration:none;margin:4px 0 8px">🎮 Jump to Assistant HQ</a>
-      <h4>Current briefing</h4>
-      <div class="rows">${rows || '<p class="empty">Nothing yet — hit Sync.</p>'}</div>`;
-    $("#open-hq").onclick = closeModal;
+      <p class="muted">${esc(summary)} · synced ${timeAgo(data.synced_at)}</p>
+      <ul class="briefing">${rows || "<li>Nothing needs you right now. Nice.</li>"}</ul>
+      <div class="ask">
+        <input id="modal-ask-input" placeholder="Ask your assistant… (e.g. what's due? what should I do today?)" />
+        <button class="btn" id="modal-ask-btn">Ask</button>
+      </div>
+      <p id="modal-ask-answer" class="ask-answer"></p>
+      <button class="btn btn-ghost" id="modal-text-btn" style="margin-top:12px">📱 Text me a digest</button>`;
+
+    const ask = async () => {
+      const input = $("#modal-ask-input");
+      const out = $("#modal-ask-answer");
+      const q = input.value.trim();
+      if (!q) return;
+      out.textContent = "Thinking…";
+      try {
+        const d = await api(`/assistant/ask?q=${encodeURIComponent(q)}`);
+        out.textContent = d.answer || "Not sure about that one.";
+      } catch {
+        out.textContent = "Couldn't reach the assistant.";
+      }
+    };
+    $("#modal-ask-btn").onclick = ask;
+    $("#modal-ask-input").addEventListener("keydown", (e) => e.key === "Enter" && ask());
+
+    $("#modal-text-btn").onclick = async () => {
+      const btn = $("#modal-text-btn");
+      btn.disabled = true;
+      const original = btn.textContent;
+      try {
+        const r = await api("/assistant/notify", { method: "POST" });
+        btn.textContent = r.sent ? "✓ Sent" : "⚠ Failed";
+        if (r.sent) {
+          $("#modal-ask-answer").textContent = `Bones sent: "${r.message}"`;
+        } else if (r.reason && !/NOTIFY_CHANNEL/.test(r.reason)) {
+          $("#modal-ask-answer").textContent = `Couldn't send (${r.reason}). See docs/SETUP-NOTIFICATIONS.md.`;
+        } else {
+          $("#modal-ask-answer").textContent =
+            "WhatsApp texting isn't set up yet. See docs/SETUP-NOTIFICATIONS.md.";
+        }
+      } catch {
+        btn.textContent = "⚠ Failed";
+      } finally {
+        setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+      }
+    };
   },
 };
 
@@ -392,60 +396,22 @@ async function renderGeneric(app, body) {
   body.innerHTML = `<p>${esc(app.description)}</p>`;
 }
 
-async function askAssistant() {
-  const input = $("#ask-input");
-  const out = $("#ask-answer");
-  const q = input.value.trim();
-  if (!q) return;
-  out.textContent = "Thinking…";
-  try {
-    const data = await api(`/assistant/ask?q=${encodeURIComponent(q)}`);
-    out.textContent = data.answer || "Not sure about that one.";
-  } catch {
-    out.textContent = "Couldn't reach the assistant.";
-  }
-}
-$("#ask-btn").onclick = askAssistant;
-$("#ask-input").addEventListener("keydown", (e) => e.key === "Enter" && askAssistant());
-
-$("#text-btn").onclick = async () => {
-  const btn = $("#text-btn");
-  btn.disabled = true;
-  const original = btn.textContent;
-  try {
-    const r = await api("/assistant/notify", { method: "POST" });
-    btn.textContent = r.sent ? "✓ Sent" : "⚠ Failed";
-    if (r.sent) {
-      $("#ask-answer").textContent = `Bones sent: “${r.message}”`;
-    } else if (r.reason && !/NOTIFY_CHANNEL/.test(r.reason)) {
-      $("#ask-answer").textContent = `Couldn't send (${r.reason}). See docs/SETUP-NOTIFICATIONS.md.`;
-    } else {
-      $("#ask-answer").textContent =
-        "WhatsApp texting isn't set up yet. See docs/SETUP-NOTIFICATIONS.md.";
-    }
-  } catch {
-    btn.textContent = "⚠ Failed";
-  } finally {
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
-  }
-};
-
-loadApps();
-loadBriefing();
+loadAppsData();
 loadOverview();
 
 // Keep the hub live — reflects the assistant's own auto-sync without a refresh.
 setInterval(() => {
   if (!$("#overlay").classList.contains("open")) {
-    loadBriefing();
+    loadAppsData();
     loadOverview();
   }
 }, 20000);
 
-// ---- Assistant HQ — the lounge where Bones dispatches worker agents to ------
-// API "stations". Idle agents wander; working agents walk to their station,
-// do the job, then walk back. All rendered on a canvas, embedded right on
-// the hub instead of a separate page.
+// ---- Assistant HQ — now the whole dashboard ---------------------------------
+// The lounge where Bones dispatches worker agents to API "stations". Idle
+// agents wander; working agents walk to their station, do the job, then walk
+// back. Every station is clickable and opens that app's real detail view —
+// Bones' Desk opens the assistant briefing.
 
 const WORLD = { w: 1000, h: 640 };
 const canvas = document.getElementById("stage");
@@ -461,6 +427,18 @@ const STATIONS = {
   finance:  { name: "Finance",      color: "#5bd6c0", x: 500, y: 566, spot: { x: 500, y: 512 } },
   tasks:    { name: "Tasks",        color: "#f2b8d0", x: 120, y: 325, spot: { x: 210, y: 325 } },
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
+};
+
+// Maps a station to the /api/apps entry it opens when clicked.
+const STATION_APP_KEY = {
+  desk: "assistant",
+  gmail: "gmail",
+  schedule: "schedule",
+  powerbuy: "powerbuy",
+  fitness: "fitness",
+  finance: "finance",
+  tasks: "tasks",
+  budget: "budget",
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
@@ -649,6 +627,43 @@ function dispatchJob(job) {
   if (mgr) { mgr.bubble = "On it, team!"; mgr.bubbleT = 3; mgr.cheer = 1; }
 }
 
+// ---- click / hover: stations open the real app modals ----------------------
+
+let hoverStation = null;
+
+function canvasPoint(evt) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (evt.clientX - rect.left) * (WORLD.w / rect.width),
+    y: (evt.clientY - rect.top) * (WORLD.h / rect.height),
+  };
+}
+
+function stationAt(mx, my) {
+  for (const key in STATIONS) {
+    const s = STATIONS[key];
+    if (mx >= s.x - 55 && mx <= s.x + 55 && my >= s.y - 40 && my <= s.y + 60) return key;
+  }
+  return null;
+}
+
+canvas.addEventListener("mousemove", (e) => {
+  const p = canvasPoint(e);
+  hoverStation = stationAt(p.x, p.y);
+  canvas.style.cursor = hoverStation ? "pointer" : "default";
+});
+canvas.addEventListener("mouseleave", () => {
+  hoverStation = null;
+  canvas.style.cursor = "default";
+});
+canvas.addEventListener("click", (e) => {
+  const p = canvasPoint(e);
+  const key = stationAt(p.x, p.y);
+  if (!key) return;
+  const app = APPS.find((a) => a.key === STATION_APP_KEY[key]);
+  if (app) openApp(app);
+});
+
 // ---- drawing ----------------------------------------------------------------
 
 function roundRect(x, y, w, h, r) {
@@ -728,6 +743,7 @@ function drawLounge() {
 
 function drawStation(key, s) {
   const active = agents.some((a) => a.station === key && a.state === "working");
+  const hovered = key === hoverStation;
   const glow = active ? 0.6 + Math.sin(t * 8) * 0.35 : 0.18;
   // desk shadow + body
   ctx.fillStyle = "#00000038";
@@ -747,11 +763,26 @@ function drawStation(key, s) {
   ctx.fillStyle = "#0b0b12";
   for (let i = -20; i < 16; i += 6) ctx.fillRect(s.x - 36, s.y + i, 72, 2);
   ctx.globalAlpha = 1;
+  // hover ring — this station is clickable
+  if (hovered) {
+    ctx.strokeStyle = "rgba(255,255,255,0.65)";
+    ctx.lineWidth = 2;
+    roundRect(s.x - 55, s.y - 39, 110, 74, 13); ctx.stroke();
+  }
   // label
   ctx.fillStyle = "#e9e3f6";
   ctx.font = "600 14px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(s.name, s.x, s.y + 54);
+  // live health dot
+  const status = HEALTH[STATION_APP_KEY[key]]?.status;
+  if (status) {
+    const tw = ctx.measureText(s.name).width;
+    ctx.beginPath();
+    ctx.fillStyle = status === "up" ? "#6ee7b7" : "#ff6b6b";
+    ctx.arc(s.x + tw / 2 + 12, s.y + 50, 4, 0, 7);
+    ctx.fill();
+  }
 }
 
 function shade(hex, amt) {
@@ -1038,32 +1069,26 @@ async function refreshSpace() {
     : `<p class="empty">Quiet on the floor.</p>`;
 }
 
-// Single shared sync action — used by both the "Sync now" button up top and
-// the "Dispatch team" button in Assistant HQ, so the whole hub (tiles,
-// briefing, apps grid, and the floor animation) always moves together.
 let syncing = false;
 async function runSync() {
   if (syncing) return;
   syncing = true;
-  const syncBtn = $("#sync-btn");
   const dispatchBtn = $("#dispatch");
-  syncBtn.disabled = true;
   dispatchBtn.disabled = true;
-  const original = syncBtn.textContent;
-  syncBtn.textContent = "Syncing…";
+  const original = dispatchBtn.textContent;
+  dispatchBtn.textContent = "Syncing…";
   try {
     const res = await fetch("/api/assistant/sync", { method: "POST" });
     const data = await res.json();
     (data.jobs || []).forEach((job, i) => setTimeout(() => dispatchJob(job), i * 450));
-    await Promise.all([loadBriefing(), loadApps(), loadOverview()]);
+    await Promise.all([loadAppsData(), loadOverview()]);
     setTimeout(refreshSpace, 4000);
   } catch (e) {
     const mgr = agents.find((a) => a.role === "manager");
     if (mgr) { mgr.bubble = "Can't reach the apps!"; mgr.bubbleT = 4; }
   } finally {
-    syncBtn.textContent = original;
+    dispatchBtn.textContent = original;
     setTimeout(() => {
-      syncBtn.disabled = false;
       dispatchBtn.disabled = false;
       syncing = false;
     }, 1500);
