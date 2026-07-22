@@ -175,30 +175,29 @@ async def _get(client: httpx.AsyncClient, url: str) -> dict:
 
 
 async def build_briefing() -> list[dict]:
+    """What Bones' Desk shows — things that actually need your attention.
+
+    Deliberately NOT a status dump: routine numbers (today's workout, next
+    event, net worth, "budget's fine") already live on the overview tiles,
+    so repeating them here is just noise. Only alerts and things with an
+    action attached to them (reply, pay, review) make the cut.
+    """
     items: list[dict] = []
     async with httpx.AsyncClient() as client:
         emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        fitness = await _get(client, f"{FITNESS_URL}/plan")
         powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
-        cal = await _get(client, f"{SCHEDULE_URL}/events")
         finance = await _get(client, f"{FINANCE_URL}/summary")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
-        networth = await _get(client, f"{NETWORTH_URL}/summary")
 
-    for e in emails.get("emails", []):
+    for e in emails.get("emails", [])[:5]:
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
         items.append(
-            {"source": "gmail", "message": f"{verb}: “{e['subject']}” — from {e['from']}"}
+            {"source": "gmail", "message": f"{verb}: {_short(e['subject'])} — {_sender_name(e['from'])}"}
         )
-
-    tp = fitness.get("today_plan")
-    if tp:
-        lifts = ", ".join(tp.get("lifts", [])) or "recovery"
-        items.append(
-            {"source": "fitness", "message": f"Today is {tp['focus']} day: {lifts}."}
-        )
+    extra_emails = len(emails.get("emails", [])) - 5
+    if extra_emails > 0:
+        items.append({"source": "gmail", "message": f"+{extra_emails} more email(s) need a reply."})
 
     s = powerbuy.get("summary")
     if s:
@@ -209,18 +208,10 @@ async def build_briefing() -> list[dict]:
             alerts.append(f"{s['expiring_soon_count']} expiring soon")
         if s.get("not_delivered_count"):
             alerts.append(f"{s['not_delivered_count']} not delivered")
-        detail = "; ".join(alerts) if alerts else "all clear"
-        items.append(
-            {"source": "powerbuy",
-             "message": f"Expected profit ${s.get('expected_profit', 0)} — {detail}."}
-        )
-
-    upcoming = cal.get("events", [])
-    if upcoming:
-        nxt = upcoming[0]
-        items.append(
-            {"source": "schedule", "message": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
-        )
+        if alerts:  # only worth a line when something actually needs a look
+            items.append(
+                {"source": "powerbuy", "message": f"PowerBuy needs a look: {'; '.join(alerts)}."}
+            )
 
     due = finance.get("upcoming", [])
     if due:
@@ -229,30 +220,15 @@ async def build_briefing() -> list[dict]:
             {"source": "finance", "message": f"Bills due soon: {names}."}
         )
 
-    if tasks.get("open"):
-        top = ", ".join(tasks.get("top", [])) or "see list"
-        items.append(
-            {"source": "tasks", "message": f"{tasks['open']} open to-dos: {top}."}
-        )
-
     over = budget.get("over_budget", [])
     if over:
         items.append(
             {"source": "budget", "message": f"Over budget on: {', '.join(over)}."}
         )
-    elif budget.get("remaining") is not None:
-        items.append(
-            {"source": "budget", "message": f"${budget['remaining']} left in this month's budget."}
-        )
 
     if deals.get("top"):
         items.append(
             {"source": "deals", "message": f"Deals spotted: {', '.join(deals['top'])}."}
-        )
-
-    if networth.get("total") is not None:
-        items.append(
-            {"source": "networth", "message": f"Net worth: ${networth['total']:,.2f}."}
         )
 
     return items
