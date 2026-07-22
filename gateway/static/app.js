@@ -520,6 +520,41 @@ const RENDERERS = {
       openApp(app);
     };
   },
+
+  async vault(app, body) {
+    const [sum, list] = await Promise.all([api("/vault/summary"), api("/vault/items")]);
+    setMode(sum.mode);
+    const chipColor = {
+      weak: "#ff6b6b", reused: "#ff6b6b", old: "#ffcc66",
+      "insecure-url": "#ffcc66", "no-2fa": "#8a93a6",
+    };
+    const chip = (i) =>
+      `<span style="font-size:11px;padding:2px 7px;border-radius:999px;margin-left:4px;` +
+      `background:${chipColor[i] || "#8a93a6"}22;color:${chipColor[i] || "#8a93a6"}">${esc(i)}</span>`;
+    const score = sum.score ?? 0;
+    const scoreCls = score >= 80 ? "good" : score >= 50 ? "warn" : "alert";
+    const rows = (list.items || [])
+      .map(
+        (it) => `<div class="row"><div class="grow"><b>${esc(it.name)}</b>
+          <div class="sub">${esc(it.username || "—")}${it.hosts?.length ? " · " + esc(it.hosts[0]) : ""}</div></div>
+          <div style="text-align:right;max-width:55%">${(it.issues || []).map(chip).join("") || '<span class="sub">✓ ok</span>'}</div></div>`
+      )
+      .join("");
+    const banner = sum.connected
+      ? ""
+      : `<p class="empty" style="margin-bottom:14px">🔐 Showing <b>sample</b> data. Connect your Vaultwarden (docs/SETUP-VAULT.md) to see your real vault health. Passwords are never stored or shown here.</p>`;
+    body.innerHTML = `
+      ${banner}
+      <div class="tiles">
+        <div class="tile ${scoreCls}"><div class="n">${esc(score)}</div><div class="l">Health score</div></div>
+        <div class="tile ${sum.weak ? "alert" : ""}"><div class="n">${esc(sum.weak ?? 0)}</div><div class="l">Weak</div></div>
+        <div class="tile ${sum.reused ? "alert" : ""}"><div class="n">${esc(sum.reused ?? 0)}</div><div class="l">Reused</div></div>
+        <div class="tile ${sum.no_totp ? "warn" : ""}"><div class="n">${esc(sum.no_totp ?? 0)}</div><div class="l">No 2FA</div></div>
+      </div>
+      <h4>Logins to fix (worst first)</h4>
+      <div class="rows">${rows || '<p class="empty">No items.</p>'}</div>
+      <p class="empty" style="margin-top:10px">Read-only — manage entries in Vaultwarden itself.</p>`;
+  },
 };
 
 async function renderGeneric(app, body) {
@@ -560,6 +595,7 @@ const STATIONS = {
   tasks:    { name: "Tasks",        color: "#f2b8d0", x: 120, y: 325, spot: { x: 210, y: 325 } },
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
   networth: { name: "Net Worth",    color: "#38bdf8", x: 300, y: 200, spot: { x: 300, y: 258 } },
+  vault:    { name: "Vault",        color: "#8b98a9", x: 700, y: 200, spot: { x: 700, y: 258 } },
 };
 
 // Maps a station to the /api/apps entry it opens when clicked.
@@ -574,6 +610,7 @@ const STATION_APP_KEY = {
   tasks: "tasks",
   budget: "budget",
   networth: "networth",
+  vault: "vault",
 };
 
 // Same icons as the registry cards, shown on each station's "screen".
@@ -588,13 +625,14 @@ const STATION_EMOJI = {
   tasks: "✅",
   budget: "📊",
   networth: "💎",
+  vault: "🔐",
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
 const HOME = [
   { x: 430, y: 390 }, { x: 570, y: 390 }, { x: 430, y: 450 }, { x: 570, y: 450 },
   { x: 500, y: 420 }, { x: 470, y: 420 }, { x: 530, y: 420 }, { x: 500, y: 450 },
-  { x: 460, y: 460 },
+  { x: 460, y: 460 }, { x: 540, y: 460 },
 ];
 
 const WALK = { minX: 90, maxX: 910, minY: 150, maxY: 560 };
@@ -657,6 +695,7 @@ async function loadRoster() {
       { id: "buck", name: "Buck", role: "worker", station: "budget", color: "#f5c542" },
       { id: "scout", name: "Scout", role: "worker", station: "deals", color: "#a3e635" },
       { id: "wade", name: "Wade", role: "worker", station: "networth", color: "#38bdf8" },
+      { id: "vic", name: "Vic", role: "worker", station: "vault", color: "#8b98a9" },
     ];
   }
   let wi = 0;

@@ -21,6 +21,7 @@ TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
+VAULT_URL = os.environ.get("VAULT_URL", "http://vault:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
@@ -57,6 +58,8 @@ AGENTS = [
      "color": "#a3e635", "blurb": "Deal hunter — flags real discounts from your inbox."},
     {"id": "wade", "name": "Wade", "role": "worker", "station": "networth",
      "color": "#38bdf8", "blurb": "Wealth desk — account balances, applies recurring contributions."},
+    {"id": "vic", "name": "Vic", "role": "worker", "station": "vault",
+     "color": "#8b98a9", "blurb": "Vault guard — password health: weak, reused, no-2FA."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -189,6 +192,7 @@ async def build_briefing() -> list[dict]:
         finance = await _get(client, f"{FINANCE_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
+        vault = await _get(client, f"{VAULT_URL}/summary")
 
     for e in emails.get("emails", [])[:5]:
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -231,6 +235,12 @@ async def build_briefing() -> list[dict]:
             {"source": "deals", "message": f"Deals spotted: {', '.join(deals['top'])}."}
         )
 
+    # Reused passwords are the actionable one — flag them (weak/old live on the tile).
+    if vault.get("reused"):
+        items.append(
+            {"source": "vault", "message": f"{vault['reused']} reused password(s) — rotate them."}
+        )
+
     return items
 
 
@@ -251,6 +261,7 @@ async def build_overview() -> dict:
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
         networth = await _get(client, f"{NETWORTH_URL}/summary")
+        vault = await _get(client, f"{VAULT_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     events = cal.get("events", [])
@@ -265,6 +276,8 @@ async def build_overview() -> dict:
         "budget_over": len(budget.get("over_budget", [])),
         "deals_count": deals.get("count", 0),
         "net_worth": networth.get("total", 0),
+        "vault_score": vault.get("score"),
+        "vault_reused": vault.get("reused", 0),
         "next_event": events[0]["title"] if events else None,
         "next_event_at": events[0]["starts_at"] if events else None,
         "today_focus": tp.get("focus"),
@@ -615,6 +628,21 @@ async def sync():
                                 f"(now ${a['new_balance']:,.0f})")
             jobs.append({"agent": wade["id"], "name": wade["name"], "station": "networth",
                          "summary": wade_summary})
+
+            # Vic -> Vault (password health). Standing state, not an event, so it
+            # doesn't go on `notable` (no repeated texts about the same weak pws).
+            vic = _BY_STATION["vault"]
+            vh = await _get(client, f"{VAULT_URL}/summary")
+            if vh:
+                vic_summary = (
+                    f"{vh.get('weak', 0)} weak, {vh.get('reused', 0)} reused "
+                    f"(score {vh.get('score', 0)})"
+                )
+            else:
+                vic_summary = "vault not connected"
+            await _log(conn, vic["name"], "vault", "checked passwords", vic_summary)
+            jobs.append({"agent": vic["id"], "name": vic["name"], "station": "vault",
+                         "summary": vic_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

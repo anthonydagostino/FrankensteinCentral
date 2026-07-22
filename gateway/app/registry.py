@@ -89,4 +89,11 @@ def load_registry() -> list[SubApp]:
             icon="💎",
             url=os.environ.get("NETWORTH_URL", "http://networth:8000"),
         ),
+        SubApp(
+            key="vault",
+            name="Vault",
+            description="Password health from your Vaultwarden — weak, reused, old, no-2FA. No secrets stored.",
+            icon="🔐",
+            url=os.environ.get("VAULT_URL", "http://vault:8000"),
+        ),
     ]

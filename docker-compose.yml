@@ -111,6 +111,17 @@ services:
     ports:
       - "8090:8000"
 
+  vault:
+    build: ./services/vault
+    restart: unless-stopped
+    # Read-only client for your Vaultwarden — stores nothing. Set VAULT_MODE to
+    # "bitwarden" and BW_SERVE_URL to your `bw serve` endpoint when you're home.
+    environment:
+      VAULT_MODE: ${VAULT_MODE:-mock}
+      BW_SERVE_URL: ${BW_SERVE_URL:-}
+    ports:
+      - "8091:8000"
+
   gmail:
     build: ./services/gmail
     restart: unless-stopped
@@ -153,6 +164,7 @@ services:
       BUDGET_URL: http://budget:8000
       DEALS_URL: http://deals:8000
       NETWORTH_URL: http://networth:8000
+      VAULT_URL: http://vault:8000
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
@@ -189,6 +201,8 @@ services:
       deals:
         condition: service_started
       networth:
+        condition: service_started
+      vault:
         condition: service_started
 
 volumes:
