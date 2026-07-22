@@ -481,6 +481,10 @@ async def sync():
     """
     jobs: list[dict] = []
     created = []
+    # Things actually worth telling the user about this cycle — not "I
+    # synced", but real new events. Bones' Notebook and the auto-text only
+    # ever get entries from this list, never a routine heartbeat.
+    notable: list[str] = []
     async with pool.connection() as conn:
         async with httpx.AsyncClient() as client:
             # Posty -> Gmail
@@ -519,6 +523,8 @@ async def sync():
             await _log(conn, cal_agent["name"], "schedule", "checked calendar", cal_summary)
             jobs.append({"agent": cal_agent["id"], "name": cal_agent["name"],
                          "station": "schedule", "summary": cal_summary})
+            for ev in created:
+                notable.append(f"📅 Booked: {_short(ev['title'])} — {ev['starts_at']}")
 
             # Rep -> PowerBuy
             pb = await _get(client, f"{POWERBUY_URL}/summary")
@@ -558,7 +564,7 @@ async def sync():
 
             # Tess -> Tasks (turn deadline emails into real, checkable to-dos)
             tess = _BY_STATION["tasks"]
-            new_tasks = 0
+            new_task_titles = []
             for e in mails:
                 if e.get("category") != "deadline":
                     continue
@@ -568,14 +574,18 @@ async def sync():
                     timeout=8,
                 )
                 if resp.status_code < 300 and resp.json().get("created"):
-                    new_tasks += 1
+                    new_task_titles.append(e["subject"])
             tsk = await _get(client, f"{TASKS_URL}/summary")
             tess_summary = f"{tsk.get('open', 0)} open" if tsk else "no tasks"
-            if new_tasks:
-                tess_summary += f" ({new_tasks} new from email)"
+            if new_task_titles:
+                tess_summary += f" ({len(new_task_titles)} new from email)"
             await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
             jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
                          "summary": tess_summary})
+            for t in new_task_titles[:3]:
+                notable.append(f"✅ New to-do: {_short(t)}")
+            if len(new_task_titles) > 3:
+                notable.append(f"✅ +{len(new_task_titles) - 3} more to-dos from email")
 
             # Buck -> Budget
             bud = await _get(client, f"{BUDGET_URL}/summary")
@@ -593,7 +603,7 @@ async def sync():
             gmail_deals = await _get(client, f"{GMAIL_URL}/deals")
             spotted = gmail_deals.get("deals", [])
             scout = _BY_STATION["deals"]
-            new_deals = 0
+            new_deal_items = []
             for d in spotted:
                 resp = await client.post(
                     f"{DEALS_URL}/deals",
@@ -603,11 +613,15 @@ async def sync():
                     timeout=8,
                 )
                 if resp.status_code < 300 and resp.json().get("created"):
-                    new_deals += 1
-            scout_summary = f"{new_deals} new deal(s)" if new_deals else "no new deals"
+                    new_deal_items.append(d)
+            scout_summary = f"{len(new_deal_items)} new deal(s)" if new_deal_items else "no new deals"
             await _log(conn, scout["name"], "deals", "scanned for discounts", scout_summary)
             jobs.append({"agent": scout["id"], "name": scout["name"], "station": "deals",
                          "summary": scout_summary})
+            for d in new_deal_items[:3]:
+                notable.append(f"🏷️ Deal: {d.get('merchant', '?')} — {d.get('offer', '?')}")
+            if len(new_deal_items) > 3:
+                notable.append(f"🏷️ +{len(new_deal_items) - 3} more deals")
 
             # Wade -> Net Worth (apply any recurring contributions that came due)
             wade = _BY_STATION["networth"]
@@ -621,30 +635,29 @@ async def sync():
                 wade_summary = f"${nw.get('total', 0):,.0f} total — nothing due"
             await _log(conn, wade["name"], "networth", "checked contributions", wade_summary)
             for a in applied:
-                await _remember(conn, f"💰 +${a['amount']:,.0f} contributed to {a['account']} "
-                                       f"(now ${a['new_balance']:,.0f}).")
+                notable.append(f"💰 +${a['amount']:,.0f} to {a['account']} "
+                                f"(now ${a['new_balance']:,.0f})")
             jobs.append({"agent": wade["id"], "name": wade["name"], "station": "networth",
                          "summary": wade_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."
         STATE["synced_at"] = datetime.utcnow().isoformat()
-        note = f"Synced — {STATE['summary']} ({booked} booked, {len(mails)} to reply)."
-        await _remember(conn, note)
+        # Only ever write real events to the notebook — no routine "I synced"
+        # heartbeat. If nothing notable happened, Bones says nothing.
+        for n in notable:
+            await _remember(conn, n)
 
-    # Optionally have Bones text a digest — but only when it actually changed,
-    # so auto-sync doesn't spam the same message.
+    # Only text you when something on `notable` is actually new — not on
+    # every fluctuation (email counts, etc.) like it used to.
     notified = False
-    if NOTIFY_ON_SYNC and notify.configured():
-        digest = await compose_digest()
-        if digest != STATE.get("last_digest"):
-            result = await notify.send(digest)
-            if result.get("sent"):
-                STATE["last_digest"] = digest
-                notified = True
+    if NOTIFY_ON_SYNC and notify.configured() and notable:
+        digest = "🦴 Bones — " + "; ".join(notable)
+        result = await notify.send(digest)
+        notified = bool(result.get("sent"))
 
     return {"synced": True, "events_created": created, "jobs": jobs,
-            "briefing": STATE, "notified": notified}
+            "briefing": STATE, "notified": notified, "notable": notable}
 
 
 @app.get("/")

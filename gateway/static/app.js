@@ -1189,8 +1189,8 @@ async function refreshSpace() {
 
   const notes = document.getElementById("notes");
   notes.innerHTML = s.memory?.length
-    ? s.memory.map((m) => `<p class="note">📝 ${esc(m.content)}</p>`).join("")
-    : `<p class="empty">No notes yet. Hit Dispatch.</p>`;
+    ? s.memory.map((m) => `<p class="note">${esc(m.content)}</p>`).join("")
+    : `<p class="empty">Nothing worth flagging right now.</p>`;
 
   const dls = document.getElementById("deadlines");
   dls.innerHTML = s.deadlines?.length
