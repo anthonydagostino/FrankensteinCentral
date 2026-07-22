@@ -1,5 +1,6 @@
 import os
-from datetime import date, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from psycopg.rows import dict_row
@@ -7,6 +8,10 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 app = FastAPI(title="Fitness Service")
+
+# The box runs in UTC; "today" for a workout plan has to mean the user's
+# actual day, not whatever day it already flipped to in UTC.
+EASTERN = ZoneInfo("America/New_York")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -92,7 +97,7 @@ async def log_visit(visit: Visit):
 @app.get("/plan")
 async def plan():
     """Optimal training split for the week."""
-    today = date.today().strftime("%A")
+    today = datetime.now(EASTERN).strftime("%A")
     return {"today": today, "today_plan": WEEKLY_PLAN.get(today), "week": WEEKLY_PLAN}
 
 

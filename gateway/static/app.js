@@ -51,10 +51,6 @@ async function loadOverview() {
   const tiles = [
     { n: `$${(o.net_worth ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, l: "Net worth", cls: "good" },
     { n: o.emails_to_reply ?? 0, l: "Emails to reply", cls: o.emails_to_reply ? "warn" : "" },
-    { n: `$${o.expected_profit ?? 0}`, l: "Expected profit", cls: "good" },
-    { n: o.unpaid ?? 0, l: "Unpaid buys", cls: o.unpaid ? "warn" : "" },
-    { n: o.bills_due ?? 0, l: "Bills due soon", cls: o.bills_due ? "alert" : "" },
-    { n: o.open_tasks ?? 0, l: "Open tasks", cls: o.open_tasks ? "warn" : "" },
     { n: `$${o.budget_left ?? 0}`, l: "Budget left", cls: o.budget_over ? "alert" : "good" },
     { n: o.today_focus ?? "Rest", l: "Today's workout", cls: "" },
     { n: evt, l: "Next up", cls: "" },
@@ -580,6 +576,20 @@ const STATION_APP_KEY = {
   networth: "networth",
 };
 
+// Same icons as the registry cards, shown on each station's "screen".
+const STATION_EMOJI = {
+  desk: "🧠",
+  gmail: "📬",
+  schedule: "🗓️",
+  powerbuy: "🛒",
+  fitness: "💪",
+  finance: "💸",
+  deals: "🏷️",
+  tasks: "✅",
+  budget: "📊",
+  networth: "💎",
+};
+
 // Cozy home spots around the central rug where idle workers hang out.
 const HOME = [
   { x: 430, y: 390 }, { x: 570, y: 390 }, { x: 430, y: 450 }, { x: 570, y: 450 },
@@ -905,6 +915,12 @@ function drawStation(key, s) {
   ctx.fillStyle = "#0b0b12";
   for (let i = -20; i < 16; i += 6) ctx.fillRect(s.x - 36, s.y + i, 72, 2);
   ctx.globalAlpha = 1;
+  // the app's icon, right on the screen
+  ctx.font = "26px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(STATION_EMOJI[key] || "❔", s.x, s.y - 4);
+  ctx.textBaseline = "alphabetic";
   // hover ring — this station is clickable
   if (hovered) {
     ctx.strokeStyle = "rgba(255,255,255,0.65)";

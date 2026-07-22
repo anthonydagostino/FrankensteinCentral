@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from psycopg.rows import dict_row, tuple_row
@@ -7,6 +8,10 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 app = FastAPI(title="Finance Service")
+
+# The box runs in UTC; bill due-days have to be judged against the user's
+# actual day, not whatever day it already flipped to in UTC.
+EASTERN = ZoneInfo("America/New_York")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -88,7 +93,7 @@ async def add_bill(bill: Bill):
 async def summary():
     """Monthly spend + which bills are coming due soon."""
     bills = await _bills()
-    today = datetime.utcnow().day
+    today = datetime.now(EASTERN).day
     monthly_total = round(sum(float(b["amount"]) for b in bills), 2)
     dated = sorted(
         ({**b, "days_until": days_until(b["due_day"], today)} for b in bills),

@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from psycopg.rows import dict_row, tuple_row
@@ -7,6 +8,14 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 app = FastAPI(title="Net Worth Service")
+
+# The box runs in UTC; recurring contributions have to come due on the
+# user's actual day, not whatever day it already flipped to in UTC.
+EASTERN = ZoneInfo("America/New_York")
+
+
+def _today() -> date:
+    return datetime.now(EASTERN).date()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -144,7 +153,7 @@ async def get_recurring():
 
 @app.post("/recurring")
 async def add_recurring(rule: Recurring):
-    start = rule.start_at or date.today().isoformat()
+    start = rule.start_at or _today().isoformat()
     async with pool.connection() as conn:
         conn.row_factory = tuple_row
         cur = await conn.execute(
@@ -168,7 +177,7 @@ async def delete_recurring(rule_id: int):
 async def apply_recurring():
     """Apply every recurring contribution that's come due, catching up on
     any that were missed (e.g. the box was off for a while)."""
-    today = date.today().isoformat()
+    today = _today().isoformat()
     applied = []
     async with pool.connection() as conn:
         conn.row_factory = dict_row
