@@ -22,6 +22,7 @@ BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
 VAULT_URL = os.environ.get("VAULT_URL", "http://vault:8000")
+JELLYFIN_SVC_URL = os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
@@ -60,6 +61,8 @@ AGENTS = [
      "color": "#38bdf8", "blurb": "Wealth desk — account balances, applies recurring contributions."},
     {"id": "vic", "name": "Vic", "role": "worker", "station": "vault",
      "color": "#8b98a9", "blurb": "Vault guard — password health: weak, reused, no-2FA."},
+    {"id": "milo", "name": "Milo", "role": "worker", "station": "jellyfin",
+     "color": "#aa5cc3", "blurb": "Media runner — continue watching, next up, who's streaming."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -643,6 +646,19 @@ async def sync():
             await _log(conn, vic["name"], "vault", "checked passwords", vic_summary)
             jobs.append({"agent": vic["id"], "name": vic["name"], "station": "vault",
                          "summary": vic_summary})
+
+            # Milo -> Jellyfin (media server status)
+            milo = _BY_STATION["jellyfin"]
+            jf = await _get(client, f"{JELLYFIN_SVC_URL}/summary")
+            if jf.get("now_playing"):
+                milo_summary = f"{jf['now_playing']} streaming now"
+            elif jf:
+                milo_summary = f"{jf.get('continue_count', 0)} to continue"
+            else:
+                milo_summary = "media server offline"
+            await _log(conn, milo["name"], "jellyfin", "checked media", milo_summary)
+            jobs.append({"agent": milo["id"], "name": milo["name"], "station": "jellyfin",
+                         "summary": milo_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

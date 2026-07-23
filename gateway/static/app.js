@@ -555,6 +555,42 @@ const RENDERERS = {
       <div class="rows">${rows || '<p class="empty">No items.</p>'}</div>
       <p class="empty" style="margin-top:10px">Read-only — manage entries in Vaultwarden itself.</p>`;
   },
+
+  async jellyfin(app, body) {
+    const d = await api("/jellyfin/dashboard");
+    setMode(d.connected === false ? "mock" : (d.server ? "" : "mock"));
+    const banner = d.server && d.server.includes("sample")
+      ? `<p class="empty" style="margin-bottom:14px">🎬 Showing <b>sample</b> data. Connect your Jellyfin (docs/SETUP-JELLYFIN.md) to see your real library.</p>`
+      : "";
+    const now = (d.nowplaying || [])
+      .map((s) => `<div class="row"><span class="chip" style="background:rgba(170,92,195,.18);color:#c77dde">▶ now</span>
+        <div class="grow"><b>${esc(s.item)}</b><div class="sub">${esc(s.user)} · ${esc(s.device)}</div></div></div>`)
+      .join("");
+    const cont = (d.continue || [])
+      .map((c) => `<div class="bar-row"><div class="top"><b>${esc(c.name)}</b><span class="amt">${esc(c.percent)}%</span></div>
+        <div class="bar"><span style="width:${Math.min(100, c.percent)}%;background:#aa5cc3"></span></div></div>`)
+      .join("");
+    const nextup = (d.nextup || [])
+      .map((n) => `<div class="row"><div class="grow">${esc(n.name)}</div></div>`).join("");
+    const recent = (d.recent || [])
+      .map((r) => `<span class="pill">${esc(r.name)}</span>`).join("");
+    const c = d.counts || {};
+    body.innerHTML = `
+      ${banner}
+      <div class="tiles">
+        <div class="tile"><div class="n">${esc(c.movies ?? 0)}</div><div class="l">Movies</div></div>
+        <div class="tile"><div class="n">${esc(c.series ?? 0)}</div><div class="l">Series</div></div>
+        <div class="tile"><div class="n">${esc(c.episodes ?? 0)}</div><div class="l">Episodes</div></div>
+        <div class="tile ${(d.nowplaying || []).length ? "good" : ""}"><div class="n">${(d.nowplaying || []).length}</div><div class="l">Streaming now</div></div>
+      </div>
+      ${now ? `<h4>Streaming now</h4><div class="rows">${now}</div>` : ""}
+      <h4>Continue watching</h4>
+      <div>${cont || '<p class="empty">Nothing in progress.</p>'}</div>
+      <h4>Next up</h4>
+      <div class="rows">${nextup || '<p class="empty">All caught up.</p>'}</div>
+      <h4>Recently added</h4>
+      <div class="pill-list">${recent || '<p class="empty">Nothing new.</p>'}</div>`;
+  },
 };
 
 async function renderGeneric(app, body) {
@@ -596,6 +632,7 @@ const STATIONS = {
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
   networth: { name: "Net Worth",    color: "#38bdf8", x: 300, y: 200, spot: { x: 300, y: 258 } },
   vault:    { name: "Vault",        color: "#8b98a9", x: 700, y: 200, spot: { x: 700, y: 258 } },
+  jellyfin: { name: "Jellyfin",     color: "#aa5cc3", x: 500, y: 566, spot: { x: 500, y: 512 } },
 };
 
 // Maps a station to the /api/apps entry it opens when clicked.
@@ -611,6 +648,7 @@ const STATION_APP_KEY = {
   budget: "budget",
   networth: "networth",
   vault: "vault",
+  jellyfin: "jellyfin",
 };
 
 // Same icons as the registry cards, shown on each station's "screen".
@@ -626,6 +664,7 @@ const STATION_EMOJI = {
   budget: "📊",
   networth: "💎",
   vault: "🔐",
+  jellyfin: "🎬",
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
@@ -696,6 +735,7 @@ async function loadRoster() {
       { id: "scout", name: "Scout", role: "worker", station: "deals", color: "#a3e635" },
       { id: "wade", name: "Wade", role: "worker", station: "networth", color: "#38bdf8" },
       { id: "vic", name: "Vic", role: "worker", station: "vault", color: "#8b98a9" },
+      { id: "milo", name: "Milo", role: "worker", station: "jellyfin", color: "#aa5cc3" },
     ];
   }
   let wi = 0;

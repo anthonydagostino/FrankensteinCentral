@@ -96,4 +96,11 @@ def load_registry() -> list[SubApp]:
             icon="🔐",
             url=os.environ.get("VAULT_URL", "http://vault:8000"),
         ),
+        SubApp(
+            key="jellyfin",
+            name="Jellyfin",
+            description="Your media server — continue watching, next up, recently added, and who's streaming.",
+            icon="🎬",
+            url=os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000"),
+        ),
     ]
