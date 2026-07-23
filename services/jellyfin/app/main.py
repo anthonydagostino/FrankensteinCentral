@@ -21,6 +21,9 @@ app = FastAPI(title="Jellyfin Service")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "").rstrip("/")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
 JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "")
+# The address your BROWSER uses to reach Jellyfin (for deep links). Defaults to
+# JELLYFIN_URL; override if the container talks to it at a different address.
+JELLYFIN_WEB_URL = (os.environ.get("JELLYFIN_WEB_URL") or JELLYFIN_URL).rstrip("/")
 
 _USER_ID_CACHE = JELLYFIN_USER_ID or None
 
@@ -100,14 +103,17 @@ async def _live() -> dict:
             "series": counts.get("SeriesCount", 0),
             "episodes": counts.get("EpisodeCount", 0),
         },
-        "continue": [{"name": _label(i), "series": i.get("SeriesName"), "percent": _pct(i)}
+        "continue": [{"name": _label(i), "series": i.get("SeriesName"),
+                      "percent": _pct(i), "id": i.get("Id")}
                      for i in (resume.get("Items", []) if isinstance(resume, dict) else resume)],
-        "nextup": [{"name": _label(i), "series": i.get("SeriesName")}
+        "nextup": [{"name": _label(i), "series": i.get("SeriesName"), "id": i.get("Id")}
                    for i in (nextup.get("Items", []) if isinstance(nextup, dict) else nextup)],
-        "recent": [{"name": _label(i), "type": i.get("Type", "")} for i in latest],
+        "recent": [{"name": _label(i), "type": i.get("Type", ""), "id": i.get("Id")}
+                   for i in latest],
         "nowplaying": [
             {"user": s.get("UserName", "?"),
              "item": _label(s.get("NowPlayingItem", {})),
+             "id": (s.get("NowPlayingItem") or {}).get("Id"),
              "device": s.get("DeviceName", "")}
             for s in sessions if s.get("NowPlayingItem")
         ],
@@ -138,6 +144,7 @@ async def summary():
         "movies": c["movies"], "series": c["series"], "episodes": c["episodes"],
         "now_playing": len(d["nowplaying"]),
         "continue_count": len(d["continue"]),
+        "web_url": JELLYFIN_WEB_URL if _connected() else None,
         "mode": "live" if _connected() else "mock",
         "connected": _connected(),
     }
@@ -147,9 +154,11 @@ async def summary():
 async def dashboard():
     """Everything the hub panel needs in one call."""
     try:
-        return await _data()
+        d = await _data()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "jellyfin unreachable", "detail": str(exc)}, status_code=502)
+    return {**d, "web_url": JELLYFIN_WEB_URL if _connected() else None,
+            "connected": _connected()}
 
 
 @app.get("/")

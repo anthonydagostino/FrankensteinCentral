@@ -559,24 +559,35 @@ const RENDERERS = {
   async jellyfin(app, body) {
     const d = await api("/jellyfin/dashboard");
     setMode(d.connected === false ? "mock" : (d.server ? "" : "mock"));
-    const banner = d.server && d.server.includes("sample")
-      ? `<p class="empty" style="margin-bottom:14px">🎬 Showing <b>sample</b> data. Connect your Jellyfin (docs/SETUP-JELLYFIN.md) to see your real library.</p>`
+    const web = d.web_url;
+    // Deep-link a title to its Jellyfin details/play page (when connected).
+    const link = (label, id) =>
+      web && id
+        ? `<a href="${web}/web/#/details?id=${encodeURIComponent(id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px">${esc(label)}</a>`
+        : esc(label);
+    const banner = d.server && String(d.server).includes("sample")
+      ? `<p class="empty" style="margin-bottom:14px">🎬 Showing <b>sample</b> data. Connect your Jellyfin (docs/SETUP-JELLYFIN.md) to see your real library — then every title here opens straight in Jellyfin.</p>`
+      : "";
+    const openBtn = web
+      ? `<a class="btn" href="${web}/web/" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">▶ Open in Jellyfin ↗</a>`
       : "";
     const now = (d.nowplaying || [])
       .map((s) => `<div class="row"><span class="chip" style="background:rgba(170,92,195,.18);color:#c77dde">▶ now</span>
-        <div class="grow"><b>${esc(s.item)}</b><div class="sub">${esc(s.user)} · ${esc(s.device)}</div></div></div>`)
+        <div class="grow"><b>${link(s.item, s.id)}</b><div class="sub">${esc(s.user)} · ${esc(s.device)}</div></div></div>`)
       .join("");
     const cont = (d.continue || [])
-      .map((c) => `<div class="bar-row"><div class="top"><b>${esc(c.name)}</b><span class="amt">${esc(c.percent)}%</span></div>
+      .map((c) => `<div class="bar-row"><div class="top"><b>${link(c.name, c.id)}</b><span class="amt">${esc(c.percent)}%</span></div>
         <div class="bar"><span style="width:${Math.min(100, c.percent)}%;background:#aa5cc3"></span></div></div>`)
       .join("");
     const nextup = (d.nextup || [])
-      .map((n) => `<div class="row"><div class="grow">${esc(n.name)}</div></div>`).join("");
+      .map((n) => `<div class="row"><div class="grow">${link(n.name, n.id)}</div></div>`).join("");
     const recent = (d.recent || [])
-      .map((r) => `<span class="pill">${esc(r.name)}</span>`).join("");
+      .map((r) => web && r.id
+        ? `<a class="pill" href="${web}/web/#/details?id=${encodeURIComponent(r.id)}" target="_blank" rel="noopener" style="text-decoration:none">${esc(r.name)}</a>`
+        : `<span class="pill">${esc(r.name)}</span>`).join("");
     const c = d.counts || {};
     body.innerHTML = `
-      ${banner}
+      ${banner}${openBtn}
       <div class="tiles">
         <div class="tile"><div class="n">${esc(c.movies ?? 0)}</div><div class="l">Movies</div></div>
         <div class="tile"><div class="n">${esc(c.series ?? 0)}</div><div class="l">Series</div></div>
