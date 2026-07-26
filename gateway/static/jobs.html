@@ -262,12 +262,18 @@ const FACTORS = [
   { key: "wlb", label: "Work-life balance", weight: 2 },
   { key: "perks", label: "Perks & benefits", weight: 1 },
   { key: "certainty", label: "Process certainty", weight: 1 },
+  { key: "totalcomp", label: "Total comp (equity/bonus)", weight: 2 },
+  { key: "stability", label: "Runway / stability risk", weight: 2 },
 ];
 const DEFAULT_SCORES = {
-  "233analytics": { remote: 2, pay: 0, growth: -2, wlb: 2, perks: 1, certainty: 0 },
-  "deepl":        { remote: 1, pay: 2, growth: 1, wlb: 0, perks: 0, certainty: -2 },
-  "airia":        { remote: -2, pay: 0, growth: 2, wlb: -2, perks: 1, certainty: 0 },
-  "eliseai":      { remote: -2, pay: -1, growth: 0, wlb: -1, perks: 2, certainty: 1 },
+  // totalcomp: upside BEYOND base (equity quality/stage, bonus, relocation) —
+  // base pay itself is already captured by the "pay" factor above.
+  // stability: how likely the company can keep operating/paying you (higher
+  // = lower risk) — separate from "certainty" (how far along YOUR process is).
+  "233analytics": { remote: 2, pay: 0, growth: -2, wlb: 2, perks: 1, certainty: 0, totalcomp: 0, stability: -2 },
+  "deepl":        { remote: 1, pay: 2, growth: 1, wlb: 0, perks: 0, certainty: -2, totalcomp: -1, stability: 2 },
+  "airia":        { remote: -2, pay: 0, growth: 2, wlb: -2, perks: 1, certainty: 0, totalcomp: 0, stability: -2 },
+  "eliseai":      { remote: -2, pay: -1, growth: 0, wlb: -1, perks: 2, certainty: 1, totalcomp: 1, stability: 2 },
 };
 const RANK_COLORS = { "233analytics": "#6ee7b7", "deepl": "#7c9cff", "airia": "#ff8a5b", "eliseai": "#c58cff" };
 
