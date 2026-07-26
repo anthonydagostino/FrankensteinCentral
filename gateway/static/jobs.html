@@ -99,6 +99,18 @@
   }
   .floor-row .floor-hint { color: var(--muted); font-size: 11px; }
 
+  .expect-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    background: rgba(124,156,255,0.07); border: 1px solid rgba(124,156,255,0.22);
+    border-radius: 8px; padding: 8px 10px; margin-top: 6px;
+  }
+  .expect-row label { color: var(--accent-2); font-weight: 600; white-space: nowrap; }
+  .expect-row input[type="text"] {
+    width: 110px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+  }
+  .expect-row .expect-hint { color: var(--muted); font-size: 11px; }
+
   .rank-section {
     background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
     padding: 18px 20px; margin: 0 0 26px;
@@ -192,6 +204,8 @@ const COMPANIES = [
     role: "Role not publicly posted — base salary still unconfirmed",
     floor: 125000,
     floorNote: "Revised up from $115k: NYC cost of living doesn't care that the job is remote — if you're moving there regardless, you need more income to actually \"save,\" not less. Zero AI/dev exposure is still a real career-opportunity cost on top of that. Ignore the profit-share when judging this — treat it as maybe-money, not comp.",
+    expected: "$100k–$120k",
+    expectedNote: "Comparable data: generic 'Litigation Support Analyst' averages ~$104k ($82k-$132k range), 'Technical Consultant' averages ~$119k. 233 Analytics' work (source-code/HDL forensics + expert testimony) is more specialized than generic litigation support, so I'd lean toward the higher end — but it's a tiny, TN-based, bootstrapped shop that may anchor to its own low-COL base rather than pay for the specialty. Real risk this comes in BELOW your $125k floor.",
     blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities (you're fine with this).",
     pros: [
       "Fully remote, confirmed directly — matches your top stated priority better than any of the other three",
@@ -218,6 +232,8 @@ const COMPANIES = [
     role: "Likely Senior Data Scientist / Research Data Engineer / Software Engineer (API) — exact match unconfirmed",
     floor: 150000,
     floorNote: "Already the number on the table — this IS your floor, don't concede after 4 rounds of mutual investment. If somehow countered down, I wouldn't go below $140k. OPEN QUESTION: verify whether the \"2 days/week in-person\" office is actually in NYC — if it's not, that's a real logistics problem for your NYC relocation plan, not a minor detail.",
+    expected: "$150k",
+    expectedNote: "Already confirmed, not a guess — the only one of the four with a firm number in hand.",
     blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024). CONFIRMED: $150k base, 2 days/week in-person but flexible, 4 more interview rounds remaining.",
     pros: [
       "$150k confirmed base — highest of the four by a real margin",
@@ -243,6 +259,8 @@ const COMPANIES = [
     role: "No open role confirmed publicly — you're talking to them directly. Range given Feb: $120k–$170k",
     floor: 150000,
     floorNote: "Revised way up from an earlier blind guess: their own stated range tops out at $170k, and the CEO flagging your ML + DoD experience + active clearance as unique is real leverage, not flattery — that combo is genuinely scarce. Floor $150k, target ask $165k-$170k. Grind/WLB cost is real and unrelated to pay, so don't let leverage talk you out of asking near the top.",
+    expected: "$145k–$160k",
+    expectedNote: "A real range in hand ($120k-$170k) plus genuine leverage (rare clearance+ML+DoD combo, softened C# requirement) — I'd expect them to land in the upper-middle of their own range, not the top automatically. Push for the top end given the leverage; don't assume it arrives there without asking.",
     blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware) with a Federal/DoD angle. Founded 2020 (hence \"20\" in the domain). Office in Brooklyn. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
     pros: [
       "Real range given in Feb: $120k–$170k — the top end matches or beats DeepL's confirmed $150k",
@@ -270,6 +288,8 @@ const COMPANIES = [
     role: "Multiple roles found in your range — Software Engineer, Sales Ops Manager ($95k-$125k), Solutions Engineer Implementation & Delivery ($135k-$185k). Your posted range: $100k–$135k",
     floor: 122000,
     floorNote: "Roughly unchanged net: HQ being in NYC — where you plan to move anyway — means the 5-day-onsite requirement is much less of a sacrifice than it looks on paper, but NYC's cost of living cuts the other way and still argues for a floor well above the bottom of their $100k-$135k range.",
+    expected: "$110k–$125k",
+    expectedNote: "They gave you a real range already ($100k-$135k) — I'd expect a mid-range landing rather than either extreme, absent unusual leverage on your side here (unlike AIRIA, no scarce-skill call-out has been mentioned for this one).",
     blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR. CONFIRMED: $100k-$135k base + equity, 5 days/week fully in-person, relocation provided.",
     pros: [
       "HQ is in New York — since you're planning to move there anyway, \"5 days in office\" stops being a real sacrifice and is basically just a normal job in the city you've already chosen",
@@ -422,6 +442,8 @@ function loadFloor(id, fallback) {
   return raw !== null ? Number(raw) : fallback;
 }
 function saveFloor(id, value) { localStorage.setItem(LS_KEY(id, "floor"), value); stampSaved(id); }
+function loadExpected(id, fallback) { return localStorage.getItem(LS_KEY(id, "expected")) ?? fallback; }
+function saveExpected(id, value) { localStorage.setItem(LS_KEY(id, "expected"), value); stampSaved(id); }
 function stampSaved(id) {
   const el = document.getElementById(`saved-${id}`);
   if (el) el.textContent = "Saved just now (this browser)";
@@ -442,6 +464,11 @@ function render() {
         <label for="floor-${c.id}">Lowest base to take:</label>
         <input type="number" id="floor-${c.id}" data-floor="${c.id}" step="1000" value="${loadFloor(c.id, c.floor)}" />
         <span class="floor-hint">${c.floorNote}</span>
+      </div>
+      <div class="expect-row">
+        <label for="expect-${c.id}">Expected actual offer:</label>
+        <input type="text" id="expect-${c.id}" data-expect="${c.id}" value="${loadExpected(c.id, c.expected)}" />
+        <span class="expect-hint">${c.expectedNote}</span>
       </div>
       <div class="cols">
         <div class="col pros">
@@ -500,14 +527,18 @@ function render() {
   grid.querySelectorAll("[data-floor]").forEach((input) => {
     input.addEventListener("input", () => saveFloor(input.dataset.floor, input.value));
   });
+  grid.querySelectorAll("[data-expect]").forEach((input) => {
+    input.addEventListener("input", () => saveExpected(input.dataset.expect, input.value));
+  });
   grid.querySelectorAll("[data-reset]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.dataset.reset;
-      if (!confirm("Reset this card's pros/cons/notes/floor back to the original research? This clears anything you've added.")) return;
+      if (!confirm("Reset this card's pros/cons/notes/floor/expected back to the original research? This clears anything you've added.")) return;
       localStorage.removeItem(LS_KEY(id, "pros"));
       localStorage.removeItem(LS_KEY(id, "cons"));
       localStorage.removeItem(LS_KEY(id, "notes"));
       localStorage.removeItem(LS_KEY(id, "floor"));
+      localStorage.removeItem(LS_KEY(id, "expected"));
       render();
     });
   });
