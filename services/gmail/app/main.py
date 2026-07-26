@@ -316,6 +316,7 @@ async def _fetch_inbox() -> list[dict] | None:
             out.append(
                 {
                     "id": mid,
+                    "thread_id": payload.get("threadId", mid),
                     "from": hdrs.get("From", ""),
                     "subject": hdrs.get("Subject", ""),
                     "snippet": payload.get("snippet", ""),
@@ -425,7 +426,9 @@ async def _fetch_sent_proposal_threads() -> list[dict] | None:
             parsed = []
             for m in tr.json().get("messages", []):
                 mhdrs = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
-                body = _decode_body(m.get("payload", {}))
+                # Strip quoted/forwarded history so a thread's Nth message
+                # doesn't re-surface every prior message's dates as if new.
+                body = dateparse.strip_quoted(_decode_body(m.get("payload", {})))
                 parsed.append(
                     {
                         "id": m["id"],

@@ -41,6 +41,26 @@ _TIME_RE = re.compile(
 _VAGUE_TIME = re.compile(r"\b(morning|afternoon|evening|noon)\b", re.IGNORECASE)
 _VAGUE_DEFAULTS = {"morning": (9, 0), "afternoon": (14, 0), "evening": (18, 0), "noon": (12, 0)}
 
+# The start of quoted/forwarded history in a reply — without cutting here,
+# every message in a growing thread re-includes every prior message's text,
+# so old proposals (and their dates, often stretching a year back by the
+# time a thread is old) get re-matched as if they were new every single sync.
+_QUOTE_MARKERS = re.compile(
+    r"\bOn\s.{0,100}\swrote:|"
+    r"^>|\n>|"
+    r"-{2,}\s*Original Message\s*-{2,}|"
+    r"\nFrom:\s.{0,120}\nSent:\s|"
+    r"\nSent from my i(?:Phone|Pad)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_quoted(text: str) -> str:
+    """Truncate at the first sign of quoted/forwarded history, keeping only
+    what this specific message actually added."""
+    m = _QUOTE_MARKERS.search(text)
+    return text[: m.start()] if m else text
+
 # Phrases where the SENDER is proposing/offering their own availability —
 # distinct from an incoming email that already states a fixed, confirmed time.
 PROPOSAL_RE = re.compile(

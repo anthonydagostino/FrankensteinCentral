@@ -631,17 +631,22 @@ async def sync():
                 when = extract_datetime(f"{e.get('subject','')} {e.get('snippet','')}")
                 if not when:
                     continue
+                # Keyed by thread, not message id — a back-and-forth ("here's
+                # a time" / "confirming that works") is multiple messages in
+                # one thread, and should book ONE event, not one per message.
+                thread_key = e.get("thread_id") or e["id"]
+                ext_id = f"thread:{thread_key}:interview"
                 resp = await client.post(
                     f"{SCHEDULE_URL}/events",
                     json={"title": f"Interview — {e['from']}", "starts_at": when,
-                          "source": "gmail", "external_id": e["id"]},
+                          "source": "gmail", "external_id": ext_id, "thread_id": thread_key},
                     timeout=8,
                 )
                 if resp.status_code < 300 and resp.json().get("created"):
                     created.append(resp.json()["event"])
                     booked += 1
                     await _add_deadline(conn, f"Interview — {e['from']}", when,
-                                        "schedule", f"evt:{e['id']}")
+                                        "schedule", f"evt:{thread_key}")
             # Cal -> Schedule (your own sent "I'm available..." proposals —
             # pending until they reply, confirmed/countered/declined after)
             thread_changes, thread_lines = await _sync_availability_threads(conn, client)
