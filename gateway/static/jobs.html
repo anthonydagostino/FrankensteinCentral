@@ -80,6 +80,25 @@
   .sources a { color: var(--muted); }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
 
+  .remote-value {
+    background: rgba(124,156,255,0.08); border: 1px solid rgba(124,156,255,0.25);
+    border-radius: 12px; padding: 12px 16px; font-size: 13px; line-height: 1.55;
+    color: var(--text); margin: 0 0 18px;
+  }
+  .remote-value b { color: var(--accent-2); }
+
+  .floor-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    background: rgba(255,204,102,0.07); border: 1px solid rgba(255,204,102,0.25);
+    border-radius: 8px; padding: 8px 10px; margin-top: 2px;
+  }
+  .floor-row label { color: var(--warn); font-weight: 600; white-space: nowrap; }
+  .floor-row input {
+    width: 90px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+  }
+  .floor-row .floor-hint { color: var(--muted); font-size: 11px; }
+
   .rank-section {
     background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
     padding: 18px 20px; margin: 0 0 26px;
@@ -131,6 +150,16 @@
       </tbody>
     </table>
 
+    <div class="remote-value">
+      <b>💵 What's remote worth in $?</b> WFH research (Bloom/Barrero/Davis SWAA
+      surveys) puts the average value of remote flexibility at ~7–8% of
+      salary, more with a bad commute. Rule of thumb used for the floors
+      below: <b>~$12k–$18k/yr (~10–13% of a $130–140k base)</b> for fully
+      remote vs. 5-days-onsite, prorated for partial schedules — e.g. 2
+      flexible days/week (DeepL) is only ~40% of that gap, so more like a
+      $5k–$7k implicit "onsite tax" at equal pay.
+    </div>
+
     <section class="rank-section">
       <div class="rank-head">
         <h3>⚖️ Weighted ranking — ongoing</h3>
@@ -154,6 +183,8 @@ const COMPANIES = [
     id: "233analytics",
     name: "233 Analytics",
     role: "Role not publicly posted — base salary still unconfirmed",
+    floor: 115000,
+    floorNote: "Floor set high for a reason: zero AI/dev exposure is a real career-opportunity cost, not just \"less exciting.\" Below this, good remote + WLB doesn't offset a dead-end skill trajectory. Ignore the profit-share when judging this — treat it as maybe-money, not comp.",
     blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities (you're fine with this).",
     pros: [
       "Fully remote, confirmed directly — matches your top stated priority better than any of the other three",
@@ -178,6 +209,8 @@ const COMPANIES = [
     id: "deepl",
     name: "DeepL",
     role: "Likely Senior Data Scientist / Research Data Engineer / Software Engineer (API) — exact match unconfirmed",
+    floor: 150000,
+    floorNote: "Already the number on the table — this IS your floor, don't concede after 4 rounds of mutual investment. If somehow countered down, I wouldn't go below $140k given the process length and mixed Glassdoor culture signals.",
     blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024). CONFIRMED: $150k base, 2 days/week in-person but flexible, 4 more interview rounds remaining.",
     pros: [
       "$150k confirmed base — highest of the four by a real margin",
@@ -201,6 +234,8 @@ const COMPANIES = [
     id: "airia",
     name: "AIRIA (airia20.com)",
     role: "No open role confirmed publicly — you're talking to them directly. Salary still unconfirmed",
+    floor: 130000,
+    floorNote: "Set higher than 233 Analytics on purpose: 4-5 days in Brooklyn plus an explicit 40+ hr grind expectation is a real lifestyle cost, and the company is genuinely fragile (seed, $3.1M). The growth upside is real but speculative — cash has to carry more weight since the equity is a lottery ticket at this stage.",
     blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware). Founded 2020 (hence \"20\" in the domain). Office in Brooklyn. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
     pros: [
       "Great career-growth potential — you could become genuinely important there given how early-stage it is",
@@ -225,6 +260,8 @@ const COMPANIES = [
     id: "eliseai",
     name: "EliseAI",
     role: "Multiple roles found in your range — Software Engineer, Sales Ops Manager ($95k-$125k), Solutions Engineer Implementation & Delivery ($135k-$185k). Your posted range: $100k–$135k",
+    floor: 125000,
+    floorNote: "Near the TOP of their own $100k-$135k range, not the bottom — 5 days fully in-person is the heaviest remote/lifestyle cost of the four. A lowball near $100k doesn't adequately price in what you're giving up on flexibility, even with the strong perks.",
     blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR. CONFIRMED: $100k-$135k base + equity, 5 days/week fully in-person, relocation provided.",
     pros: [
       "$100k–$135k base confirmed, plus equity",
@@ -367,6 +404,11 @@ function saveList(id, field, items) {
 }
 function loadNotes(id) { return localStorage.getItem(LS_KEY(id, "notes")) || ""; }
 function saveNotes(id, text) { localStorage.setItem(LS_KEY(id, "notes"), text); stampSaved(id); }
+function loadFloor(id, fallback) {
+  const raw = localStorage.getItem(LS_KEY(id, "floor"));
+  return raw !== null ? Number(raw) : fallback;
+}
+function saveFloor(id, value) { localStorage.setItem(LS_KEY(id, "floor"), value); stampSaved(id); }
 function stampSaved(id) {
   const el = document.getElementById(`saved-${id}`);
   if (el) el.textContent = "Saved just now (this browser)";
@@ -383,6 +425,11 @@ function render() {
       <h2>${c.name}</h2>
       <div class="role">${c.role}</div>
       <p class="blurb">${c.blurb}</p>
+      <div class="floor-row">
+        <label for="floor-${c.id}">Lowest base to take:</label>
+        <input type="number" id="floor-${c.id}" data-floor="${c.id}" step="1000" value="${loadFloor(c.id, c.floor)}" />
+        <span class="floor-hint">${c.floorNote}</span>
+      </div>
       <div class="cols">
         <div class="col pros">
           <h4>Pros</h4>
@@ -437,13 +484,17 @@ function render() {
       saveNotes(id, ta.value);
     });
   });
+  grid.querySelectorAll("[data-floor]").forEach((input) => {
+    input.addEventListener("input", () => saveFloor(input.dataset.floor, input.value));
+  });
   grid.querySelectorAll("[data-reset]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.dataset.reset;
-      if (!confirm("Reset this card's pros/cons/notes back to the original research? This clears anything you've added.")) return;
+      if (!confirm("Reset this card's pros/cons/notes/floor back to the original research? This clears anything you've added.")) return;
       localStorage.removeItem(LS_KEY(id, "pros"));
       localStorage.removeItem(LS_KEY(id, "cons"));
       localStorage.removeItem(LS_KEY(id, "notes"));
+      localStorage.removeItem(LS_KEY(id, "floor"));
       render();
     });
   });
