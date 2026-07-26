@@ -79,6 +79,31 @@
   .sources { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.6; }
   .sources a { color: var(--muted); }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
+
+  .rank-section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 20px; margin: 0 0 26px;
+  }
+  .rank-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .rank-section h3 { margin: 0; font-size: 17px; }
+  .rank-table-wrap { overflow-x: auto; margin-top: 10px; }
+  table.rank-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  table.rank-table th, table.rank-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: center; }
+  table.rank-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+  table.rank-table td.factor-label { text-align: left; font-weight: 600; white-space: nowrap; }
+  table.rank-table input[type="number"] {
+    width: 48px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 2px; font-size: 13px; text-align: center; font-family: inherit;
+  }
+  table.rank-table input.weight-input { width: 42px; color: var(--accent-2); font-weight: 700; }
+  table.rank-table tr.total-row td { border-bottom: none; border-top: 2px solid var(--line); font-weight: 700; padding-top: 10px; }
+  .rank-result { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .rank-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .rank-row .medal { width: 22px; text-align: center; font-size: 15px; }
+  .rank-row .rname { width: 130px; font-weight: 700; flex-shrink: 0; }
+  .rank-row .bar-track { flex: 1; background: rgba(255,255,255,0.05); border-radius: 6px; height: 16px; overflow: hidden; position: relative; }
+  .rank-row .bar-fill { height: 100%; border-radius: 6px; }
+  .rank-row .rscore { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -96,15 +121,27 @@
 
     <table class="factor-table">
       <thead>
-        <tr><th>Company</th><th>Remote policy</th><th>Pay</th><th>Onsite perks/food</th><th>Funding / stability</th><th>Process stage</th><th>Data confidence</th></tr>
+        <tr><th>Company</th><th>Remote policy</th><th>Pay</th><th>Onsite perks/food</th><th>Career growth</th><th>Work-life balance</th><th>Process stage</th></tr>
       </thead>
       <tbody>
-        <tr><td class="company">233 Analytics</td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag bad">Bootstrapped, ~9 people</span></td><td><span class="tag unknown">Unclear</span></td><td><span class="tag bad">Lowest — almost no public data</span></td></tr>
-        <tr><td class="company">DeepL</td><td><span class="tag mid">Contested: some say remote, others ~2x/wk hybrid</span></td><td><span class="tag good">~$150k (highest)</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag good">$2B valuation, 1,000+ staff</span></td><td><span class="tag bad">~4 rounds left</span></td><td><span class="tag mid">Medium — some conflicting sources</span></td></tr>
-        <tr><td class="company">AIRIA (airia20.com)</td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag bad">Seed, $3.1M, ~8 people</span></td><td><span class="tag unknown">No open role confirmed</span></td><td><span class="tag bad">Lowest — no careers page found</span></td></tr>
-        <tr><td class="company">EliseAI</td><td><span class="tag bad">Hybrid reported 4–5 days/wk onsite</span></td><td><span class="tag mid">$100k–$135k posted</span></td><td><span class="tag good">Free daily meals, snacks, fitness stipend</span></td><td><span class="tag good">Series E, $2.2B val, $100M+ ARR</span></td><td><span class="tag good">Furthest along (per your context)</span></td><td><span class="tag good">Best documented of the four</span></td></tr>
+        <tr><td class="company">233 Analytics</td><td><span class="tag good">Fully remote (some travel to major cities)</span></td><td><span class="tag unknown">Base unconfirmed</span> + 20% bonus + 18–20% profit share (⚠️ likely discretionary)</td><td><span class="tag unknown">None known</span></td><td><span class="tag bad">Bad — no AI/dev exposure</span></td><td><span class="tag good">Good overall</span></td><td><span class="tag unknown">Unclear</span></td></tr>
+        <tr><td class="company">DeepL</td><td><span class="tag good">2 days/wk in-person, flexible</span></td><td><span class="tag good">$150k base (highest)</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag mid">Good IF switching jobs later</span></td><td><span class="tag mid">Mixed signals</span></td><td><span class="tag bad">4 more rounds left</span></td></tr>
+        <tr><td class="company">AIRIA (airia20.com)</td><td><span class="tag bad">4–5 days/wk in-person, Brooklyn office</span></td><td><span class="tag unknown">Unconfirmed</span> + equity</td><td><span class="tag unknown">None known</span></td><td><span class="tag good">Great — could become important there</span></td><td><span class="tag bad">Bad — 40+ hr weeks, grind culture</span></td><td><span class="tag unknown">Unclear</span></td></tr>
+        <tr><td class="company">EliseAI</td><td><span class="tag bad">5 days/wk fully in-person</span></td><td><span class="tag mid">$100k–$135k base</span> + equity</td><td><span class="tag good">Meals, fitness + home stipend, relocation</span></td><td><span class="tag mid">Alright — not horrible, not insane</span></td><td><span class="tag mid">Weak-ish (per Glassdoor)</span></td><td><span class="tag good">Furthest along</span></td></tr>
       </tbody>
     </table>
+
+    <section class="rank-section">
+      <div class="rank-head">
+        <h3>⚖️ Weighted ranking — ongoing</h3>
+        <button class="reset-btn" id="rank-reset">Reset weights/scores to defaults</button>
+      </div>
+      <p class="sub">Score each company -2 (bad) to +2 (great) per factor, and set how much each factor matters to you (weight). The ranking below re-sorts live and saves in this browser. Update the scores as you get more info — new offers, comp details, whatever changes.</p>
+      <div class="rank-table-wrap">
+        <table class="rank-table" id="rank-table"></table>
+      </div>
+      <div class="rank-result" id="rank-result"></div>
+    </section>
 
     <div class="grid" id="cards"></div>
 
@@ -116,18 +153,21 @@ const COMPANIES = [
   {
     id: "233analytics",
     name: "233 Analytics",
-    role: "Role not publicly posted — unconfirmed",
-    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found).",
+    role: "Role not publicly posted — base salary still unconfirmed",
+    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities (you're fine with this).",
     pros: [
-      "Niche, technically deep work (source-code/forensic analysis, expert testimony) if that's interesting to you",
+      "Fully remote, confirmed directly — matches your top stated priority better than any of the other three",
+      "Good overall work-life balance, especially combined with being fully remote",
+      "20% yearly performance bonus, plus a stated 18–20% annual profit share on top of base",
+      "Comfortable with the occasional travel to major cities this role involves",
       "Very small team — likely more responsibility, visibility, and faster ramp than a big org",
-      "Less bureaucracy / corporate process by nature of size",
     ],
     cons: [
-      "No confirmed remote policy, salary range, or even a public open role — biggest unknown of the four",
-      "Tiny (~9 people), bootstrapped — no funding cushion, higher volatility, fewer resources for benefits/perks",
-      "No public info on onsite perks or food",
-      "Thinnest documentation of any of these four — hardest to de-risk before an offer is actually on the table",
+      "Bad for career growth — you won't be working with AI/development, so it doesn't build the skills/resume you likely want long-term",
+      "Base salary still unconfirmed — the actual take-home number is a real open question",
+      "The profit-sharing figure (18–20%) is probably discretionary in practice per your brother's read — treat real comp upside as closer to just the 20% bonus, not bonus + profit share stacked",
+      "Tiny (~9 people), bootstrapped — no funding cushion, higher volatility, fewer resources for benefits",
+      "Thinnest public documentation of the four — hardest to de-risk anything beyond what you've been told directly",
     ],
     sources: [
       ["233analytics.com", "https://233analytics.com/"],
@@ -138,15 +178,15 @@ const COMPANIES = [
     id: "deepl",
     name: "DeepL",
     role: "Likely Senior Data Scientist / Research Data Engineer / Software Engineer (API) — exact match unconfirmed",
-    blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024).",
+    blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024). CONFIRMED: $150k base, 2 days/week in-person but flexible, 4 more interview rounds remaining.",
     pros: [
-      "Highest disclosed salary of the four (~$150k)",
-      "Well-funded, high-profile product with a real moat — strong resume/brand value",
-      "Some sources describe it as remote-friendly (though contested — see cons)",
+      "$150k confirmed base — highest of the four by a real margin",
+      "Only 2 days/week in-person, and described as flexible — close to remote-friendly, not a hard hybrid mandate",
+      "Good for career growth IF you'd want to switch jobs down the road — strong resume/brand value even if it's less about growing within DeepL itself",
     ],
     cons: [
-      "~4 more interview rounds remaining — the longest, lowest near-term-probability path of the four",
-      "Remote policy is genuinely contested across sources: some say fully remote, Glassdoor/others describe ~2x/week hybrid — confirm directly before counting on it",
+      "4 more interview rounds remaining (confirmed) — the longest, lowest near-term-probability path of the four; a lot can still go wrong or drag out",
+      "The career-growth upside is conditional on leaving eventually — less relevant if you're looking to grow in place",
       "Below-average Glassdoor (2.8/5, only 39% would recommend) — recurring management/culture complaints (\"explosive growth invited toxicity\")",
       "HQ is in Cologne, Germany — verify time zone expectations for a US-based hire",
     ],
@@ -160,17 +200,20 @@ const COMPANIES = [
   {
     id: "airia",
     name: "AIRIA (airia20.com)",
-    role: "No open role confirmed at this specific entity — an \"AI/ML Lead\" listing was found but could not be verified as belonging to airia20.com vs. the unrelated airia.com",
-    blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware). Founded 2020 (hence \"20\" in the domain). HQ Harrison, NY. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
+    role: "No open role confirmed publicly — you're talking to them directly. Salary still unconfirmed",
+    blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware). Founded 2020 (hence \"20\" in the domain). Office in Brooklyn. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
     pros: [
+      "Great career-growth potential — you could become genuinely important there given how early-stage it is",
       "Very early stage — often means more equity upside and broader scope/ownership than a large company",
+      "Equity included",
       "Small, nimble team — direct access to founders/decision-making",
     ],
     cons: [
-      "No confirmed open role, salary, or remote policy for this specific entity",
+      "4–5 days/week in-person, office in Brooklyn — a real con on both the remote and location front",
+      "40+ hour weeks expected — they clearly want a grind, work-life balance here is the weakest of the four",
+      "Salary still unconfirmed — a big open question given the WLB/hours tradeoff being asked of you",
       "Seed-stage only ($3.1M raised) — real runway/stability risk, unproven business",
       "Easy to confuse with a similarly-named, unrelated company (airia.com) — verify you're talking to the right \"Airia\" before going further",
-      "No careers page found — least mature public presence of the four",
     ],
     sources: [
       ["airia20.com", "https://airia20.com/"],
@@ -182,19 +225,20 @@ const COMPANIES = [
     id: "eliseai",
     name: "EliseAI",
     role: "Multiple roles found in your range — Software Engineer, Sales Ops Manager ($95k-$125k), Solutions Engineer Implementation & Delivery ($135k-$185k). Your posted range: $100k–$135k",
-    blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR.",
+    blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR. CONFIRMED: $100k-$135k base + equity, 5 days/week fully in-person, relocation provided.",
     pros: [
-      "Salary confirmed and consistent with market data for the role range",
-      "Strong onsite perks: free daily meals, snacks/drinks, fitness & home-services stipend, unlimited PTO, 100%-premium-covered medical/dental/vision, fully paid parental leave, commuter benefits",
+      "$100k–$135k base confirmed, plus equity",
+      "All meals provided in office, plus a fitness + home stipend",
+      "Relocation provided",
+      "Career growth is alright — not horrible, not insane, a reasonable middle option",
       "Well-funded and growing fast (Series E, doubling valuation to $2.2B, headcount doubled in 2025) — real momentum",
-      "Best-documented company of the four — least uncertainty going in",
       "Furthest along in your process, per your own context",
     ],
     cons: [
-      "Least remote-friendly of the four — hybrid reported at 4–5 days/week onsite, closer to fully onsite than a typical hybrid arrangement",
+      "5 days/week fully in-person — the least remote of the four, the direct opposite of your stated top priority",
+      "Lowest salary ceiling of the group compared to DeepL's $150k",
       "Weakest work-life-balance score sourced across all four companies (2.6/5 on Glassdoor)",
       "Some Glassdoor complaints about leadership and understaffing (\"spend money on almost anything except hiring enough people\")",
-      "Lowest salary ceiling of the group compared to DeepL's ~$150k",
     ],
     sources: [
       ["EliseAI careers", "https://www.eliseai.com/careers"],
@@ -204,6 +248,104 @@ const COMPANIES = [
     ],
   },
 ];
+
+// Weighted ranking calculator — factor scores are -2 (bad) to +2 (great),
+// weights say how much each factor matters to you. Total = sum(score x
+// weight) per company; the list below always re-sorts by that total.
+// Defaults below are my best read of what you've told me so far — every
+// number is just a prefilled starting point, meant to be edited as you
+// learn more (an offer, a comp detail, a changed mind).
+const FACTORS = [
+  { key: "remote", label: "Remote / flexibility", weight: 3 },
+  { key: "pay", label: "Pay", weight: 3 },
+  { key: "growth", label: "Career growth", weight: 2 },
+  { key: "wlb", label: "Work-life balance", weight: 2 },
+  { key: "perks", label: "Perks & benefits", weight: 1 },
+  { key: "certainty", label: "Process certainty", weight: 1 },
+];
+const DEFAULT_SCORES = {
+  "233analytics": { remote: 2, pay: 0, growth: -2, wlb: 2, perks: 1, certainty: 0 },
+  "deepl":        { remote: 1, pay: 2, growth: 1, wlb: 0, perks: 0, certainty: -2 },
+  "airia":        { remote: -2, pay: 0, growth: 2, wlb: -2, perks: 1, certainty: 0 },
+  "eliseai":      { remote: -2, pay: -1, growth: 0, wlb: -1, perks: 2, certainty: 1 },
+};
+const RANK_COLORS = { "233analytics": "#6ee7b7", "deepl": "#7c9cff", "airia": "#ff8a5b", "eliseai": "#c58cff" };
+
+function rankWeightKey(factor) { return `jobhunt_rank_weight_${factor}`; }
+function rankScoreKey(id, factor) { return `jobhunt_rank_score_${id}_${factor}`; }
+
+function getWeight(factor, fallback) {
+  const raw = localStorage.getItem(rankWeightKey(factor));
+  return raw !== null ? Number(raw) : fallback;
+}
+function getScore(id, factor, fallback) {
+  const raw = localStorage.getItem(rankScoreKey(id, factor));
+  return raw !== null ? Number(raw) : fallback;
+}
+
+function computeTotals() {
+  const totals = {};
+  for (const c of COMPANIES) {
+    let total = 0;
+    for (const f of FACTORS) {
+      const w = getWeight(f.key, f.weight);
+      const s = getScore(c.id, f.key, DEFAULT_SCORES[c.id][f.key]);
+      total += w * s;
+    }
+    totals[c.id] = total;
+  }
+  return totals;
+}
+
+function renderRanking() {
+  const table = document.getElementById("rank-table");
+  const head = `<tr><th class="factor-label">Factor</th><th>Weight</th>${COMPANIES.map((c) => `<th>${c.name.split(" (")[0]}</th>`).join("")}</tr>`;
+  const rows = FACTORS.map((f) => `
+    <tr data-factor="${f.key}">
+      <td class="factor-label">${f.label}</td>
+      <td><input type="number" class="weight-input" data-weight="${f.key}" min="0" max="5" step="1" value="${getWeight(f.key, f.weight)}" /></td>
+      ${COMPANIES.map((c) => `<td><input type="number" data-score="${c.id}|${f.key}" min="-2" max="2" step="1" value="${getScore(c.id, f.key, DEFAULT_SCORES[c.id][f.key])}" /></td>`).join("")}
+    </tr>`).join("");
+  const totals = computeTotals();
+  const totalsRow = `<tr class="total-row"><td class="factor-label">Weighted total</td><td></td>${COMPANIES.map((c) => `<td>${totals[c.id]}</td>`).join("")}</tr>`;
+  table.innerHTML = head + rows + totalsRow;
+
+  table.querySelectorAll("[data-weight]").forEach((input) => {
+    input.addEventListener("input", () => {
+      localStorage.setItem(rankWeightKey(input.dataset.weight), input.value);
+      renderRanking();
+    });
+  });
+  table.querySelectorAll("[data-score]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const [id, factor] = input.dataset.score.split("|");
+      localStorage.setItem(rankScoreKey(id, factor), input.value);
+      renderRanking();
+    });
+  });
+
+  const ranked = [...COMPANIES].sort((a, b) => totals[b.id] - totals[a.id]);
+  const max = Math.max(...ranked.map((c) => Math.abs(totals[c.id])), 1);
+  const medals = ["🥇", "🥈", "🥉", "4️⃣"];
+  document.getElementById("rank-result").innerHTML = ranked.map((c, i) => {
+    const t = totals[c.id];
+    const pct = Math.max(6, Math.round((Math.abs(t) / max) * 100));
+    const side = t >= 0 ? "left" : "right";
+    return `<div class="rank-row">
+      <span class="medal">${medals[i]}</span>
+      <span class="rname">${c.name.split(" (")[0]}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%;margin-${side}:auto;background:${RANK_COLORS[c.id]}"></div></div>
+      <span class="rscore">${t}</span>
+    </div>`;
+  }).join("");
+}
+
+document.getElementById("rank-reset").addEventListener("click", () => {
+  if (!confirm("Reset all ranking weights and scores back to defaults?")) return;
+  for (const f of FACTORS) localStorage.removeItem(rankWeightKey(f.key));
+  for (const c of COMPANIES) for (const f of FACTORS) localStorage.removeItem(rankScoreKey(c.id, f.key));
+  renderRanking();
+});
 
 const LS_KEY = (id, field) => `jobhunt_${id}_${field}`;
 
@@ -301,6 +443,7 @@ function render() {
   });
 }
 render();
+renderRanking();
 </script>
 </body>
 </html>
