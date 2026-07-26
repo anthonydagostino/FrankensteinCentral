@@ -46,10 +46,10 @@ _VAGUE_DEFAULTS = {"morning": (9, 0), "afternoon": (14, 0), "evening": (18, 0), 
 # so old proposals (and their dates, often stretching a year back by the
 # time a thread is old) get re-matched as if they were new every single sync.
 _QUOTE_MARKERS = re.compile(
-    r"\bOn\s.{0,100}\swrote:|"
+    r"\bOn\s[\s\S]{0,140}?\swrote:|"
     r"^>|\n>|"
     r"-{2,}\s*Original Message\s*-{2,}|"
-    r"\nFrom:\s.{0,120}\nSent:\s|"
+    r"\nFrom:\s[\s\S]{0,160}?\nSent:\s|"
     r"\nSent from my i(?:Phone|Pad)\b",
     re.IGNORECASE,
 )
@@ -63,9 +63,13 @@ def strip_quoted(text: str) -> str:
 
 # Phrases where the SENDER is proposing/offering their own availability —
 # distinct from an incoming email that already states a fixed, confirmed time.
+# Deliberately does NOT include bare "works for me" — that phrase is almost
+# always someone ACCEPTING a time already on the table (see CONFIRM_RE), not
+# offering a fresh set of options; including it here caused a real reply
+# like "Tuesday at 10am works for me" to be misread as a new proposal.
 PROPOSAL_RE = re.compile(
     r"i(?:'|')?m\s+available|i\s+am\s+available|i(?:'|')?m\s+free|i\s+am\s+free|"
-    r"i\s+can\s+do|i\s+could\s+do|works?\s+for\s+me|does\s+.{0,25}\s+work\s+for\s+you|"
+    r"i\s+can\s+do|i\s+could\s+do|does\s+.{0,25}\s+work\s+for\s+you|"
     r"how\s+about|let(?:'|')s\s+do|i(?:'|')?m\s+open|"
     r"any\s+of\s+(?:these|the following)\s+(?:times?|work)|"
     r"either\s+.{0,40}\s+or\s+|"
