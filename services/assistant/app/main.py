@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS activity (
     id SERIAL PRIMARY KEY, agent TEXT NOT NULL, station TEXT NOT NULL,
     action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
+-- One row per gmail scheduling thread (a "I'm available X" email you sent
+-- and whatever happened after). `signature` fingerprints status + all the
+-- slots involved, so a sync where nothing about the thread changed is a
+-- total no-op: no duplicate schedule events, no duplicate notable/digest
+-- lines, no wasted Google Calendar API calls.
+CREATE TABLE IF NOT EXISTS thread_state (
+    thread_id TEXT PRIMARY KEY, signature TEXT NOT NULL, status TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -196,6 +205,7 @@ async def build_briefing() -> list[dict]:
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
         vault = await _get(client, f"{VAULT_URL}/summary")
+        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
 
     for e in emails.get("emails", [])[:5]:
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -244,6 +254,22 @@ async def build_briefing() -> list[dict]:
             {"source": "vault", "message": f"{vault['reused']} reused password(s) — rotate them."}
         )
 
+    threads = availability.get("threads", [])
+    awaiting = [t for t in threads if t.get("status") == "pending"]
+    countered = [t for t in threads if t.get("status") == "countered"]
+    if countered:  # the ball's in your court — surface these above plain "waiting"
+        names = ", ".join(_sender_name(t.get("counterparty", "")) for t in countered[:3])
+        items.append(
+            {"source": "schedule", "message": f"{len(countered)} countered your availability, "
+                                               f"needs a reply: {names}."}
+        )
+    if awaiting:
+        names = ", ".join(_sender_name(t.get("counterparty", "")) for t in awaiting[:3])
+        items.append(
+            {"source": "schedule", "message": f"Awaiting reply on {len(awaiting)} proposed "
+                                               f"time(s): {names}."}
+        )
+
     return items
 
 
@@ -267,7 +293,9 @@ async def build_overview() -> dict:
         vault = await _get(client, f"{VAULT_URL}/summary")
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
-    events = cal.get("events", [])
+    # Only a *confirmed* event counts as "next up" — a still-pending proposal
+    # you sent isn't a real commitment yet, so it shouldn't read as one.
+    events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
     return {
         "emails_to_reply": len(emails.get("emails", [])),
         "expected_profit": pb.get("expected_profit", 0),
@@ -350,6 +378,7 @@ async def ask(q: str = ""):
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
         networth = await _get(client, f"{NETWORTH_URL}/summary")
+        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
 
     def has(*words):
         return any(w in ql for w in words)
@@ -398,10 +427,23 @@ async def ask(q: str = ""):
         lifts = ", ".join(tp.get("lifts", [])) or "recovery"
         return {"answer": f"Today is {tp.get('focus', 'rest')} day: {lifts}."}
 
+    if has("pending", "awaiting", "waiting on", "proposed", "did they reply", "confirm"):
+        threads = availability.get("threads", [])
+        pend = [t for t in threads if t.get("status") in ("pending", "countered")]
+        if not pend:
+            return {"answer": "Nothing awaiting a reply — every proposed time has been "
+                              "confirmed or fell through."}
+        lines = [f"{len(pend)} thread(s) awaiting a reply:"]
+        for t in pend:
+            who = _sender_name(t.get("counterparty", ""))
+            tag = "they countered" if t.get("status") == "countered" else "awaiting them"
+            lines.append(f"• {_short(t.get('subject', ''))} — {who} ({tag})")
+        return {"answer": "\n".join(lines)}
+
     if has("schedule", "calendar", "next", "event", "interview", "meeting", "coming up"):
-        events = cal.get("events", [])
+        events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
         if not events:
-            return {"answer": "Nothing on your calendar yet."}
+            return {"answer": "Nothing confirmed on your calendar yet."}
         nxt = events[0]
         return {"answer": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
 
@@ -462,6 +504,95 @@ async def space():
     return {"memory": mem, "deadlines": dls, "activity": act}
 
 
+async def _sync_availability_threads(conn, client: httpx.AsyncClient) -> tuple[int, list[str]]:
+    """Threads where you proposed your own availability ("I'm available
+    Monday at 2pm"). Turns them into pending/confirmed/countered calendar
+    events and, once one slot is confirmed, clears the other proposed slots
+    for that thread so the calendar never shows three tentative holds for a
+    meeting that's already locked to one time.
+
+    Skips any thread whose state hasn't changed since the last sync (see
+    thread_state table) — that's what keeps this from re-creating the same
+    pending event or re-announcing the same "still waiting" status forever.
+    """
+    avail = await _get(client, f"{GMAIL_URL}/thread-availability")
+    threads = avail.get("threads", [])
+    cur = await conn.execute("SELECT thread_id, signature FROM thread_state")
+    prev = {tid: sig for tid, sig in await cur.fetchall()}
+
+    lines: list[str] = []
+    changed = 0
+    for t in threads:
+        tid = t["thread_id"]
+        proposed = t.get("proposed_slots") or []
+        countered = t.get("countered_slots") or []
+        confirmed = t.get("confirmed_slot")
+        status = t.get("status", "pending")
+        signature = f"{status}|{','.join(proposed)}|{confirmed or ''}|{','.join(countered)}"
+        if prev.get(tid) == signature:
+            continue  # nothing new since last time — no-op, on purpose
+
+        changed += 1
+        subject = t.get("subject", "")
+        who = _sender_name(t.get("counterparty", ""))
+        base_ext = f"thread:{tid}"
+        label = "Interview" if "interview" in subject.lower() else "Meeting"
+
+        # Slot external_ids are keyed by the slot's own ISO time (not a plain
+        # index) so a slot that survives across rounds (e.g. still offered
+        # after a counter) maps to the same calendar event, while a slot
+        # that's no longer offered has no id in `keep_ids` and gets cleaned
+        # up below instead of lingering as a stale "pending" hold forever.
+        keep_ids: list[str] = []
+        if status in ("pending", "countered"):
+            slots = countered if status == "countered" else proposed
+            for slot in slots:
+                ext = f"{base_ext}:slot:{slot}"
+                keep_ids.append(ext)
+                await client.post(
+                    f"{SCHEDULE_URL}/events",
+                    json={"title": f"{label} — {who}", "starts_at": slot, "source": "gmail",
+                          "external_id": ext, "status": status, "thread_id": tid},
+                    timeout=8,
+                )
+            if status == "pending":
+                lines.append(f"⏳ Sent availability: {_short(subject)} — {len(slots)} time(s) "
+                              f"proposed, awaiting {who}'s reply")
+            else:
+                lines.append(f"🔁 {who} countered: {_short(subject)} — new time(s) offered, your move")
+        elif status == "confirmed" and confirmed:
+            ext = f"{base_ext}:confirmed"
+            keep_ids = [ext]
+            await client.post(
+                f"{SCHEDULE_URL}/events",
+                json={"title": f"{label} — {who}", "starts_at": confirmed, "source": "gmail",
+                      "external_id": ext, "status": "confirmed", "thread_id": tid},
+                timeout=8,
+            )
+            lines.append(f"✅ Confirmed: {_short(subject)} — {who} — {confirmed}")
+        elif status == "declined":
+            lines.append(f"🚫 No time worked out: {_short(subject)} — {who}")
+
+        # Whatever wasn't just (re)created above — a prior round's slots
+        # that got superseded, or everything if this thread just declined —
+        # gets declined and pulled off the calendar right now.
+        await client.post(
+            f"{SCHEDULE_URL}/events/resolve-thread",
+            json={"thread_id": tid, "keep_external_ids": keep_ids}, timeout=8,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO thread_state (thread_id, signature, status, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (thread_id) DO UPDATE
+                SET signature = %s, status = %s, updated_at = %s
+            """,
+            (tid, signature, status, _now(), signature, status, _now()),
+        )
+    return changed, lines
+
+
 @app.post("/sync")
 async def sync():
     """Core orchestration pass, now narrated as agent jobs for the lounge.
@@ -511,7 +642,14 @@ async def sync():
                     booked += 1
                     await _add_deadline(conn, f"Interview — {e['from']}", when,
                                         "schedule", f"evt:{e['id']}")
+            # Cal -> Schedule (your own sent "I'm available..." proposals —
+            # pending until they reply, confirmed/countered/declined after)
+            thread_changes, thread_lines = await _sync_availability_threads(conn, client)
+            notable.extend(thread_lines)
+
             cal_summary = f"booked {booked} event(s)" if booked else "calendar up to date"
+            if thread_changes:
+                cal_summary += f"; {thread_changes} availability thread(s) updated"
             await _log(conn, cal_agent["name"], "schedule", "checked calendar", cal_summary)
             jobs.append({"agent": cal_agent["id"], "name": cal_agent["name"],
                          "station": "schedule", "summary": cal_summary})

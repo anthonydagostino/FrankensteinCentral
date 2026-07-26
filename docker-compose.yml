@@ -159,9 +159,15 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      # Borrows the gmail service's connected Google account (via its
+      # /internal/token endpoint) to push events to the real Google Calendar.
+      GMAIL_URL: http://gmail:8000
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
     depends_on:
       db:
         condition: service_healthy
+      gmail:
+        condition: service_started
     ports:
       - "8084:8000"
 

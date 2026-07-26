@@ -48,8 +48,8 @@ endpoints at `/` and `/health`.
 | Assistant  | 8085 | Reads all sub-apps, briefing, agent lounge (Assistant HQ) | live (mock inputs) |
 | PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring | live via login, mock fallback |
 | Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | visits persisted (Postgres) |
-| Gmail      | 8083 | Whole-inbox triage. Own Google OAuth                      | OAuth wired, token persisted |
-| Schedule   | 8084 | Your calendar. Idempotent event creation                  | persisted (Postgres) |
+| Gmail      | 8083 | Whole-inbox triage + sent-mail availability detection. Own Google OAuth | OAuth wired, token persisted |
+| Schedule   | 8084 | Your calendar. Idempotent, pending/confirmed color-coded, pushes to real Google Calendar | persisted (Postgres) |
 | Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon    | persisted (Postgres) |
 | Tasks      | 8087 | Your to-do list — quick capture, check things off         | persisted (Postgres) |
 
@@ -62,7 +62,34 @@ endpoints at `/` and `/health`.
   delivered, expiring soon). Empty creds = mock data.
 - **Gmail** — create OAuth credentials in Google Cloud, set `GOOGLE_CLIENT_ID`
   / `GOOGLE_CLIENT_SECRET`. Visit `http://localhost:8083/auth/login` to connect.
-  Once connected, `/needs-reply` reads your real unread inbox.
+  Once connected, `/needs-reply` reads your real unread inbox, and
+  `/thread-availability` scans your **sent** mail for "I'm available X at Y"
+  proposals and tracks whether the other side confirmed, countered, or
+  declined. This scope also now includes `calendar.events` (added so Bones
+  can write to your real Google Calendar) — if you connected before this
+  was added, **revisit `/auth/login` once** to re-consent; a token minted
+  with only the old `gmail.modify` scope will 403 on Calendar calls.
+
+## Gmail → Bones → Calendar pipeline
+
+1. **Posty** (gmail service) triages the inbox and separately scans sent
+   mail for your own availability proposals (`/thread-availability`).
+2. **Bones** (assistant) diffs each thread's state against what it saw last
+   sync (`thread_state` table) — unchanged threads are a total no-op, so
+   nothing re-announces or re-books itself.
+3. **Cal** (schedule service) gets a pending event per proposed slot, then:
+   - if they **confirm** one → that slot flips to confirmed and every other
+     proposed slot on the thread is auto-declined and removed (no leftover
+     tentative holds for a meeting that's already locked in).
+   - if they **counter** with a different time → the pending slot(s) update
+     to the new offer, still marked pending, waiting on you.
+   - if they **decline** → all pending slots on that thread clear out.
+4. Every create/update is pushed to your **real Google Calendar**
+   (`schedule` borrows Gmail's token via its internal `/internal/token`),
+   color-coded so pending vs. confirmed is visually obvious both on the hub
+   and in Google Calendar itself: 🟡 proposed by you, 🟠 they countered,
+   🟢 confirmed. Declined slots are removed from Calendar (the Postgres row
+   stays, marked `declined`, as your own audit trail).
 
 ## Adding a new sub-app
 

@@ -136,16 +136,25 @@ const RENDERERS = {
   async schedule(app, body) {
     const data = await api("/schedule/events");
     setMode();
-    const rows = (data.events || [])
-      .map(
-        (ev) => `<div class="row"><div class="grow"><b>${esc(ev.title)}</b>
+    const events = data.events || [];
+    const statusLabel = { pending: "Proposed", countered: "Their offer", confirmed: "Confirmed" };
+    const row = (ev) => {
+      const status = ev.status || "confirmed";
+      const chip = statusLabel[status]
+        ? `<span class="chip status-${esc(status)}">${esc(statusLabel[status])}</span>` : "";
+      return `<div class="row status-${esc(status)}"><div class="grow"><b>${esc(ev.title)}</b>
           <div class="sub">from ${esc(ev.source || "manual")}</div></div>
-          <span class="right">${esc(fmtDate(ev.starts_at))}</span></div>`
-      )
-      .join("");
+          ${chip}
+          <span class="right">${esc(fmtDate(ev.starts_at))}</span></div>`;
+    };
+    const awaiting = events.filter((e) => e.status === "pending" || e.status === "countered");
+    const confirmed = events.filter((e) => !e.status || e.status === "confirmed");
+    const awaitingRows = awaiting.map(row).join("");
+    const confirmedRows = confirmed.map(row).join("");
     body.innerHTML = `
+      ${awaiting.length ? `<h4>Awaiting a reply</h4><div class="rows">${awaitingRows}</div>` : ""}
       <h4>Upcoming</h4>
-      <div class="rows">${rows || '<p class="empty">No events yet.</p>'}</div>
+      <div class="rows">${confirmedRows || '<p class="empty">No events yet.</p>'}</div>
       <h4>Add an event</h4>
       <div class="inline-form">
         <input id="ev-title" placeholder="Title (e.g. Dentist)" />
@@ -159,7 +168,7 @@ const RENDERERS = {
       await api("/schedule/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, starts_at: when, source: "manual" }),
+        body: JSON.stringify({ title, starts_at: when, source: "manual", status: "confirmed" }),
       });
       openApp(app);
     };

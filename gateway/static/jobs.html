@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Job Hunt Tracker — FrankensteinCentral</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #161a23; --panel-2: #1d2230; --line: #262c3a;
+    --text: #e7ecf3; --muted: #8a93a6; --accent: #6ee7b7; --accent-2: #7c9cff;
+    --down: #ff6b6b; --up: #6ee7b7; --warn: #ffcc66;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 28px 20px 80px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  header { margin-bottom: 22px; }
+  header .top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { color: var(--muted); margin: 0; font-size: 14px; }
+  .badge-temp {
+    background: rgba(255,204,102,0.14); color: var(--warn); border: 1px solid rgba(255,204,102,0.35);
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  a.back { color: var(--accent-2); text-decoration: none; font-size: 13px; }
+  a.back:hover { text-decoration: underline; }
+
+  .factor-table {
+    width: 100%; border-collapse: collapse; margin: 18px 0 30px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    font-size: 13px;
+  }
+  .factor-table th, .factor-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  .factor-table th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .factor-table tr:last-child td { border-bottom: none; }
+  .factor-table td.company { font-weight: 700; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .tag.good { background: rgba(110,231,183,0.16); color: var(--up); }
+  .tag.mid { background: rgba(255,204,102,0.16); color: var(--warn); }
+  .tag.bad { background: rgba(255,107,107,0.16); color: var(--down); }
+  .tag.unknown { background: rgba(138,147,166,0.16); color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card h2 { margin: 0; font-size: 19px; display: flex; align-items: center; gap: 8px; }
+  .card .role { color: var(--accent-2); font-size: 13px; font-weight: 600; }
+  .card .blurb { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0; }
+  .fact-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 6px; }
+  .col h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .col.pros h4 { color: var(--up); }
+  .col.cons h4 { color: var(--down); }
+  ul.edit-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+  ul.edit-list li { margin-bottom: 4px; outline: none; }
+  ul.edit-list li:focus { background: rgba(124,156,255,0.08); border-radius: 4px; }
+  .add-row { font-size: 12px; color: var(--muted); cursor: pointer; margin-top: 2px; }
+  .add-row:hover { color: var(--accent-2); }
+  .notes {
+    margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px;
+  }
+  .notes h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .notes textarea {
+    width: 100%; min-height: 54px; resize: vertical; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .saved-note { font-size: 11px; color: var(--muted); }
+  .reset-btn {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 8px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+  }
+  .reset-btn:hover { color: var(--down); border-color: var(--down); }
+  .sources { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .sources a { color: var(--muted); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="top-row">
+        <div>
+          <h1>🧭 Job Hunt Tracker</h1>
+          <p class="sub">Ongoing pros/cons — 233 Analytics · DeepL · AIRIA · EliseAI. Click into any list to edit; it saves in this browser as you go.</p>
+        </div>
+        <span class="badge-temp">TEMPORARY — delete this file once you've decided</span>
+      </div>
+      <p class="sub"><a class="back" href="/">← Back to the hub</a> &nbsp;·&nbsp; Weighting: <b>more remote = better</b>, <b>onsite food = plus</b>, <b>pay = plus</b>. Everything here is a snapshot from public research as of when it was written — verify anything decision-critical directly with the recruiter.</p>
+    </header>
+
+    <table class="factor-table">
+      <thead>
+        <tr><th>Company</th><th>Remote policy</th><th>Pay</th><th>Onsite perks/food</th><th>Funding / stability</th><th>Process stage</th><th>Data confidence</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="company">233 Analytics</td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag bad">Bootstrapped, ~9 people</span></td><td><span class="tag unknown">Unclear</span></td><td><span class="tag bad">Lowest — almost no public data</span></td></tr>
+        <tr><td class="company">DeepL</td><td><span class="tag mid">Contested: some say remote, others ~2x/wk hybrid</span></td><td><span class="tag good">~$150k (highest)</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag good">$2B valuation, 1,000+ staff</span></td><td><span class="tag bad">~4 rounds left</span></td><td><span class="tag mid">Medium — some conflicting sources</span></td></tr>
+        <tr><td class="company">AIRIA (airia20.com)</td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag bad">Seed, $3.1M, ~8 people</span></td><td><span class="tag unknown">No open role confirmed</span></td><td><span class="tag bad">Lowest — no careers page found</span></td></tr>
+        <tr><td class="company">EliseAI</td><td><span class="tag bad">Hybrid reported 4–5 days/wk onsite</span></td><td><span class="tag mid">$100k–$135k posted</span></td><td><span class="tag good">Free daily meals, snacks, fitness stipend</span></td><td><span class="tag good">Series E, $2.2B val, $100M+ ARR</span></td><td><span class="tag good">Furthest along (per your context)</span></td><td><span class="tag good">Best documented of the four</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid" id="cards"></div>
+
+    <footer>Research compiled from public sources (company sites, Ashby/BuiltIn/Glassdoor listings, Crunchbase/PitchBook, press coverage) — see each card's sources. Not a substitute for asking your recruiter directly.</footer>
+  </div>
+
+<script>
+const COMPANIES = [
+  {
+    id: "233analytics",
+    name: "233 Analytics",
+    role: "Role not publicly posted — unconfirmed",
+    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found).",
+    pros: [
+      "Niche, technically deep work (source-code/forensic analysis, expert testimony) if that's interesting to you",
+      "Very small team — likely more responsibility, visibility, and faster ramp than a big org",
+      "Less bureaucracy / corporate process by nature of size",
+    ],
+    cons: [
+      "No confirmed remote policy, salary range, or even a public open role — biggest unknown of the four",
+      "Tiny (~9 people), bootstrapped — no funding cushion, higher volatility, fewer resources for benefits/perks",
+      "No public info on onsite perks or food",
+      "Thinnest documentation of any of these four — hardest to de-risk before an offer is actually on the table",
+    ],
+    sources: [
+      ["233analytics.com", "https://233analytics.com/"],
+      ["RocketReach profile", "https://rocketreach.co/233-analytics-llc-profile_b770313fc5336f2a"],
+    ],
+  },
+  {
+    id: "deepl",
+    name: "DeepL",
+    role: "Likely Senior Data Scientist / Research Data Engineer / Software Engineer (API) — exact match unconfirmed",
+    blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024).",
+    pros: [
+      "Highest disclosed salary of the four (~$150k)",
+      "Well-funded, high-profile product with a real moat — strong resume/brand value",
+      "Some sources describe it as remote-friendly (though contested — see cons)",
+    ],
+    cons: [
+      "~4 more interview rounds remaining — the longest, lowest near-term-probability path of the four",
+      "Remote policy is genuinely contested across sources: some say fully remote, Glassdoor/others describe ~2x/week hybrid — confirm directly before counting on it",
+      "Below-average Glassdoor (2.8/5, only 39% would recommend) — recurring management/culture complaints (\"explosive growth invited toxicity\")",
+      "HQ is in Cologne, Germany — verify time zone expectations for a US-based hire",
+    ],
+    sources: [
+      ["DeepL careers", "https://www.deepl.com/en/careers"],
+      ["Ashby job board", "https://jobs.ashbyhq.com/DeepL"],
+      ["CNBC — $2B valuation", "https://www.cnbc.com/2024/05/22/deepl-ai-rival-google-translate-2-billion-valuation.html"],
+      ["Glassdoor reviews", "https://www.glassdoor.com/Reviews/DeepL-Reviews-E2426949.htm"],
+    ],
+  },
+  {
+    id: "airia",
+    name: "AIRIA (airia20.com)",
+    role: "No open role confirmed at this specific entity — an \"AI/ML Lead\" listing was found but could not be verified as belonging to airia20.com vs. the unrelated airia.com",
+    blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware). Founded 2020 (hence \"20\" in the domain). HQ Harrison, NY. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
+    pros: [
+      "Very early stage — often means more equity upside and broader scope/ownership than a large company",
+      "Small, nimble team — direct access to founders/decision-making",
+    ],
+    cons: [
+      "No confirmed open role, salary, or remote policy for this specific entity",
+      "Seed-stage only ($3.1M raised) — real runway/stability risk, unproven business",
+      "Easy to confuse with a similarly-named, unrelated company (airia.com) — verify you're talking to the right \"Airia\" before going further",
+      "No careers page found — least mature public presence of the four",
+    ],
+    sources: [
+      ["airia20.com", "https://airia20.com/"],
+      ["PitchBook", "https://pitchbook.com/profiles/company/467764-30"],
+      ["BusinessWire — seed funding", "https://www.businesswire.com/news/home/20250730110388/en/AIRIA-Secures-Seed-Funding-to-Expand-Commercial-and-Federal-Operations"],
+    ],
+  },
+  {
+    id: "eliseai",
+    name: "EliseAI",
+    role: "Multiple roles found in your range — Software Engineer, Sales Ops Manager ($95k-$125k), Solutions Engineer Implementation & Delivery ($135k-$185k). Your posted range: $100k–$135k",
+    blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR.",
+    pros: [
+      "Salary confirmed and consistent with market data for the role range",
+      "Strong onsite perks: free daily meals, snacks/drinks, fitness & home-services stipend, unlimited PTO, 100%-premium-covered medical/dental/vision, fully paid parental leave, commuter benefits",
+      "Well-funded and growing fast (Series E, doubling valuation to $2.2B, headcount doubled in 2025) — real momentum",
+      "Best-documented company of the four — least uncertainty going in",
+      "Furthest along in your process, per your own context",
+    ],
+    cons: [
+      "Least remote-friendly of the four — hybrid reported at 4–5 days/week onsite, closer to fully onsite than a typical hybrid arrangement",
+      "Weakest work-life-balance score sourced across all four companies (2.6/5 on Glassdoor)",
+      "Some Glassdoor complaints about leadership and understaffing (\"spend money on almost anything except hiring enough people\")",
+      "Lowest salary ceiling of the group compared to DeepL's ~$150k",
+    ],
+    sources: [
+      ["EliseAI careers", "https://www.eliseai.com/careers"],
+      ["Glassdoor", "https://www.glassdoor.com/Reviews/EliseAI-Reviews-E3133208.htm"],
+      ["TechStartups — Series E", "https://techstartups.com/2025/08/21/eliseai-raises-250m-in-series-e-funding-led-by-andreessen-horowitz-doubling-valuation-to-2-2b/"],
+      ["BuiltIn NYC — office/perks", "https://www.builtinnyc.com/company/eliseai"],
+    ],
+  },
+];
+
+const LS_KEY = (id, field) => `jobhunt_${id}_${field}`;
+
+function loadList(id, field, fallback) {
+  try {
+    const raw = localStorage.getItem(LS_KEY(id, field));
+    return raw ? JSON.parse(raw) : fallback;
+  } catch { return fallback; }
+}
+function saveList(id, field, items) {
+  localStorage.setItem(LS_KEY(id, field), JSON.stringify(items));
+  stampSaved(id);
+}
+function loadNotes(id) { return localStorage.getItem(LS_KEY(id, "notes")) || ""; }
+function saveNotes(id, text) { localStorage.setItem(LS_KEY(id, "notes"), text); stampSaved(id); }
+function stampSaved(id) {
+  const el = document.getElementById(`saved-${id}`);
+  if (el) el.textContent = "Saved just now (this browser)";
+}
+
+function editableList(items) {
+  return items.map((t) => `<li contenteditable="true" spellcheck="false">${t}</li>`).join("");
+}
+
+function render() {
+  const grid = document.getElementById("cards");
+  grid.innerHTML = COMPANIES.map((c) => `
+    <div class="card" data-id="${c.id}">
+      <h2>${c.name}</h2>
+      <div class="role">${c.role}</div>
+      <p class="blurb">${c.blurb}</p>
+      <div class="cols">
+        <div class="col pros">
+          <h4>Pros</h4>
+          <ul class="edit-list" data-field="pros">${editableList(loadList(c.id, "pros", c.pros))}</ul>
+          <div class="add-row" data-add="pros">+ add a pro</div>
+        </div>
+        <div class="col cons">
+          <h4>Cons</h4>
+          <ul class="edit-list" data-field="cons">${editableList(loadList(c.id, "cons", c.cons))}</ul>
+          <div class="add-row" data-add="cons">+ add a con</div>
+        </div>
+      </div>
+      <div class="notes">
+        <h4>Your running notes</h4>
+        <textarea data-field="notes" placeholder="e.g. recruiter said next round is Thursday...">${loadNotes(c.id)}</textarea>
+      </div>
+      <div class="sources">Sources: ${c.sources.map(([label, url]) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`).join(" · ")}</div>
+      <div class="card-foot">
+        <span class="saved-note" id="saved-${c.id}">Not edited yet</span>
+        <button class="reset-btn" data-reset="${c.id}">Reset to research defaults</button>
+      </div>
+    </div>
+  `).join("");
+
+  grid.querySelectorAll(".edit-list").forEach((ul) => {
+    ul.addEventListener("input", () => {
+      const id = ul.closest(".card").dataset.id;
+      const field = ul.dataset.field;
+      const items = Array.from(ul.children).map((li) => li.textContent.trim()).filter(Boolean);
+      saveList(id, field, items);
+    });
+  });
+  grid.querySelectorAll("[data-add]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest(".card");
+      const field = btn.dataset.add;
+      const ul = card.querySelector(`ul[data-field="${field}"]`);
+      const li = document.createElement("li");
+      li.contentEditable = "true";
+      li.textContent = "New point — click to edit";
+      ul.appendChild(li);
+      li.focus();
+      document.execCommand("selectAll", false, null);
+      const id = card.dataset.id;
+      const items = Array.from(ul.children).map((n) => n.textContent.trim()).filter(Boolean);
+      saveList(id, field, items);
+    });
+  });
+  grid.querySelectorAll("textarea[data-field='notes']").forEach((ta) => {
+    ta.addEventListener("input", () => {
+      const id = ta.closest(".card").dataset.id;
+      saveNotes(id, ta.value);
+    });
+  });
+  grid.querySelectorAll("[data-reset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.reset;
+      if (!confirm("Reset this card's pros/cons/notes back to the original research? This clears anything you've added.")) return;
+      localStorage.removeItem(LS_KEY(id, "pros"));
+      localStorage.removeItem(LS_KEY(id, "cons"));
+      localStorage.removeItem(LS_KEY(id, "notes"));
+      render();
+    });
+  });
+}
+render();
+</script>
+</body>
+</html>
