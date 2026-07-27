@@ -67,6 +67,20 @@ const esc = (s) =>
 const api = (path, opts) => fetch(`/api${path}`, opts).then((r) => r.json());
 const fmtDate = (s) => (s ? String(s).slice(0, 16).replace("T", " ") : "—");
 
+// ---- calendar date helpers (week/month views for the schedule app) --------
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const startOfWeek = (d) => { const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const addMonths = (d, n) => { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; };
+const isSameDay = (a, b) =>
+  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+// Persists across re-renders of the schedule modal (view mode + which week/month is showing).
+const SCHEDULE_VIEW = { mode: "week", anchor: new Date() };
+
 function closeModal() {
   $("#overlay").classList.remove("open");
 }
@@ -80,6 +94,7 @@ async function openApp(app) {
   $("#modal-icon").textContent = app.icon;
   $("#modal-title").textContent = app.name;
   $("#modal-mode").textContent = "";
+  $(".modal").classList.toggle("wide", app.key === "schedule");
   const body = $("#modal-body");
   body.innerHTML = `<p class="empty">Loading…</p>`;
   $("#overlay").classList.add("open");
@@ -137,41 +152,114 @@ const RENDERERS = {
     const data = await api("/schedule/events");
     setMode();
     const events = data.events || [];
-    const statusLabel = { pending: "Proposed", countered: "Their offer", confirmed: "Confirmed" };
-    const row = (ev) => {
+
+    const eventsOnDay = (day) =>
+      events
+        .filter((ev) => ev.starts_at && isSameDay(new Date(ev.starts_at), day))
+        .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+
+    const eventChip = (ev, compact) => {
       const status = ev.status || "confirmed";
-      const chip = statusLabel[status]
-        ? `<span class="chip status-${esc(status)}">${esc(statusLabel[status])}</span>` : "";
-      return `<div class="row status-${esc(status)}"><div class="grow"><b>${esc(ev.title)}</b>
-          <div class="sub">from ${esc(ev.source || "manual")}</div></div>
-          ${chip}
-          <span class="right">${esc(fmtDate(ev.starts_at))}</span></div>`;
-    };
-    const awaiting = events.filter((e) => e.status === "pending" || e.status === "countered");
-    const confirmed = events.filter((e) => !e.status || e.status === "confirmed");
-    const awaitingRows = awaiting.map(row).join("");
-    const confirmedRows = confirmed.map(row).join("");
-    body.innerHTML = `
-      ${awaiting.length ? `<h4>Awaiting a reply</h4><div class="rows">${awaitingRows}</div>` : ""}
-      <h4>Upcoming</h4>
-      <div class="rows">${confirmedRows || '<p class="empty">No events yet.</p>'}</div>
-      <h4>Add an event</h4>
-      <div class="inline-form">
-        <input id="ev-title" placeholder="Title (e.g. Dentist)" />
-        <input id="ev-when" type="datetime-local" />
-        <button class="btn" id="ev-add">Add</button>
+      const time = new Date(ev.starts_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      return `<div class="${compact ? "cal-month-event" : "cal-event"} status-${esc(status)}" title="${esc(ev.title)}">
+        <span class="t">${esc(ev.title)}</span>${compact ? "" : `<span class="tm">${time}</span>`}
       </div>`;
-    $("#ev-add").onclick = async () => {
-      const title = $("#ev-title").value.trim();
-      const when = $("#ev-when").value;
-      if (!title || !when) return;
-      await api("/schedule/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, starts_at: when, source: "manual", status: "confirmed" }),
-      });
-      openApp(app);
     };
+
+    const renderWeek = () => {
+      const start = startOfWeek(SCHEDULE_VIEW.anchor);
+      const end = addDays(start, 6);
+      const today = startOfDay(new Date());
+      const label = end.getMonth() === start.getMonth()
+        ? `${MONTHS_SHORT[start.getMonth()]} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`
+        : `${MONTHS_SHORT[start.getMonth()]} ${start.getDate()} – ${MONTHS_SHORT[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+      const cols = Array.from({ length: 7 }, (_, i) => {
+        const day = addDays(start, i);
+        const past = day < today;
+        const dayEvents = eventsOnDay(day);
+        return `<div class="cal-day-col${isSameDay(day, today) ? " today" : ""}">
+          <div class="cal-day-head"><div class="dow">${DOW[i]}</div><div class="dnum">${day.getDate()}</div></div>
+          ${dayEvents.length ? dayEvents.map((e) => eventChip(e, false)).join("") : '<div class="cal-day-empty">—</div>'}
+          ${past ? '<div class="cal-past-x">✕</div>' : ""}
+        </div>`;
+      }).join("");
+      return { label, html: `<div class="cal-week-grid">${cols}</div>` };
+    };
+
+    const renderMonth = () => {
+      const anchor = SCHEDULE_VIEW.anchor;
+      const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+      const gridStart = startOfWeek(monthStart);
+      const today = startOfDay(new Date());
+      const label = `${MONTHS_LONG[anchor.getMonth()]} ${anchor.getFullYear()}`;
+      const dowRow = DOW.map((d) => `<div class="cal-month-dow">${d}</div>`).join("");
+      const cells = Array.from({ length: 42 }, (_, i) => {
+        const day = addDays(gridStart, i);
+        const inMonth = day.getMonth() === anchor.getMonth();
+        const past = day < today;
+        const dayEvents = eventsOnDay(day);
+        const shown = dayEvents.slice(0, 3);
+        const extra = dayEvents.length - shown.length;
+        return `<div class="cal-month-cell${inMonth ? "" : " other-month"}${isSameDay(day, today) ? " today" : ""}">
+          <div class="dnum">${day.getDate()}</div>
+          ${shown.map((e) => eventChip(e, true)).join("")}
+          ${extra > 0 ? `<div class="cal-month-more">+${extra} more</div>` : ""}
+          ${past ? '<div class="cal-past-x">✕</div>' : ""}
+        </div>`;
+      }).join("");
+      return { label, html: `<div class="cal-month-grid">${dowRow}${cells}</div>` };
+    };
+
+    const draw = () => {
+      const { label, html } = SCHEDULE_VIEW.mode === "week" ? renderWeek() : renderMonth();
+      body.innerHTML = `
+        <div class="cal-toolbar">
+          <div class="cal-nav">
+            <button id="cal-prev">‹</button>
+            <button id="cal-today">Today</button>
+            <button id="cal-next">›</button>
+          </div>
+          <div class="cal-label">${label}</div>
+          <div class="cal-view-toggle">
+            <button data-view="week" class="${SCHEDULE_VIEW.mode === "week" ? "active" : ""}">Week</button>
+            <button data-view="month" class="${SCHEDULE_VIEW.mode === "month" ? "active" : ""}">Month</button>
+          </div>
+        </div>
+        ${html}
+        <h4>Add an event</h4>
+        <div class="inline-form">
+          <input id="ev-title" placeholder="Title (e.g. Dentist)" />
+          <input id="ev-when" type="datetime-local" />
+          <button class="btn" id="ev-add">Add</button>
+        </div>`;
+
+      $("#cal-prev").onclick = () => {
+        SCHEDULE_VIEW.anchor = SCHEDULE_VIEW.mode === "week"
+          ? addDays(SCHEDULE_VIEW.anchor, -7) : addMonths(SCHEDULE_VIEW.anchor, -1);
+        draw();
+      };
+      $("#cal-next").onclick = () => {
+        SCHEDULE_VIEW.anchor = SCHEDULE_VIEW.mode === "week"
+          ? addDays(SCHEDULE_VIEW.anchor, 7) : addMonths(SCHEDULE_VIEW.anchor, 1);
+        draw();
+      };
+      $("#cal-today").onclick = () => { SCHEDULE_VIEW.anchor = new Date(); draw(); };
+      body.querySelectorAll("[data-view]").forEach((btn) => {
+        btn.onclick = () => { SCHEDULE_VIEW.mode = btn.dataset.view; draw(); };
+      });
+      $("#ev-add").onclick = async () => {
+        const title = $("#ev-title").value.trim();
+        const when = $("#ev-when").value;
+        if (!title || !when) return;
+        await api("/schedule/events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, starts_at: when, source: "manual", status: "confirmed" }),
+        });
+        openApp(app);
+      };
+    };
+    draw();
   },
 
   async fitness(app, body) {
