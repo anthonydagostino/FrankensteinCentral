@@ -652,9 +652,23 @@ async def sync():
             thread_changes, thread_lines = await _sync_availability_threads(conn, client)
             notable.extend(thread_lines)
 
+            # Cal -> Schedule (pull in anything added straight to Google
+            # Calendar — e.g. from your phone — that this app didn't push
+            # itself; the other direction of sync from the steps above)
+            try:
+                pull_resp = await client.post(f"{SCHEDULE_URL}/sync-from-calendar", timeout=15)
+                pull = pull_resp.json() if pull_resp.status_code < 300 else {}
+            except Exception:  # noqa: BLE001 - schedule unreachable, just skip this cycle
+                pull = {}
+            imported = pull.get("imported", 0)
+            if imported:
+                notable.append(f"📱 Pulled {imported} event(s) from Google Calendar")
+
             cal_summary = f"booked {booked} event(s)" if booked else "calendar up to date"
             if thread_changes:
                 cal_summary += f"; {thread_changes} availability thread(s) updated"
+            if imported:
+                cal_summary += f"; {imported} pulled from Calendar"
             await _log(conn, cal_agent["name"], "schedule", "checked calendar", cal_summary)
             jobs.append({"agent": cal_agent["id"], "name": cal_agent["name"],
                          "station": "schedule", "summary": cal_summary})

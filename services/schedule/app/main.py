@@ -100,7 +100,16 @@ async def create_event(event: Event):
     """Create (or, if the external_id already exists, update in place) an
     event. Idempotent on external_id so re-syncs never duplicate — this is
     also how a 'pending' slot flips to 'confirmed' without becoming a second
-    calendar entry: same external_id, status just changes underneath it."""
+    calendar entry: same external_id, status just changes underneath it.
+
+    A manually-added event (no external_id given, e.g. from the "Add an
+    event" box) gets one generated here — otherwise it would never get
+    pushed to Google Calendar at all, since the push step is keyed on
+    having an external_id. Generating one makes every event, regardless of
+    source, sync out to the real calendar the same way.
+    """
+    if not event.external_id:
+        event.external_id = f"manual:{uuid.uuid4()}"
     status = event.status if event.status in VALID_STATUSES else "confirmed"
     async with pool.connection() as conn:
         conn.row_factory = dict_row
@@ -126,7 +135,7 @@ async def create_event(event: Event):
                 )
                 row = await cur.fetchone()
                 gcal_id = await gcal.upsert(event.external_id, row["title"], row["starts_at"],
-                                             row["ends_at"], status)
+                                             row["ends_at"], status, known_gcal_id=row.get("gcal_event_id"))
                 if gcal_id:
                     await conn.execute(
                         "UPDATE events SET gcal_event_id = %s WHERE external_id = %s",
@@ -192,10 +201,10 @@ async def update_status(event_id: str, body: StatusUpdate):
             return {"error": "not found"}
         if row["external_id"]:
             if body.status == "declined":
-                await gcal.delete(row["external_id"])
+                await gcal.delete(row["external_id"], known_gcal_id=row.get("gcal_event_id"))
             else:
                 gcal_id = await gcal.upsert(row["external_id"], row["title"], row["starts_at"],
-                                             row["ends_at"], body.status)
+                                             row["ends_at"], body.status, known_gcal_id=row.get("gcal_event_id"))
                 if gcal_id:
                     await conn.execute(
                         "UPDATE events SET gcal_event_id = %s WHERE id = %s", (gcal_id, row["id"])
@@ -223,12 +232,62 @@ async def resolve_thread(body: ResolveThread):
         for s in siblings:
             await conn.execute("UPDATE events SET status = 'declined' WHERE id = %s", (s["id"],))
             if s["external_id"]:
-                await gcal.delete(s["external_id"])
+                await gcal.delete(s["external_id"], known_gcal_id=s.get("gcal_event_id"))
     return {"declined": len(siblings)}
+
+
+@app.post("/sync-from-calendar")
+async def sync_from_calendar():
+    """Pull in anything added directly to the real Google Calendar (from
+    your phone, or Google Calendar's own UI) that this app didn't create
+    itself — the other direction of sync from the gmail-driven push. Safe
+    to call repeatedly: keyed on Google's own event id, so re-pulling the
+    same event just no-ops or updates in place, never duplicates."""
+    events = await gcal.list_upcoming()
+    if events is None:
+        return {"synced": False, "reason": "Calendar not connected/reachable"}
+
+    imported, updated = 0, 0
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        for ev in events:
+            ext_id = f"gcal:{ev['gcal_id']}"
+            cur = await conn.execute("SELECT * FROM events WHERE external_id = %s", (ext_id,))
+            existing = await cur.fetchone()
+
+            if ev["cancelled"]:
+                if existing and existing["status"] != "declined":
+                    await conn.execute(
+                        "UPDATE events SET status = 'declined' WHERE external_id = %s", (ext_id,)
+                    )
+                continue
+
+            if existing:
+                if existing["status"] != ev["status"] or existing["starts_at"] != ev["starts_at"]:
+                    await conn.execute(
+                        "UPDATE events SET title = %s, starts_at = %s, status = %s WHERE external_id = %s",
+                        (ev["title"], ev["starts_at"], ev["status"], ext_id),
+                    )
+                    updated += 1
+                continue
+
+            await conn.execute(
+                """
+                INSERT INTO events (id, title, starts_at, source, external_id, status,
+                                     gcal_event_id, created_at)
+                VALUES (%s, %s, %s, 'google_calendar', %s, %s, %s, %s)
+                ON CONFLICT (external_id) DO NOTHING
+                """,
+                (str(uuid.uuid4()), ev["title"], ev["starts_at"], ext_id, ev["status"],
+                 ev["gcal_id"], datetime.utcnow().isoformat()),
+            )
+            imported += 1
+    return {"synced": True, "imported": imported, "updated": updated}
 
 
 @app.get("/")
 async def root():
     return {"app": "Schedule", "endpoints": [
-        "/events", "/events/{id}/status", "/events/resolve-thread", "/health",
+        "/events", "/events/{id}/status", "/events/resolve-thread",
+        "/sync-from-calendar", "/health",
     ]}

@@ -18,6 +18,7 @@ tentative event is visually distinct even in clients that ignore `status`:
 """
 import hashlib
 import os
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -60,13 +61,20 @@ def _body(title: str, starts_at: str, ends_at: str | None, status: str) -> dict:
     }
 
 
-async def upsert(external_id: str, title: str, starts_at: str, ends_at: str | None, status: str) -> str | None:
+async def upsert(external_id: str, title: str, starts_at: str, ends_at: str | None, status: str,
+                  known_gcal_id: str | None = None) -> str | None:
     """Create or update the Calendar event for this row. Returns the Google
-    event id on success, None if Calendar isn't connected/reachable."""
+    event id on success, None if Calendar isn't connected/reachable.
+
+    Pass known_gcal_id for a row that was pulled IN from Google Calendar
+    (its real event id, stored on import) — otherwise this would derive a
+    synthetic id from external_id and create a second, duplicate event
+    instead of updating the one that already exists there.
+    """
     token = await _token()
     if not token:
         return None
-    event_id = gcal_event_id(external_id)
+    event_id = known_gcal_id or gcal_event_id(external_id)
     headers = {"Authorization": f"Bearer {token}"}
     body = _body(title, starts_at, ends_at, status)
     base = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events"
@@ -82,11 +90,68 @@ async def upsert(external_id: str, title: str, starts_at: str, ends_at: str | No
     return None
 
 
-async def delete(external_id: str) -> bool:
+def _event_start(event: dict) -> str | None:
+    """Google represents timed events as start.dateTime (has an offset) and
+    all-day events as start.date (bare "2026-08-01", no time). Normalize the
+    latter to a plain local-midnight string — parsing a bare date as UTC
+    would shift it a day in any timezone behind UTC, which is how most of
+    this app's users are set up."""
+    start = event.get("start", {})
+    if start.get("dateTime"):
+        return start["dateTime"]
+    if start.get("date"):
+        return f"{start['date']}T00:00:00"
+    return None
+
+
+async def list_upcoming(days_back: int = 7, days_forward: int = 120) -> list[dict] | None:
+    """Pull events from the real Google Calendar within a window — this is
+    the other half of sync: events added directly on your phone (or in
+    Google Calendar's own UI) show up here too, not just the ones this app
+    pushed out. None on failure (not connected / unreachable)."""
+    token = await _token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    time_min = (datetime.utcnow() - timedelta(days=days_back)).isoformat() + "Z"
+    time_max = (datetime.utcnow() + timedelta(days=days_forward)).isoformat() + "Z"
+    params = {
+        "timeMin": time_min, "timeMax": time_max,
+        "singleEvents": "true", "orderBy": "startTime", "maxResults": 250,
+    }
+    url = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, params=params, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        out = []
+        for ev in r.json().get("items", []):
+            # Skip events THIS app pushed — they're already tracked under
+            # their own thread:/manual: external_id, re-importing them here
+            # would just create a duplicate row for the same event.
+            if ev.get("extendedProperties", {}).get("private", {}).get("frankenstein_status"):
+                continue
+            starts_at = _event_start(ev)
+            if not starts_at:
+                continue
+            out.append({
+                "gcal_id": ev["id"],
+                "title": ev.get("summary") or "(untitled)",
+                "starts_at": starts_at,
+                "status": "confirmed" if ev.get("status") == "confirmed" else "pending",
+                "cancelled": ev.get("status") == "cancelled",
+            })
+        return out
+    except Exception:  # noqa: BLE001 - best-effort pull, local DB stays authoritative
+        return None
+
+
+async def delete(external_id: str, known_gcal_id: str | None = None) -> bool:
     token = await _token()
     if not token:
         return False
-    event_id = gcal_event_id(external_id)
+    event_id = known_gcal_id or gcal_event_id(external_id)
     headers = {"Authorization": f"Bearer {token}"}
     url = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events/{event_id}"
     try:
