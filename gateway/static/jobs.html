@@ -155,7 +155,7 @@
         <tr><th>Company</th><th>Remote policy</th><th>Pay</th><th>Onsite perks/food</th><th>Career growth</th><th>Work-life balance</th><th>Process stage</th></tr>
       </thead>
       <tbody>
-        <tr><td class="company">233 Analytics</td><td><span class="tag good">Fully remote (some travel to major cities)</span></td><td><span class="tag unknown">Base unconfirmed</span> + 20% bonus + 18–20% profit share (⚠️ likely discretionary)</td><td><span class="tag unknown">None known</span></td><td><span class="tag bad">Bad — no AI/dev exposure</span></td><td><span class="tag good">Good overall</span></td><td><span class="tag unknown">Unclear</span></td></tr>
+        <tr><td class="company">233 Analytics</td><td><span class="tag good">Fully remote (some travel to major cities)</span></td><td><span class="tag bad">$85k base (offer in hand — $40k under floor)</span> + 20% bonus + 10–15% profit share</td><td><span class="tag good">401k, UHC health+dental, 15 PTO</span></td><td><span class="tag bad">Bad — no AI/dev exposure</span></td><td><span class="tag good">Good overall</span></td><td><span class="tag good">✅ Offer in hand</span></td></tr>
         <tr><td class="company">DeepL</td><td><span class="tag mid">2 days/wk in-person, flexible — location vs. NYC unconfirmed ⚠️</span></td><td><span class="tag good">$150k base (highest)</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag mid">Good IF switching jobs later</span></td><td><span class="tag mid">Mixed signals</span></td><td><span class="tag bad">4 more rounds left</span></td></tr>
         <tr><td class="company">AIRIA (airia20.com)</td><td><span class="tag mid">4–5 days/wk in Brooklyn (= your planned NYC move)</span></td><td><span class="tag good">$120k–$170k range (Feb) + equity</span></td><td><span class="tag unknown">None known</span></td><td><span class="tag good">Great — could become important there</span></td><td><span class="tag bad">Bad — 40+ hr weeks, grind culture</span></td><td><span class="tag unknown">Unclear</span></td></tr>
         <tr><td class="company">EliseAI</td><td><span class="tag mid">5 days/wk in NYC (= your planned NYC move)</span></td><td><span class="tag mid">$100k–$135k base</span> + equity</td><td><span class="tag good">Meals, fitness + home stipend, relocation</span></td><td><span class="tag mid">Alright — not horrible, not insane</span></td><td><span class="tag mid">Weak-ish (per Glassdoor)</span></td><td><span class="tag good">Furthest along</span></td></tr>
@@ -201,23 +201,24 @@ const COMPANIES = [
   {
     id: "233analytics",
     name: "233 Analytics",
-    role: "Role not publicly posted — base salary still unconfirmed",
+    role: "Junior Software Analyst — ✅ WRITTEN OFFER IN HAND ($85k base)",
     floor: 125000,
-    floorNote: "Revised up from $115k: NYC cost of living doesn't care that the job is remote — if you're moving there regardless, you need more income to actually \"save,\" not less. Zero AI/dev exposure is still a real career-opportunity cost on top of that. Ignore the profit-share when judging this — treat it as maybe-money, not comp.",
-    expected: "$100k–$120k",
-    expectedNote: "Comparable data: generic 'Litigation Support Analyst' averages ~$104k ($82k-$132k range), 'Technical Consultant' averages ~$119k. 233 Analytics' work (source-code/HDL forensics + expert testimony) is more specialized than generic litigation support, so I'd lean toward the higher end — but it's a tiny, TN-based, bootstrapped shop that may anchor to its own low-COL base rather than pay for the specialty. Real risk this comes in BELOW your $125k floor.",
-    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities (you're fine with this).",
+    floorNote: "⚠️ The offer landed at $85k base — a full $40k UNDER this floor, and below even the $100k–$120k you were told to expect. That's the headline: it's a real, confirmed, fully-remote offer, but the base is the lowest of all four companies. Your call whether the remote + benefits + certainty outweigh a base this far under your line (or whether it's worth a counter — the recruiter, Chris Thompson, is waiting on your mailing address, so there's room to reply with a number first).",
+    expected: "$85k (CONFIRMED)",
+    expectedNote: "No longer a guess — the written offer is $85k base + $17k (20%) bonus + typically 10–15% profit sharing. Total cash lands around ~$102k + profit share, but the base itself is below the earlier $100k–$120k estimate and your $125k floor. If you counter, anchor on the specialty of the work (source-code/HDL forensics + expert testimony) and the $100k–$120k comps, not the $85k they opened with.",
+    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities. OFFER (via Chris Thompson): Junior Software Analyst — $85k base + $17k (20%) bonus + typically 10–15% profit sharing; subsidized UnitedHealthcare health + dental, 401k access, full remote, opportunity to travel, 15 days PTO, 7 paid holidays. They asked for your mailing address to send the formal offer letter.",
     pros: [
-      "Fully remote, confirmed directly — matches your top stated priority better than any of the other three",
+      "Actual written offer in hand — the ONLY confirmed offer of the four, so max process certainty (nothing left to \"win,\" just decide)",
+      "Fully remote, confirmed — matches your top stated priority better than any of the other three",
+      "Benefits confirmed: subsidized UnitedHealthcare health + dental, 401k, 15 days PTO, 7 paid holidays",
       "Good overall work-life balance, especially combined with being fully remote",
-      "20% yearly performance bonus, plus a stated 18–20% annual profit share on top of base",
-      "Comfortable with the occasional travel to major cities this role involves",
+      "20% yearly performance bonus (~$17k) on top of base, plus 10–15% profit share",
       "Very small team — likely more responsibility, visibility, and faster ramp than a big org",
     ],
     cons: [
+      "$85k base is $40k under your $125k floor and below the $100k–$120k you expected — the single biggest strike; on base alone it's the lowest of all four",
       "Bad for career growth — you won't be working with AI/development, so it doesn't build the skills/resume you likely want long-term",
-      "Base salary still unconfirmed — the actual take-home number is a real open question",
-      "The profit-sharing figure (18–20%) is probably discretionary in practice per your brother's read — treat real comp upside as closer to just the 20% bonus, not bonus + profit share stacked",
+      "Profit share (now confirmed as ~10–15%, lower than the 18–20% first floated) is likely discretionary — treat it as maybe-money, so real dependable comp is closer to $85k + the 20% bonus",
       "Tiny (~9 people), bootstrapped — no funding cushion, higher volatility, fewer resources for benefits",
       "Thinnest public documentation of the four — hardest to de-risk anything beyond what you've been told directly",
     ],
@@ -340,7 +341,10 @@ const DEFAULT_SCORES = {
   // much less than it would a candidate who'd otherwise be forced to
   // relocate somewhere they didn't choose. Scored accordingly, not as a
   // flat "days in office" count.
-  "233analytics": { remote: 2, pay: 0, growth: -2, wlb: 2, perks: 1, certainty: 0, totalcomp: 0, stability: -2 },
+  // Offer in hand: certainty maxes (+2); pay drops to -2 now that the base is a
+  // confirmed $85k — the lowest of the four and $40k under the floor. perks up
+  // to +2 (401k + UHC health/dental + 15 PTO + 7 holidays confirmed).
+  "233analytics": { remote: 2, pay: -2, growth: -2, wlb: 2, perks: 2, certainty: 2, totalcomp: 0, stability: -2 },
   "deepl":        { remote: 1, pay: 2, growth: 1, wlb: 0, perks: 0, certainty: -2, totalcomp: -1, stability: 2 },
   "airia":        { remote: -1, pay: 1, growth: 2, wlb: -2, perks: 1, certainty: 0, totalcomp: 0, stability: -1 },
   "eliseai":      { remote: 0, pay: -1, growth: 0, wlb: -1, perks: 2, certainty: 1, totalcomp: 1, stability: 2 },
