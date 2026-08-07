@@ -136,6 +136,18 @@ services:
     ports:
       - "8092:8000"
 
+  firefly:
+    build: ./services/firefly
+    restart: unless-stopped
+    # Read-only client for your Firefly III. Empty vars = sample data. Fill in
+    # when you're home (Firefly -> Profile -> Personal Access Tokens).
+    environment:
+      FIREFLY_URL: ${FIREFLY_URL:-}
+      FIREFLY_TOKEN: ${FIREFLY_TOKEN:-}
+      FIREFLY_WEB_URL: ${FIREFLY_WEB_URL:-}
+    ports:
+      - "8094:8000"
+
   gmail:
     build: ./services/gmail
     restart: unless-stopped
@@ -186,6 +198,7 @@ services:
       NETWORTH_URL: http://networth:8000
       VAULT_URL: http://vault:8000
       JELLYFIN_SVC_URL: http://jellyfin:8000
+      FIREFLY_URL_SVC: http://firefly:8000
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
@@ -226,6 +239,8 @@ services:
       vault:
         condition: service_started
       jellyfin:
+        condition: service_started
+      firefly:
         condition: service_started
 
 volumes:

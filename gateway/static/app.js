@@ -699,6 +699,44 @@ const RENDERERS = {
       <h4>Recently added</h4>
       <div class="pill-list">${recent || '<p class="empty">Nothing new.</p>'}</div>`;
   },
+
+  async firefly(app, body) {
+    const d = await api("/firefly/dashboard");
+    setMode(d.connected === false ? "mock" : "");
+    const web = d.web_url;
+    const disp = (m) => (m && m.display) || "—";
+    const banner = d.connected === false
+      ? `<p class="empty" style="margin-bottom:14px">📒 Showing <b>sample</b> data. Connect your Firefly III (docs/SETUP-FIREFLY.md) to see your real finances.</p>`
+      : "";
+    const openBtn = web
+      ? `<a class="btn" href="${web}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">Open in Firefly ↗</a>`
+      : "";
+    const accts = (d.accounts || [])
+      .map((a) => `<div class="row"><div class="grow"><b>${esc(a.name)}</b></div>
+        <span class="right">$${esc(Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2 }))}</span></div>`)
+      .join("");
+    const txColor = { withdrawal: "#ff6b6b", deposit: "#6ee7b7", transfer: "#8a93a6" };
+    const recent = (d.recent || [])
+      .map((t) => {
+        const c = txColor[t.type] || "#8a93a6";
+        const amt = Number(t.amount);
+        return `<div class="row"><div class="grow"><b>${esc(t.desc)}</b><div class="sub">${esc(t.date)} · ${esc(t.type)}</div></div>
+          <span class="right" style="color:${c}">${amt >= 0 ? "+" : ""}$${esc(Math.abs(amt).toLocaleString(undefined, { minimumFractionDigits: 2 }))}</span></div>`;
+      })
+      .join("");
+    body.innerHTML = `
+      ${banner}${openBtn}
+      <div class="tiles">
+        <div class="tile good"><div class="n">${disp(d.net_worth)}</div><div class="l">Net worth</div></div>
+        <div class="tile"><div class="n">${disp(d.earned)}</div><div class="l">Earned (mo)</div></div>
+        <div class="tile alert"><div class="n">${disp(d.spent)}</div><div class="l">Spent (mo)</div></div>
+        <div class="tile"><div class="n">${disp(d.left_to_spend)}</div><div class="l">Left to spend</div></div>
+      </div>
+      <h4>Accounts</h4>
+      <div class="rows">${accts || '<p class="empty">No accounts.</p>'}</div>
+      <h4>Recent transactions</h4>
+      <div class="rows">${recent || '<p class="empty">Nothing recent.</p>'}</div>`;
+  },
 };
 
 async function renderGeneric(app, body) {
@@ -741,6 +779,7 @@ const STATIONS = {
   networth: { name: "Net Worth",    color: "#38bdf8", x: 300, y: 200, spot: { x: 300, y: 258 } },
   vault:    { name: "Vault",        color: "#8b98a9", x: 700, y: 200, spot: { x: 700, y: 258 } },
   jellyfin: { name: "Jellyfin",     color: "#aa5cc3", x: 500, y: 566, spot: { x: 500, y: 512 } },
+  firefly:  { name: "Firefly",      color: "#e0592a", x: 750, y: 104, spot: { x: 750, y: 158 } },
 };
 
 // Maps a station to the /api/apps entry it opens when clicked.
@@ -757,6 +796,7 @@ const STATION_APP_KEY = {
   networth: "networth",
   vault: "vault",
   jellyfin: "jellyfin",
+  firefly: "firefly",
 };
 
 // Same icons as the registry cards, shown on each station's "screen".
@@ -773,6 +813,7 @@ const STATION_EMOJI = {
   networth: "💎",
   vault: "🔐",
   jellyfin: "🎬",
+  firefly: "📒",
 };
 
 // Cozy home spots around the central rug where idle workers hang out.
@@ -844,6 +885,7 @@ async function loadRoster() {
       { id: "wade", name: "Wade", role: "worker", station: "networth", color: "#38bdf8" },
       { id: "vic", name: "Vic", role: "worker", station: "vault", color: "#8b98a9" },
       { id: "milo", name: "Milo", role: "worker", station: "jellyfin", color: "#aa5cc3" },
+      { id: "fitz", name: "Fitz", role: "worker", station: "firefly", color: "#e0592a" },
     ];
   }
   let wi = 0;

@@ -23,6 +23,7 @@ DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
 VAULT_URL = os.environ.get("VAULT_URL", "http://vault:8000")
 JELLYFIN_SVC_URL = os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000")
+FIREFLY_SVC_URL = os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000")
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
 NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
@@ -63,6 +64,8 @@ AGENTS = [
      "color": "#8b98a9", "blurb": "Vault guard — password health: weak, reused, no-2FA."},
     {"id": "milo", "name": "Milo", "role": "worker", "station": "jellyfin",
      "color": "#aa5cc3", "blurb": "Media runner — continue watching, next up, who's streaming."},
+    {"id": "fitz", "name": "Fitz", "role": "worker", "station": "firefly",
+     "color": "#e0592a", "blurb": "Ledger keeper — Firefly III net worth, spend, transactions."},
 ]
 _BY_STATION = {a["station"]: a for a in AGENTS}
 
@@ -816,6 +819,15 @@ async def sync():
             await _log(conn, milo["name"], "jellyfin", "checked media", milo_summary)
             jobs.append({"agent": milo["id"], "name": milo["name"], "station": "jellyfin",
                          "summary": milo_summary})
+
+            # Fitz -> Firefly (personal finances)
+            fitz = _BY_STATION["firefly"]
+            ff = await _get(client, f"{FIREFLY_SVC_URL}/summary")
+            nw = (ff.get("net_worth") or {}).get("display")
+            fitz_summary = f"net worth {nw}" if nw else "no data"
+            await _log(conn, fitz["name"], "firefly", "checked finances", fitz_summary)
+            jobs.append({"agent": fitz["id"], "name": fitz["name"], "station": "firefly",
+                         "summary": fitz_summary})
 
         STATE["items"] = await build_briefing()
         STATE["summary"] = f"{len(STATE['items'])} things on your plate."

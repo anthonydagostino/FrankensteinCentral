@@ -103,4 +103,11 @@ def load_registry() -> list[SubApp]:
             icon="🎬",
             url=os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000"),
         ),
+        SubApp(
+            key="firefly",
+            name="Firefly",
+            description="Your Firefly III finances — net worth, this month's spend/income, accounts, recent transactions.",
+            icon="📒",
+            url=os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000"),
+        ),
     ]
