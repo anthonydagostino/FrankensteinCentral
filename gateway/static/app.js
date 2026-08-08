@@ -704,12 +704,16 @@ const RENDERERS = {
     const d = await api("/firefly/dashboard");
     setMode(d.connected === false ? "mock" : "");
     const web = d.web_url;
+    const imp = d.importer_url;
     const disp = (m) => (m && m.display) || "—";
     const banner = d.connected === false
-      ? `<p class="empty" style="margin-bottom:14px">📒 Showing <b>sample</b> data. Connect your Firefly III (docs/SETUP-FIREFLY.md) to see your real finances.</p>`
+      ? `<p class="empty" style="margin-bottom:14px">📒 Showing <b>sample</b> data. Firefly III is running in the stack${web ? ` — <a href="${web}" target="_blank" rel="noopener">open it</a>, register, then make a Personal Access Token (Options → Profile → OAuth) and set <code>FIREFLY_TOKEN</code>` : ` — see docs/SETUP-FIREFLY.md`} to see your real finances.</p>`
       : "";
     const openBtn = web
       ? `<a class="btn" href="${web}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">Open in Firefly ↗</a>`
+      : "";
+    const impBtn = imp
+      ? `<a class="btn" href="${imp}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px;margin-left:8px">Import data ↗</a>`
       : "";
     const accts = (d.accounts || [])
       .map((a) => `<div class="row"><div class="grow"><b>${esc(a.name)}</b></div>
@@ -725,7 +729,7 @@ const RENDERERS = {
       })
       .join("");
     body.innerHTML = `
-      ${banner}${openBtn}
+      ${banner}${openBtn}${impBtn}
       <div class="tiles">
         <div class="tile good"><div class="n">${disp(d.net_worth)}</div><div class="l">Net worth</div></div>
         <div class="tile"><div class="n">${disp(d.earned)}</div><div class="l">Earned (mo)</div></div>

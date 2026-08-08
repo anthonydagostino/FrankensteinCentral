@@ -136,15 +136,81 @@ services:
     ports:
       - "8092:8000"
 
+  # --- Real Firefly III, running inside FrankensteinCentral ------------------
+  # Its own database (kept separate from the app's Postgres so nothing collides).
+  firefly-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FIREFLY_DB_USER:-firefly}
+      POSTGRES_PASSWORD: ${FIREFLY_DB_PASSWORD:-firefly}
+      POSTGRES_DB: ${FIREFLY_DB_NAME:-firefly}
+    volumes:
+      - firefly_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FIREFLY_DB_USER:-firefly}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The actual Firefly III web app. Reach it in the browser at
+  # http://<box-ip>:8095 to register your account, add data, and make a token.
+  fireflyiii:
+    image: fireflyiii/core:latest
+    restart: unless-stopped
+    environment:
+      APP_KEY: ${FIREFLY_APP_KEY:-xQVbYZDDTTLf6B0unDPvEvVhmRW6H2jj}
+      APP_URL: ${FIREFLY_WEB_URL:-http://localhost:8095}
+      TZ: ${TZ:-America/New_York}
+      TRUSTED_PROXIES: "**"
+      DB_CONNECTION: pgsql
+      DB_HOST: firefly-db
+      DB_PORT: 5432
+      DB_DATABASE: ${FIREFLY_DB_NAME:-firefly}
+      DB_USERNAME: ${FIREFLY_DB_USER:-firefly}
+      DB_PASSWORD: ${FIREFLY_DB_PASSWORD:-firefly}
+      SITE_OWNER: ${FIREFLY_SITE_OWNER:-admin@localhost}
+      DEFAULT_LANGUAGE: en_US
+      APP_ENV: production
+    volumes:
+      - firefly_upload:/var/www/html/storage/upload
+    depends_on:
+      firefly-db:
+        condition: service_healthy
+    ports:
+      - "8095:8080"
+
+  # Firefly III's official data importer — bring your bank CSVs / exports in.
+  # Reach it at http://<box-ip>:8096 once you've made an access token.
+  firefly-importer:
+    image: fireflyiii/data-importer:latest
+    restart: unless-stopped
+    environment:
+      FIREFLY_III_URL: http://fireflyiii:8080
+      VANITY_URL: ${FIREFLY_WEB_URL:-http://localhost:8095}
+      FIREFLY_III_ACCESS_TOKEN: ${FIREFLY_TOKEN:-}
+      TZ: ${TZ:-America/New_York}
+    depends_on:
+      fireflyiii:
+        condition: service_started
+    ports:
+      - "8096:8080"
+
+  # Read-only client that surfaces your Firefly III numbers on the hub. It reads
+  # the in-stack Firefly above by default; add FIREFLY_TOKEN (made in the
+  # Firefly UI) to go live. Empty token = sample data.
   firefly:
     build: ./services/firefly
     restart: unless-stopped
-    # Read-only client for your Firefly III. Empty vars = sample data. Fill in
-    # when you're home (Firefly -> Profile -> Personal Access Tokens).
     environment:
-      FIREFLY_URL: ${FIREFLY_URL:-}
+      FIREFLY_URL: ${FIREFLY_URL:-http://fireflyiii:8080}
       FIREFLY_TOKEN: ${FIREFLY_TOKEN:-}
+      # Browser-facing URL for the "Open in Firefly" / importer deep links.
       FIREFLY_WEB_URL: ${FIREFLY_WEB_URL:-}
+      FIREFLY_IMPORTER_URL: ${FIREFLY_IMPORTER_URL:-}
+    depends_on:
+      fireflyiii:
+        condition: service_started
     ports:
       - "8094:8000"
 
@@ -246,3 +312,5 @@ services:
 volumes:
   db_data:
   gmail_token:
+  firefly_db_data:
+  firefly_upload:

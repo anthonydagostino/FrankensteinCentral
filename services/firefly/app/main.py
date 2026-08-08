@@ -6,9 +6,10 @@ account balances, and recent transactions. It never writes to Firefly and never
 sends the token to the browser.
 
 Config:
-  FIREFLY_URL       e.g. http://<homelab-ip>:8080  (your Firefly base URL)
-  FIREFLY_TOKEN     Firefly: Options -> Profile -> OAuth -> Personal Access Tokens
-  FIREFLY_WEB_URL   optional; browser-facing URL for "Open in Firefly" (defaults to FIREFLY_URL)
+  FIREFLY_URL           internal/base URL the service reads (e.g. http://fireflyiii:8080)
+  FIREFLY_TOKEN         Firefly: Options -> Profile -> OAuth -> Personal Access Tokens
+  FIREFLY_WEB_URL       browser-facing URL for the "Open in Firefly" link (e.g. http://<box-ip>:8095)
+  FIREFLY_IMPORTER_URL  browser-facing URL for the data importer (e.g. http://<box-ip>:8096)
 """
 import os
 from datetime import date
@@ -21,7 +22,10 @@ app = FastAPI(title="Firefly Service")
 
 FIREFLY_URL = os.environ.get("FIREFLY_URL", "").rstrip("/")
 FIREFLY_TOKEN = os.environ.get("FIREFLY_TOKEN", "")
-FIREFLY_WEB_URL = (os.environ.get("FIREFLY_WEB_URL") or FIREFLY_URL).rstrip("/")
+# Browser-facing links. Only surfaced when explicitly set, since FIREFLY_URL is
+# usually the internal docker hostname (not reachable from a browser).
+FIREFLY_WEB_URL = os.environ.get("FIREFLY_WEB_URL", "").rstrip("/")
+FIREFLY_IMPORTER_URL = os.environ.get("FIREFLY_IMPORTER_URL", "").rstrip("/")
 
 MOCK = {
     "currency": "USD",
@@ -128,7 +132,8 @@ async def summary():
         "left_to_spend": d.get("left_to_spend"),
         "bills_unpaid": d.get("bills_unpaid"),
         "currency": d.get("currency"),
-        "web_url": FIREFLY_WEB_URL if _connected() else None,
+        "web_url": FIREFLY_WEB_URL or None,
+        "importer_url": FIREFLY_IMPORTER_URL or None,
         "mode": "live" if _connected() else "mock",
         "connected": _connected(),
     }
@@ -140,7 +145,8 @@ async def dashboard():
         d = await _data()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
-    return {**d, "web_url": FIREFLY_WEB_URL if _connected() else None,
+    return {**d, "web_url": FIREFLY_WEB_URL or None,
+            "importer_url": FIREFLY_IMPORTER_URL or None,
             "connected": _connected()}
 
 
