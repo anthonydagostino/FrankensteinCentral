@@ -105,9 +105,14 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      # Pull net worth live from Firefly III (via the firefly sub-app, which
+      # holds the token). Falls back to the manual accounts if not connected.
+      FIREFLY_SVC_URL: http://firefly:8000
     depends_on:
       db:
         condition: service_healthy
+      firefly:
+        condition: service_started
     ports:
       - "8090:8000"
 

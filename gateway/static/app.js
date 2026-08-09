@@ -109,6 +109,55 @@ function setMode(mode) {
   $("#modal-mode").textContent = mode ? `${mode} data` : "";
 }
 
+// Inline-SVG donut for category spending (no external chart libs — CSP-safe).
+const DONUT_COLORS = ["#e0592a", "#f5c542", "#5bd6c0", "#4aa3ff", "#c58cff",
+  "#7bd88f", "#ff8a5b", "#38bdf8", "#a3e635", "#f2b8d0"];
+
+function spendingDonut(cats, title) {
+  const items = (cats || []).filter((c) => Number(c.amount) > 0);
+  if (!items.length) return "";
+  // Keep the biggest 8 slices; roll the rest into "Other".
+  const sorted = [...items].sort((a, b) => b.amount - a.amount);
+  const top = sorted.slice(0, 8);
+  const rest = sorted.slice(8);
+  if (rest.length) top.push({ name: "Other", amount: rest.reduce((s, c) => s + Number(c.amount), 0) });
+  const total = top.reduce((s, c) => s + Number(c.amount), 0);
+  const cx = 100, cy = 100, rO = 82, rI = 50;
+  const pt = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  let a0 = -Math.PI / 2;
+  const slices = top.map((c, i) => {
+    const frac = Number(c.amount) / total;
+    const a1 = a0 + frac * Math.PI * 2;
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const [x0, y0] = pt(rO, a0), [x1, y1] = pt(rO, a1);
+    const [x2, y2] = pt(rI, a1), [x3, y3] = pt(rI, a0);
+    // A single full slice can't be drawn as one arc; nudge it closed.
+    const path = frac >= 0.999
+      ? `M${cx - rO} ${cy} A${rO} ${rO} 0 1 1 ${cx + rO} ${cy} A${rO} ${rO} 0 1 1 ${cx - rO} ${cy} M${cx - rI} ${cy} A${rI} ${rI} 0 1 0 ${cx + rI} ${cy} A${rI} ${rI} 0 1 0 ${cx - rI} ${cy} Z`
+      : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${rO} ${rO} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} L${x2.toFixed(2)} ${y2.toFixed(2)} A${rI} ${rI} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z`;
+    a0 = a1;
+    return `<path d="${path}" fill="${DONUT_COLORS[i % DONUT_COLORS.length]}" fill-rule="evenodd"></path>`;
+  }).join("");
+  const legend = top.map((c, i) => {
+    const pct = Math.round((Number(c.amount) / total) * 100);
+    return `<div class="row" style="padding:4px 0"><div class="grow">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${DONUT_COLORS[i % DONUT_COLORS.length]};margin-right:8px"></span>
+      <b>${esc(c.name)}</b> <span class="sub">${pct}%</span></div>
+      <span class="right">$${Number(c.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>`;
+  }).join("");
+  const totalTxt = `$${Math.round(total).toLocaleString()}`;
+  return `
+    <h4>${esc(title || "Spending — last 30 days")}</h4>
+    <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+      <svg viewBox="0 0 200 200" width="180" height="180" style="flex:0 0 auto">
+        ${slices}
+        <text x="100" y="96" text-anchor="middle" fill="var(--text)" font-size="20" font-weight="700">${totalTxt}</text>
+        <text x="100" y="116" text-anchor="middle" fill="var(--muted, #8a93a6)" font-size="11">30-day spend</text>
+      </svg>
+      <div style="flex:1;min-width:200px">${legend}</div>
+    </div>`;
+}
+
 const RENDERERS = {
   async powerbuy(app, body) {
     const [sum, list] = await Promise.all([api("/powerbuy/summary"), api("/powerbuy/purchases")]);
@@ -526,9 +575,34 @@ const RENDERERS = {
   },
 
   async networth(app, body) {
-    const [accts, rec] = await Promise.all([api("/networth/accounts"), api("/networth/recurring")]);
+    const accts = await api("/networth/accounts");
     setMode();
     const total = (accts.accounts || []).reduce((s, a) => s + Number(a.balance), 0);
+    if (accts.source === "firefly") {
+      const web = accts.web_url;
+      const openBtn = web
+        ? `<a class="btn" href="${web}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">Open in Firefly ↗</a>`
+        : "";
+      const rowsFF = (accts.accounts || [])
+        .map((a) => {
+          const bal = Number(a.balance);
+          const neg = bal < 0;
+          return `<div class="row"><div class="grow"><b>${esc(a.name)}</b></div>
+            <span class="right" style="${neg ? "color:#ff6b6b" : ""}">${neg ? "-" : ""}$${Math.abs(bal).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>`;
+        })
+        .join("");
+      body.innerHTML = `
+        <p class="empty" style="margin-bottom:14px">💎 Sourced live from your <b>Firefly III</b> — balances update as Firefly does.</p>
+        ${openBtn}
+        <div class="tiles">
+          <div class="tile good"><div class="n">$${total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div><div class="l">Total net worth</div></div>
+          <div class="tile"><div class="n">${(accts.accounts || []).length}</div><div class="l">Accounts</div></div>
+        </div>
+        <h4>Accounts</h4>
+        <div class="rows">${rowsFF || '<p class="empty">No accounts in Firefly yet.</p>'}</div>`;
+      return;
+    }
+    const rec = await api("/networth/recurring");
     const acctOptions = (accts.accounts || [])
       .map((a) => `<option value="${a.id}">${esc(a.name)}</option>`)
       .join("");
@@ -736,6 +810,7 @@ const RENDERERS = {
         <div class="tile alert"><div class="n">${disp(d.spent)}</div><div class="l">Spent (mo)</div></div>
         <div class="tile"><div class="n">${disp(d.left_to_spend)}</div><div class="l">Left to spend</div></div>
       </div>
+      ${spendingDonut(d.categories, "Spending by category — last 30 days")}
       <h4>Accounts</h4>
       <div class="rows">${accts || '<p class="empty">No accounts.</p>'}</div>
       <h4>Recent transactions</h4>

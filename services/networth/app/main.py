@@ -2,12 +2,35 @@ import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import FastAPI
 from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 app = FastAPI(title="Net Worth Service")
+
+# When set, net worth is pulled live from your Firefly III (via the firefly
+# sub-app, which holds the token). Falls back to the manual accounts below if
+# Firefly isn't connected or is unreachable.
+FIREFLY_SVC_URL = os.environ.get("FIREFLY_SVC_URL", "").rstrip("/")
+
+
+async def _firefly_networth() -> dict | None:
+    """Ask the firefly sub-app for net worth. Returns None if not configured,
+    not connected, or unreachable — callers then fall back to the manual DB."""
+    if not FIREFLY_SVC_URL:
+        return None
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{FIREFLY_SVC_URL}/networth", timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        if not data.get("connected"):
+            return None
+        return data
+    except Exception:  # noqa: BLE001
+        return None
 
 # The box runs in UTC; recurring contributions have to come due on the
 # user's actual day, not whatever day it already flipped to in UTC.
@@ -92,15 +115,26 @@ async def _accounts() -> list[dict]:
 
 @app.get("/health")
 async def health():
+    ff = await _firefly_networth()
+    if ff:
+        return {"service": "networth", "source": "firefly",
+                "accounts": len(ff.get("accounts", [])), "total": ff.get("total")}
     rows = await _accounts()
     total = sum(float(r["balance"]) for r in rows)
-    return {"service": "networth", "accounts": len(rows), "total": round(total, 2)}
+    return {"service": "networth", "source": "manual",
+            "accounts": len(rows), "total": round(total, 2)}
 
 
 @app.get("/accounts")
 async def get_accounts():
+    ff = await _firefly_networth()
+    if ff:
+        accts = [{"id": None, "name": a["name"], "balance": a["balance"], "updated_at": None}
+                 for a in ff.get("accounts", [])]
+        return {"accounts": accts, "count": len(accts), "source": "firefly",
+                "web_url": ff.get("web_url")}
     rows = await _accounts()
-    return {"accounts": rows, "count": len(rows)}
+    return {"accounts": rows, "count": len(rows), "source": "manual"}
 
 
 @app.post("/accounts")
@@ -210,12 +244,24 @@ async def apply_recurring():
 
 @app.get("/summary")
 async def summary():
+    ff = await _firefly_networth()
+    if ff:
+        accts = [{"name": a["name"], "balance": a["balance"]} for a in ff.get("accounts", [])]
+        return {
+            "total": ff.get("total"),
+            "total_display": ff.get("total_display"),
+            "accounts": accts,
+            "count": len(accts),
+            "source": "firefly",
+            "web_url": ff.get("web_url"),
+        }
     rows = await _accounts()
     total = sum(float(r["balance"]) for r in rows)
     return {
         "total": round(total, 2),
         "accounts": [{"name": r["name"], "balance": float(r["balance"])} for r in rows],
         "count": len(rows),
+        "source": "manual",
     }
 
 
