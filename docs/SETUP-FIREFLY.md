@@ -1,75 +1,59 @@
-# Firefly III — running inside FrankensteinCentral
+# Connect the hub to your Firefly III
 
-A **real Firefly III** now ships as part of the stack. You don't need to stand
-one up separately. Bringing the stack up gives you:
+You already run Firefly III at **http://192.168.1.185:8093**. The hub connects to
+it (read-only) and surfaces:
 
-- **`fireflyiii`** — the full Firefly III web app, at `http://<box-ip>:8095`
-- **`firefly-db`** — its own Postgres (kept separate from the app's database)
-- **`firefly-importer`** — the official data importer, at `http://<box-ip>:8096`
-- **`firefly`** — the read-only tile on the hub that shows your net worth,
-  monthly spend/income, accounts, and recent transactions. It reads the in-stack
-  Firefly and never sends your token to the browser.
+- the **Firefly** tile — net worth, this month's earned/spent/left-to-spend,
+  your accounts, recent transactions, and a **30-day spending-by-category pie**
+- the **Net Worth** tile — sourced live from Firefly (your accounts + net worth),
+  instead of hand-keyed balances
 
-Until you make an access token, the hub tile shows **sample data**.
+Both go through the `firefly` service, which holds the access token. The token is
+**never** sent to the browser. Until you set the token, both tiles show sample
+data.
 
-## Get it running (on the box)
+## 1. Point the hub at your Firefly
 
-1. In `.env`, set the browser URLs to your box's IP (so the dashboard links
-   work) — replace `192.168.1.185` with your box if different:
-   ```
-   FIREFLY_WEB_URL=http://192.168.1.185:8095
-   FIREFLY_IMPORTER_URL=http://192.168.1.185:8096
-   # optional but recommended — change these from the shipped defaults:
-   FIREFLY_APP_KEY=<any 32-character string>
-   FIREFLY_DB_PASSWORD=<a password>
-   ```
+In `.env` on the box:
+```
+FIREFLY_URL=http://192.168.1.185:8093
+FIREFLY_WEB_URL=http://192.168.1.185:8093
+```
+(`FIREFLY_URL` is what the containers read; `FIREFLY_WEB_URL` is what the
+"Open in Firefly" button opens. Usually the same. Change the IP/port if yours
+differs.)
 
-2. Bring the stack up:
-   ```
-   docker compose up -d --build firefly-db fireflyiii firefly-importer firefly gateway assistant
-   ```
-   First boot runs Firefly's database migrations automatically — give it a
-   minute, then open `http://<box-ip>:8095`.
+## 2. Make a Personal Access Token
 
-3. **Register** your account (the first account you create is the admin).
+1. Open **http://192.168.1.185:8093** and log in.
+2. **Options → Profile → OAuth** tab.
+3. Under **Personal Access Tokens**, click **Create new token**, name it
+   `FrankensteinCentral`, **Create**.
+4. Copy the long token — Firefly shows it **once**. (Lost it? Just delete and
+   make a new one.)
 
-## Import your data
+Put it in `.env`:
+```
+FIREFLY_TOKEN=<the long token>
+```
 
-Open `http://<box-ip>:8096` (the importer), or click **Import data ↗** on the
-Firefly tile. It walks you through:
+## 3. Apply it
 
-- **CSV** — export from your bank and map the columns (most common).
-- **camt.053** — European bank statements.
-- **Bank sync** (Nordigen/GoCardless, Spectre) if you set those keys.
+A plain `.env` edit doesn't trigger auto-deploy, so restart the pieces that use
+the token:
+```
+docker compose up -d firefly networth assistant
+```
+(or `docker-compose ...` if you're on Compose v1)
 
-You can also import a previous Firefly export. The importer needs the same
-access token as the step below — set `FIREFLY_TOKEN` first, then restart it:
-`docker compose up -d firefly-importer`.
-
-## Show your real numbers on the hub
-
-1. In Firefly (`:8095`): **Options → Profile → OAuth → Personal Access Tokens →
-   Create new token**, name it "FrankensteinCentral", copy it (shown once).
-
-2. Put it in `.env`:
-   ```
-   FIREFLY_TOKEN=<the token>
-   ```
-
-3. Restart the pieces that use it:
-   ```
-   docker compose up -d firefly firefly-importer assistant
-   ```
-
-Open **Firefly** on the hub — you'll see your real net worth, this month's
-earned/spent/left-to-spend, your accounts, and recent transactions, with
-**Open in Firefly ↗** and **Import data ↗** buttons. Fitz reports your net
-worth on the floor each sync.
+Open the hub (**:8080**) → the **Firefly** tile shows your real numbers and the
+spending pie fills in, and **Net Worth** shows your Firefly accounts. Fitz
+reports your net worth on the floor each sync.
 
 ## Notes
 
-- Everything is LAN-only — keep it behind your network / VPN.
-- The hub tile is **read-only**; it never changes anything in Firefly.
-- Ports: Firefly III `8095`, importer `8096`, hub tile service `8094`.
-- To use an **external** Firefly III instead of the in-stack one, set
-  `FIREFLY_URL` to its base URL (leave blank to use the in-stack one).
+- Everything is LAN-only — keep Firefly and the hub behind your network / VPN.
+- The hub is **read-only**; it never changes anything in Firefly.
+- Ports: your Firefly `8093`, the hub tile service `8094`, the hub `8080`.
+- The 30-day pie uses Firefly's own `insight/expense/category` data, so it
+  matches what Firefly shows.
