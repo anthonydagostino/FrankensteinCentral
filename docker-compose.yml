@@ -154,8 +154,11 @@ services:
       # Browser-facing URL for the "Open in Firefly" / importer deep links.
       FIREFLY_WEB_URL: ${FIREFLY_WEB_URL:-}
       FIREFLY_IMPORTER_URL: ${FIREFLY_IMPORTER_URL:-}
+    # 8097 (not 8094) — your Firefly data importer already uses 8094. The hub
+    # reaches this service internally over the docker network, so this host
+    # port is only for direct debugging.
     ports:
-      - "8094:8000"
+      - "8097:8000"
 
   gmail:
     build: ./services/gmail

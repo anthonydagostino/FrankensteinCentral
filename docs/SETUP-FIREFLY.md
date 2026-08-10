@@ -54,6 +54,7 @@ reports your net worth on the floor each sync.
 
 - Everything is LAN-only — keep Firefly and the hub behind your network / VPN.
 - The hub is **read-only**; it never changes anything in Firefly.
-- Ports: your Firefly `8093`, the hub tile service `8094`, the hub `8080`.
+- Ports: your Firefly `8093`, your Firefly importer `8094`, the hub tile
+  service `8097`, the hub `8080`.
 - The 30-day pie uses Firefly's own `insight/expense/category` data, so it
   matches what Firefly shows.
