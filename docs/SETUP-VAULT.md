@@ -6,7 +6,7 @@ computes health (weak / reused / old / no-2FA / insecure URL), and shows
 metadata + issue flags. Actual passwords are never sent to the browser and never
 written to the hub's database (the Vault service has no database at all).
 
-Until it's connected it shows **sample data** so you can see how it works.
+Until it's connected it shows an empty **"not connected"** state (no sample data).
 
 ## The plan (when you're home)
 

@@ -60,11 +60,6 @@ CREATE TABLE IF NOT EXISTS recurring (
 );
 """
 
-# Your real accounts — seeded once, the first time this service ever runs.
-# Never re-seeded on restart, so if you delete one it stays gone.
-SEED_ACCOUNTS = ["Chase Checking", "Marcus HYSA", "Robinhood", "Fidelity", "TSP"]
-
-
 class Account(BaseModel):
     name: str
     balance: float = 0
@@ -85,18 +80,7 @@ class Recurring(BaseModel):
 async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
-        conn.row_factory = tuple_row
-        cur = await conn.execute(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'accounts')"
-        )
-        (already_existed,) = await cur.fetchone()
         await conn.execute(SCHEMA)
-        if not already_existed:
-            for name in SEED_ACCOUNTS:
-                await conn.execute(
-                    "INSERT INTO accounts (name, balance, updated_at) VALUES (%s, 0, %s)",
-                    (name, datetime.utcnow().isoformat()),
-                )
 
 
 @app.on_event("shutdown")

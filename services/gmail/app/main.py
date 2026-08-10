@@ -106,38 +106,6 @@ def _extract_deal(subject: str, snippet: str, sender: str) -> tuple[str, str | N
         merchant = domain_match.group(1) if domain_match else sender
     return merchant, offer
 
-MOCK_INBOX = [
-    {
-        "id": "m1",
-        "from": "recruiter@acme.io",
-        "subject": "Interview scheduled: Fri Jul 25, 2:00 PM",
-        "snippet": "We'd love to move forward. Your interview is set for Friday July 25 at 2:00 PM. Can you confirm?",
-    },
-    {
-        "id": "m2",
-        "from": "landlord@rentals.com",
-        "subject": "Lease renewal — respond by Jul 30",
-        "snippet": "Please confirm whether you'd like to renew by July 30.",
-    },
-    {
-        "id": "m3",
-        "from": "mom@family.com",
-        "subject": "dinner sunday?",
-        "snippet": "Are you free to come over this Sunday evening?",
-    },
-    {
-        "id": "m4",
-        "from": "no-reply@newsletter.com",
-        "subject": "This week in tech",
-        "snippet": "Top stories you might have missed...",
-    },
-    {
-        "id": "m5",
-        "from": "deals@grubhub.com",
-        "subject": "20% off your next order",
-        "snippet": "Use code SAVE20 at checkout. Free delivery on orders over $15.",
-    },
-]
 
 
 def triage(msg: dict) -> dict:
@@ -330,7 +298,10 @@ async def _current_inbox() -> tuple[list[dict], str]:
         real = await _fetch_inbox()
         if real is not None:
             return triage_all(real), "live"
-    return triage_all(MOCK_INBOX), "mock"
+        # Connected but the fetch failed (expired/invalid token). Surface an
+        # honest error state — never fabricate emails.
+        return [], "error"
+    return [], "disconnected"
 
 
 _PROFILE: dict[str, str] = {}  # cached {"email": "you@gmail.com"}
@@ -375,7 +346,7 @@ async def _fetch_sent_proposal_threads() -> list[dict] | None:
     """Find your own 'I'm available X at Y' emails and, per thread, work out
     whether the other side has since confirmed one of the offered slots,
     countered with a different time, declined outright, or just hasn't
-    replied yet ("pending"). None on failure (falls back to mock)."""
+    replied yet ("pending"). None on failure (surfaced as an error state)."""
     token = await _access_token()
     if not token:
         return None
@@ -493,30 +464,6 @@ async def _fetch_sent_proposal_threads() -> list[dict] | None:
         return threads_out
 
 
-MOCK_THREADS = [
-    {
-        "thread_id": "t1",
-        "subject": "Re: Interview availability — Acme",
-        "counterparty": "recruiter@acme.io",
-        "proposed_slots": ["2026-07-31T14:00:00-04:00", "2026-08-04T10:00:00-04:00"],
-        "status": "pending",
-        "confirmed_slot": None,
-        "countered_slots": [],
-        "source_message_id": "sent1",
-    },
-    {
-        "thread_id": "t2",
-        "subject": "Re: Phone screen — WidgetCo",
-        "counterparty": "hr@widgetco.com",
-        "proposed_slots": ["2026-07-29T15:00:00-04:00"],
-        "status": "confirmed",
-        "confirmed_slot": "2026-07-29T15:00:00-04:00",
-        "countered_slots": [],
-        "source_message_id": "sent2",
-    },
-]
-
-
 @app.get("/thread-availability")
 async def thread_availability():
     """Threads where you proposed times, with their current state — pending
@@ -526,7 +473,8 @@ async def thread_availability():
         real = await _fetch_sent_proposal_threads()
         if real is not None:
             return {"threads": real, "mode": "live"}
-    return {"threads": MOCK_THREADS, "mode": "mock"}
+        return {"threads": [], "mode": "error"}
+    return {"threads": [], "mode": "disconnected"}
 
 
 @app.get("/needs-reply")

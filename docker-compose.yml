@@ -122,7 +122,7 @@ services:
     # Read-only client for your Vaultwarden — stores nothing. Set VAULT_MODE to
     # "bitwarden" and BW_SERVE_URL to your `bw serve` endpoint when you're home.
     environment:
-      VAULT_MODE: ${VAULT_MODE:-mock}
+      VAULT_MODE: ${VAULT_MODE:-off}
       BW_SERVE_URL: ${BW_SERVE_URL:-}
     ports:
       - "8091:8000"

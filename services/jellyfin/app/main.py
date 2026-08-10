@@ -27,25 +27,14 @@ JELLYFIN_WEB_URL = (os.environ.get("JELLYFIN_WEB_URL") or JELLYFIN_URL).rstrip("
 
 _USER_ID_CACHE = JELLYFIN_USER_ID or None
 
-MOCK = {
-    "server": "Homelab Jellyfin (sample)",
-    "counts": {"movies": 428, "series": 63, "episodes": 1512},
-    "continue": [
-        {"name": "The Bear — S2E4 “Honeydew”", "series": "The Bear", "percent": 68},
-        {"name": "Dune: Part Two", "series": None, "percent": 41},
-    ],
-    "nextup": [
-        {"name": "The Bear — S2E5 “Pop”", "series": "The Bear"},
-        {"name": "Severance — S1E3 “In Perpetuity”", "series": "Severance"},
-    ],
-    "recent": [
-        {"name": "Oppenheimer", "type": "Movie"},
-        {"name": "Shōgun — S1E1", "type": "Episode"},
-        {"name": "The Batman", "type": "Movie"},
-    ],
-    "nowplaying": [
-        {"user": "ant", "item": "Dune: Part Two", "device": "Living Room TV"},
-    ],
+# Honest empty state shown until Jellyfin is connected — no fabricated titles.
+EMPTY = {
+    "server": "Jellyfin",
+    "counts": {"movies": 0, "series": 0, "episodes": 0},
+    "continue": [],
+    "nextup": [],
+    "recent": [],
+    "nowplaying": [],
 }
 
 
@@ -122,13 +111,13 @@ async def _live() -> dict:
 
 async def _data() -> dict:
     if not _connected():
-        return MOCK
+        return dict(EMPTY)
     return await _live()
 
 
 @app.get("/health")
 async def health():
-    return {"service": "jellyfin", "mode": "live" if _connected() else "mock",
+    return {"service": "jellyfin", "mode": "live" if _connected() else "disconnected",
             "connected": _connected()}
 
 
@@ -145,7 +134,7 @@ async def summary():
         "now_playing": len(d["nowplaying"]),
         "continue_count": len(d["continue"]),
         "web_url": JELLYFIN_WEB_URL if _connected() else None,
-        "mode": "live" if _connected() else "mock",
+        "mode": "live" if _connected() else "disconnected",
         "connected": _connected(),
     }
 

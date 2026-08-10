@@ -15,28 +15,6 @@ PASSWORD = os.environ.get("POWERBUY_PASSWORD", "")
 # Cached JWT so we don't log in on every request.
 _TOKEN: str | None = None
 
-MOCK_PURCHASES = [
-    {
-        "item": "DeWalt 20V Drill",
-        "sellPrice": 149.0,
-        "profit7Percent": 22.0,
-        "paymentStatus": "Unpaid",
-        "deliveryStatus": "Delivered",
-        "expires": "2026-07-28T00:00:00",
-        "quantity": 2,
-    },
-    {
-        "item": "Whey Isolate 5lb",
-        "sellPrice": 59.0,
-        "profit7Percent": 8.5,
-        "paymentStatus": "Paid",
-        "deliveryStatus": "Pending",
-        "expires": "2026-08-15T00:00:00",
-        "quantity": 1,
-    },
-]
-
-
 def _configured() -> bool:
     return bool(EMAIL and PASSWORD)
 
@@ -111,13 +89,13 @@ def summarize(purchases: list[dict]) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"service": "powerbuy", "mode": "live" if _configured() else "mock"}
+    return {"service": "powerbuy", "mode": "live" if _configured() else "disconnected"}
 
 
 @app.get("/purchases")
 async def purchases():
     if not _configured():
-        return {"purchases": MOCK_PURCHASES, "mode": "mock"}
+        return {"purchases": [], "mode": "disconnected"}
     try:
         data = await _fetch_purchases()
         return {"purchases": data, "mode": "live"}
@@ -131,7 +109,7 @@ async def purchases():
 async def summary():
     """Dashboard numbers: expected profit, unpaid, not delivered, expiring soon."""
     if not _configured():
-        return {"summary": summarize(MOCK_PURCHASES), "mode": "mock"}
+        return {"summary": summarize([]), "mode": "disconnected"}
     try:
         data = await _fetch_purchases()
         return {"summary": summarize(data), "mode": "live"}

@@ -8,7 +8,7 @@ Security stance:
   * The vault itself stays in Vaultwarden on your homelab. This is just a client.
 
 Providers (VAULT_MODE):
-  mock       — sample items so the dashboard works before the vault is connected.
+  off        — not connected; the dashboard shows an empty "connect me" state.
   bitwarden  — reads from the Bitwarden CLI's local REST API (`bw serve`), set
                BW_SERVE_URL to it (e.g. http://homelab-ip:8087). The CLI must be
                unlocked. Wire this up when you're home.
@@ -24,33 +24,13 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Vault Service")
 
-VAULT_MODE = os.environ.get("VAULT_MODE", "mock").strip().lower()
+VAULT_MODE = os.environ.get("VAULT_MODE", "off").strip().lower()
 BW_SERVE_URL = os.environ.get("BW_SERVE_URL", "").rstrip("/")
 
 COMMON = {
     "password", "123456", "12345678", "hunter2", "password123", "qwerty",
     "letmein", "111111", "abc123", "iloveyou", "admin", "welcome",
 }
-
-# Mock vault — used only to compute metrics server-side; never returned raw.
-MOCK_ITEMS = [
-    {"name": "Amazon", "username": "ant@gmail.com", "folder": "Shopping",
-     "uris": ["https://amazon.com"], "password": "hunter2", "revised": "2022-03-01", "totp": False},
-    {"name": "eBay", "username": "antdag", "folder": "Reselling",
-     "uris": ["https://ebay.com"], "password": "hunter2", "revised": "2023-06-01", "totp": False},
-    {"name": "Chase Bank", "username": "ant", "folder": "Finance",
-     "uris": ["https://chase.com"], "password": "J8$kQ2!vなj9Lm#pZ", "revised": "2022-01-10", "totp": True},
-    {"name": "Gmail", "username": "anthonysdagostino@gmail.com", "folder": "Personal",
-     "uris": ["https://mail.google.com"], "password": "Tq7#mVx!2sPd9Kw", "revised": "2026-05-01", "totp": True},
-    {"name": "Old Reddit", "username": "ant_d", "folder": "Personal",
-     "uris": ["http://old.reddit.com"], "password": "redditpass9", "revised": "2024-02-01", "totp": False},
-    {"name": "Netflix", "username": "ant@gmail.com", "folder": "Subscriptions",
-     "uris": ["https://netflix.com"], "password": "password123", "revised": "2023-01-01", "totp": False},
-    {"name": "PayPal", "username": "ant@gmail.com", "folder": "Finance",
-     "uris": ["https://paypal.com"], "password": "Zq4$Lp9!mWx2", "revised": "2025-11-01", "totp": False},
-    {"name": "Twitter", "username": "antdag", "folder": "Personal",
-     "uris": ["https://twitter.com"], "password": "hunter2", "revised": "2021-08-01", "totp": False},
-]
 
 
 def _connected() -> bool:
@@ -60,7 +40,7 @@ def _connected() -> bool:
 async def _fetch_raw_items() -> list[dict]:
     """Return raw items (with passwords) for server-side analysis only."""
     if not _connected():
-        return MOCK_ITEMS
+        return []
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{BW_SERVE_URL}/list/object/items", timeout=20)
         r.raise_for_status()
@@ -154,7 +134,7 @@ def analyze(items: list[dict]) -> tuple[list[dict], dict]:
     summary = {
         "total": n, "folders": folders, "score": score,
         **totals,
-        "mode": "live" if _connected() else "mock",
+        "mode": "live" if _connected() else "disconnected",
         "connected": _connected(),
     }
     # worst items first (most issues)
@@ -164,7 +144,7 @@ def analyze(items: list[dict]) -> tuple[list[dict], dict]:
 
 @app.get("/health")
 async def health():
-    return {"service": "vault", "mode": "live" if _connected() else "mock",
+    return {"service": "vault", "mode": "live" if _connected() else "disconnected",
             "connected": _connected()}
 
 

@@ -22,9 +22,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_id TEXT UNIQUE;
 """
 
-SEED = ["Renew passport", "Reply to landlord", "Book dentist"]
-
-
 class Task(BaseModel):
     title: str
     external_id: str | None = None  # e.g. a gmail message id, for dedupe on auto-add
@@ -36,14 +33,6 @@ async def startup():
     async with pool.connection() as conn:
         conn.row_factory = tuple_row
         await conn.execute(SCHEMA)
-        cur = await conn.execute("SELECT COUNT(*) FROM tasks")
-        (count,) = await cur.fetchone()
-        if count == 0:
-            for title in SEED:
-                await conn.execute(
-                    "INSERT INTO tasks (title, created_at) VALUES (%s, %s)",
-                    (title, datetime.utcnow().isoformat()),
-                )
 
 
 @app.on_event("shutdown")

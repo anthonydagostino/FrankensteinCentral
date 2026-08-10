@@ -5,7 +5,7 @@ at a glance (continue watching, next up, recently added, library counts, and
 who's streaming right now). It never proxies or plays media, and it has no
 database. Your API key stays server-side and is never sent to the browser.
 
-Until it's connected it shows **sample data**.
+Until it's connected it shows an empty **"not connected"** state (no sample data).
 
 ## Steps (when you're home)
 

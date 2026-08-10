@@ -106,7 +106,11 @@ async function openApp(app) {
 }
 
 function setMode(mode) {
-  $("#modal-mode").textContent = mode ? `${mode} data` : "";
+  const notConnected = mode === "mock" || mode === "disconnected" || mode === "off";
+  const label = notConnected ? "not connected"
+    : mode === "error" ? "connection error"
+    : mode ? `${mode} data` : "";
+  $("#modal-mode").textContent = label;
 }
 
 // Inline-SVG donut for category spending (no external chart libs — CSP-safe).
@@ -192,9 +196,14 @@ const RENDERERS = {
           <span class="chip ${esc(e.category)}">${esc(e.category || "inbox")}</span></div>`
       )
       .join("");
+    const empty = data.mode === "disconnected"
+      ? '<p class="empty">📬 <b>Not connected.</b> Add your Google credentials (docs/SETUP.md) to triage your inbox.</p>'
+      : data.mode === "error"
+      ? '<p class="empty">⚠️ Couldn\'t reach Gmail — the token likely needs re-authorizing. (Not showing anything rather than fake emails.)</p>'
+      : '<p class="empty">Inbox is clear. 🎉</p>';
     body.innerHTML = `
       <h4>Needs a reply</h4>
-      <div class="rows">${rows || '<p class="empty">Inbox is clear. 🎉</p>'}</div>`;
+      <div class="rows">${rows || empty}</div>`;
   },
 
   async schedule(app, body) {
@@ -702,8 +711,9 @@ const RENDERERS = {
     const chip = (i) =>
       `<span style="font-size:11px;padding:2px 7px;border-radius:999px;margin-left:4px;` +
       `background:${chipColor[i] || "#8a93a6"}22;color:${chipColor[i] || "#8a93a6"}">${esc(i)}</span>`;
-    const score = sum.score ?? 0;
-    const scoreCls = score >= 80 ? "good" : score >= 50 ? "warn" : "alert";
+    const connected = sum.connected;
+    const score = connected ? (sum.score ?? 0) : "—";
+    const scoreCls = !connected ? "" : score >= 80 ? "good" : score >= 50 ? "warn" : "alert";
     const rows = (list.items || [])
       .map(
         (it) => `<div class="row"><div class="grow"><b>${esc(it.name)}</b>
@@ -713,7 +723,7 @@ const RENDERERS = {
       .join("");
     const banner = sum.connected
       ? ""
-      : `<p class="empty" style="margin-bottom:14px">🔐 Showing <b>sample</b> data. Connect your Vaultwarden (docs/SETUP-VAULT.md) to see your real vault health. Passwords are never stored or shown here.</p>`;
+      : `<p class="empty" style="margin-bottom:14px">🔐 <b>Not connected.</b> Set <code>VAULT_MODE=bitwarden</code> and <code>BW_SERVE_URL</code> (docs/SETUP-VAULT.md) to see your real vault health. Passwords are never stored or shown here.</p>`;
     body.innerHTML = `
       ${banner}
       <div class="tiles">
@@ -729,15 +739,15 @@ const RENDERERS = {
 
   async jellyfin(app, body) {
     const d = await api("/jellyfin/dashboard");
-    setMode(d.connected === false ? "mock" : (d.server ? "" : "mock"));
+    setMode(d.connected === false ? "disconnected" : "");
     const web = d.web_url;
     // Deep-link a title to its Jellyfin details/play page (when connected).
     const link = (label, id) =>
       web && id
         ? `<a href="${web}/web/#/details?id=${encodeURIComponent(id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px">${esc(label)}</a>`
         : esc(label);
-    const banner = d.server && String(d.server).includes("sample")
-      ? `<p class="empty" style="margin-bottom:14px">🎬 Showing <b>sample</b> data. Connect your Jellyfin (docs/SETUP-JELLYFIN.md) to see your real library — then every title here opens straight in Jellyfin.</p>`
+    const banner = d.connected === false
+      ? `<p class="empty" style="margin-bottom:14px">🎬 <b>Not connected.</b> Set <code>JELLYFIN_URL</code> and <code>JELLYFIN_API_KEY</code> (docs/SETUP-JELLYFIN.md) to see your real library — then every title here opens straight in Jellyfin.</p>`
       : "";
     const openBtn = web
       ? `<a class="btn" href="${web}/web/" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">▶ Open in Jellyfin ↗</a>`
@@ -776,12 +786,12 @@ const RENDERERS = {
 
   async firefly(app, body) {
     const d = await api("/firefly/dashboard");
-    setMode(d.connected === false ? "mock" : "");
+    setMode(d.connected === false ? "disconnected" : "");
     const web = d.web_url;
     const imp = d.importer_url;
     const disp = (m) => (m && m.display) || "—";
     const banner = d.connected === false
-      ? `<p class="empty" style="margin-bottom:14px">📒 Showing <b>sample</b> data. Firefly III is running in the stack${web ? ` — <a href="${web}" target="_blank" rel="noopener">open it</a>, register, then make a Personal Access Token (Options → Profile → OAuth) and set <code>FIREFLY_TOKEN</code>` : ` — see docs/SETUP-FIREFLY.md`} to see your real finances.</p>`
+      ? `<p class="empty" style="margin-bottom:14px">📒 <b>Not connected.</b> Set <code>FIREFLY_URL</code> and <code>FIREFLY_TOKEN</code> (docs/SETUP-FIREFLY.md)${web ? ` — or <a href="${web}" target="_blank" rel="noopener">open Firefly</a> to make a token` : ""} to see your real finances.</p>`
       : "";
     const openBtn = web
       ? `<a class="btn" href="${web}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">Open in Firefly ↗</a>`

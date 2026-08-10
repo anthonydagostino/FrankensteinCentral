@@ -27,35 +27,18 @@ FIREFLY_TOKEN = os.environ.get("FIREFLY_TOKEN", "")
 FIREFLY_WEB_URL = os.environ.get("FIREFLY_WEB_URL", "").rstrip("/")
 FIREFLY_IMPORTER_URL = os.environ.get("FIREFLY_IMPORTER_URL", "").rstrip("/")
 
-MOCK = {
+# Honest empty state shown until Firefly is connected — no fabricated numbers.
+EMPTY = {
     "currency": "USD",
-    "net_worth": {"value": 48250.00, "display": "$48,250"},
-    "spent": {"value": -2140.55, "display": "-$2,140"},
-    "earned": {"value": 5200.00, "display": "$5,200"},
-    "left_to_spend": {"value": 1310.00, "display": "$1,310"},
-    "bills_unpaid": {"value": -180.00, "display": "-$180"},
-    "accounts": [
-        {"name": "Checking", "balance": "4210.55", "currency": "USD", "type": "asset"},
-        {"name": "Savings (Marcus)", "balance": "18800.00", "currency": "USD", "type": "asset"},
-        {"name": "Brokerage", "balance": "25239.45", "currency": "USD", "type": "asset"},
-    ],
-    "liabilities": [
-        {"name": "Credit Card", "balance": "-1240.00", "currency": "USD", "type": "liability"},
-    ],
-    "categories": [
-        {"name": "Groceries", "amount": 612.40},
-        {"name": "Rent", "amount": 1500.00},
-        {"name": "Dining out", "amount": 284.10},
-        {"name": "Transport", "amount": 176.30},
-        {"name": "Subscriptions", "amount": 63.97},
-        {"name": "Shopping", "amount": 143.20},
-    ],
-    "recent": [
-        {"desc": "Whole Foods", "amount": "-86.40", "type": "withdrawal", "date": "2026-07-26", "currency": "USD"},
-        {"desc": "Paycheck", "amount": "2600.00", "type": "deposit", "date": "2026-07-25", "currency": "USD"},
-        {"desc": "Spotify", "amount": "-11.99", "type": "withdrawal", "date": "2026-07-24", "currency": "USD"},
-        {"desc": "Transfer to Savings", "amount": "500.00", "type": "transfer", "date": "2026-07-23", "currency": "USD"},
-    ],
+    "net_worth": None,
+    "spent": None,
+    "earned": None,
+    "left_to_spend": None,
+    "bills_unpaid": None,
+    "accounts": [],
+    "liabilities": [],
+    "categories": [],
+    "recent": [],
 }
 
 
@@ -141,13 +124,13 @@ async def _live() -> dict:
 
 async def _data() -> dict:
     if not _connected():
-        return MOCK
+        return dict(EMPTY)
     return await _live()
 
 
 @app.get("/health")
 async def health():
-    return {"service": "firefly", "mode": "live" if _connected() else "mock",
+    return {"service": "firefly", "mode": "live" if _connected() else "disconnected",
             "connected": _connected()}
 
 
@@ -166,7 +149,7 @@ async def summary():
         "currency": d.get("currency"),
         "web_url": FIREFLY_WEB_URL or None,
         "importer_url": FIREFLY_IMPORTER_URL or None,
-        "mode": "live" if _connected() else "mock",
+        "mode": "live" if _connected() else "disconnected",
         "connected": _connected(),
     }
 
