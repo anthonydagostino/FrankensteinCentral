@@ -13,7 +13,19 @@ cd "$DIR"
 
 BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 
-echo "==> Deploying '$BRANCH' from $DIR"
+# Support both Docker Compose v2 ("docker compose") and the older v1
+# ("docker-compose"), so the pipeline works whatever the box has installed.
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "!! Neither 'docker compose' nor 'docker-compose' is installed."
+  echo "!! Install it with:  sudo apt-get install -y docker-compose-plugin"
+  exit 1
+fi
+
+echo "==> Deploying '$BRANCH' from $DIR (using: $DC)"
 
 # Pull the exact pushed code. reset --hard leaves untracked files (like .env
 # and docker volumes) alone, so your secrets and data survive.
@@ -28,7 +40,7 @@ fi
 
 # Build changed images and (re)start everything. --remove-orphans cleans up
 # any services that were removed from the compose file.
-docker compose up -d --build --remove-orphans
+$DC up -d --build --remove-orphans
 
 # Keep disk tidy — drop dangling images from old builds.
 docker image prune -f >/dev/null 2>&1 || true
