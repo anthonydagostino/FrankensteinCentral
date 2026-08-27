@@ -242,6 +242,31 @@ body.cc[data-mode="evening"] {
 .focus-actions { display: flex; gap: 10px; justify-content: center; margin-top: 6px; }
 .focus-hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
 
+/* ---- apps & services launcher ---- */
+.launcher-overlay { position: fixed; inset: 0; background: rgba(6,8,12,0.7); backdrop-filter: blur(4px);
+  display: grid; place-items: start center; padding-top: 10vh; z-index: 82; }
+.launcher-overlay[hidden] { display: none; }
+.launcher { width: min(560px, 94vw); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 16px; padding: 18px 20px; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.launcher-head { display: flex; align-items: center; justify-content: space-between; }
+.launcher-head h2 { margin: 0; font-size: 17px; }
+.launcher-hint { margin: 6px 0 14px; color: var(--muted); font-size: 12.5px; }
+.launcher-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.launch-tile { display: flex; align-items: center; gap: 9px; padding: 11px 12px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px;
+  cursor: pointer; text-decoration: none; color: var(--text); font-size: 13.5px; }
+.launch-tile:hover { border-color: var(--accent-2); }
+.launch-tile .ic { font-size: 17px; }
+.launch-tile .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.launch-tile .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); flex: 0 0 auto; }
+.launch-tile .dot.up { background: var(--up); }
+.launch-tile .dot.down { background: var(--down); box-shadow: 0 0 0 3px rgba(255,107,107,.15); }
+.launch-tile .ext { color: var(--accent-2); text-decoration: none; font-weight: 700; padding: 2px 5px; border-radius: 6px; }
+.launch-tile .ext:hover { background: var(--panel); }
+.launcher-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.legacy-link { color: var(--muted); font-size: 12.5px; text-decoration: none; }
+.legacy-link:hover { color: var(--text); }
+
 /* ---- settings ---- */
 .settings-overlay { position: fixed; inset: 0; background: rgba(6,8,12,0.7); backdrop-filter: blur(4px);
   display: grid; place-items: center; z-index: 86; padding: 20px; }

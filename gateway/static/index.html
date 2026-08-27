@@ -18,9 +18,8 @@
         <button class="cc-k" id="cc-open-palette" title="Command palette (Ctrl/⌘ K)">
           <span>⌘K</span> Quick actions
         </button>
-        <button class="cc-icon-btn" id="cc-apps" title="All apps">▦</button>
+        <button class="cc-icon-btn" id="cc-apps" title="Apps & services">▦</button>
         <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
-        <a class="cc-icon-btn" href="/lounge.html" title="Bones' lounge">🦴</a>
         <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
           <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
         </div>
@@ -71,6 +70,21 @@
           <button class="btn btn-ghost" id="focus-cancel">Cancel</button>
         </div>
         <p class="focus-hint">Time is logged to your study total when you finish.</p>
+      </div>
+    </div>
+
+    <!-- Apps & services launcher -->
+    <div class="launcher-overlay" id="launcher" hidden>
+      <div class="launcher" role="dialog" aria-modal="true">
+        <div class="launcher-head">
+          <h2>Apps &amp; services</h2>
+          <button class="close" id="launcher-close" aria-label="Close">×</button>
+        </div>
+        <p class="launcher-hint">Click a tile for its dashboard view · <b>↗</b> opens the full app</p>
+        <div class="launcher-grid" id="launcher-grid"><p class="att-empty">Loading…</p></div>
+        <div class="launcher-foot">
+          <a href="/lounge.html" class="legacy-link" title="The old canvas dashboard, kept around for nostalgia">🦴 Legacy lounge view</a>
+        </div>
       </div>
     </div>
 

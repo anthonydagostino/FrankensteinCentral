@@ -401,8 +401,9 @@
       { ic: "💭", label: "Quick capture a note", hint: "capture", run: () => q("#cap-input") && q("#cap-input").focus() },
       { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
       { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
+      { ic: "▦", label: "Apps & services launcher", hint: "apps containers launcher", run: () => openLauncher() },
       { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
-      { ic: "🦴", label: "Open Bones' lounge", hint: "fun", run: () => (location.href = "/lounge.html") },
+      { ic: "🦴", label: "Legacy lounge view", hint: "lounge legacy old", run: () => (location.href = "/lounge.html") },
     ];
     // one command per app -> opens its modal, with natural aliases
     const ALIASES = {
@@ -448,7 +449,7 @@
 
   // ---- wiring ---------------------------------------------------------------
   q("#cc-open-palette").onclick = openPalette;
-  q("#cc-apps").onclick = openPalette;
+  q("#cc-apps").onclick = openLauncher;
   q("#cc-score-pill").onclick = () => openAppKey("core");
   q("#palette").onclick = (e) => { if (e.target.id === "palette") closePalette(); };
   q("#palette-input").addEventListener("input", (e) => paintPalette(e.target.value));
@@ -465,7 +466,58 @@
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); q("#palette").hidden ? openPalette() : closePalette(); }
     else if (e.key === "Escape" && !q("#palette").hidden) closePalette();
+    else if (e.key === "Escape" && !q("#launcher").hidden) closeLauncher();
   });
+
+  // ---- apps & services launcher ---------------------------------------------
+  // The one place to reach every sub-app/container: tile -> dashboard modal,
+  // ↗ -> the full underlying application (Firefly, Jellyfin, importer…).
+  let EXT_LINKS = null;  // cached {key: url}
+  async function externalLinks() {
+    if (EXT_LINKS) return EXT_LINKS;
+    const links = {};
+    try {
+      const ff = await fetch("/api/firefly/summary").then((r) => r.json());
+      if (ff.web_url) links.firefly = ff.web_url;
+      if (ff.importer_url) links._importer = ff.importer_url;
+    } catch {}
+    try {
+      const jf = await fetch("/api/jellyfin/summary").then((r) => r.json());
+      if (jf.web_url) links.jellyfin = jf.web_url + "/web/";
+    } catch {}
+    EXT_LINKS = links;
+    return links;
+  }
+  async function openLauncher() {
+    q("#launcher").hidden = false;
+    const grid = q("#launcher-grid");
+    let health = {};
+    try { health = await fetch("/api/health").then((r) => r.json()); } catch {}
+    const links = await externalLinks();
+    const tiles = Object.values(APPSMAP).map((a) => {
+      const st = (health[a.key] || {}).status || "";
+      const ext = links[a.key]
+        ? `<a class="ext" href="${links[a.key]}" target="_blank" rel="noopener" title="Open the full app">↗</a>` : "";
+      return `<div class="launch-tile" data-key="${esch(a.key)}">
+        <span class="ic">${a.icon || "▦"}</span><span class="nm">${esch(a.name)}</span>
+        <span class="dot ${st}" title="${st || "unknown"}"></span>${ext}</div>`;
+    });
+    if (links._importer) {
+      tiles.push(`<a class="launch-tile" href="${links._importer}" target="_blank" rel="noopener" title="Firefly data importer">
+        <span class="ic">📥</span><span class="nm">Importer</span><span class="dot"></span><span class="ext">↗</span></a>`);
+    }
+    grid.innerHTML = tiles.join("") || '<p class="att-empty">No apps registered.</p>';
+    grid.querySelectorAll(".launch-tile[data-key]").forEach((el) => {
+      el.onclick = (e) => {
+        if (e.target.closest(".ext")) return;  // let the deep link navigate
+        closeLauncher();
+        openAppKey(el.dataset.key);
+      };
+    });
+  }
+  function closeLauncher() { q("#launcher").hidden = true; }
+  q("#launcher-close").onclick = closeLauncher;
+  q("#launcher").onclick = (e) => { if (e.target.id === "launcher") closeLauncher(); };
 
   // ---- settings -------------------------------------------------------------
   async function openSettings() {
