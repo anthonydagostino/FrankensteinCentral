@@ -12,7 +12,8 @@ Config:
   FIREFLY_IMPORTER_URL  browser-facing URL for the data importer (e.g. http://<box-ip>:8096)
 """
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI
@@ -26,6 +27,7 @@ FIREFLY_TOKEN = os.environ.get("FIREFLY_TOKEN", "")
 # usually the internal docker hostname (not reachable from a browser).
 FIREFLY_WEB_URL = os.environ.get("FIREFLY_WEB_URL", "").rstrip("/")
 FIREFLY_IMPORTER_URL = os.environ.get("FIREFLY_IMPORTER_URL", "").rstrip("/")
+LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
 
 # Honest empty state shown until Firefly is connected — no fabricated numbers.
 EMPTY = {
@@ -163,6 +165,89 @@ async def dashboard():
     return {**d, "web_url": FIREFLY_WEB_URL or None,
             "importer_url": FIREFLY_IMPORTER_URL or None,
             "connected": _connected()}
+
+
+async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
+    """All withdrawal splits in [start, end], paging through Firefly."""
+    out, page = [], 1
+    while page <= 6:
+        r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
+                             params={"type": "withdrawal", "start": start, "end": end,
+                                     "limit": 50, "page": page},
+                             headers=_headers(), timeout=20)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        if not data:
+            break
+        for g in data:
+            for t in g.get("attributes", {}).get("transactions", []):
+                try:
+                    amt = abs(float(t.get("amount") or 0))
+                except (TypeError, ValueError):
+                    amt = 0
+                out.append({"desc": t.get("description", ""), "amount": round(amt, 2),
+                            "date": (t.get("date") or "")[:10],
+                            "category": t.get("category_name") or "Uncategorized"})
+        if len(data) < 50:
+            break
+        page += 1
+    return out
+
+
+async def _spending() -> dict:
+    today = datetime.now(LOCAL_TZ).date()
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    last_month_end = month_start - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    # last-month "to date" cutoff = same day-of-month as today (for pace)
+    lm_cutoff = last_month_start + timedelta(days=(today.day - 1))
+    async with httpx.AsyncClient() as client:
+        wd = await _fetch_withdrawals(client, last_month_start.isoformat(), today.isoformat())
+
+    def d(s):
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            return None
+    today_sum = week_sum = month_sum = lm_to_date = 0.0
+    biggest_today = None
+    for t in wd:
+        dt = d(t["date"])
+        if dt is None:
+            continue
+        if dt >= month_start:
+            month_sum += t["amount"]
+            if dt >= week_start:
+                week_sum += t["amount"]
+            if dt == today:
+                today_sum += t["amount"]
+                if biggest_today is None or t["amount"] > biggest_today["amount"]:
+                    biggest_today = t
+        elif last_month_start <= dt <= lm_cutoff:
+            lm_to_date += t["amount"]
+    day_n = today.day
+    daily_avg = round(month_sum / day_n, 2) if day_n else 0
+    pace_pct = round(((month_sum - lm_to_date) / lm_to_date) * 100) if lm_to_date else None
+    recent = sorted([t for t in wd], key=lambda t: t["date"], reverse=True)[:12]
+    return {
+        "connected": True,
+        "currency": "USD",
+        "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
+        "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
+        "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
+    }
+
+
+@app.get("/spending")
+async def spending():
+    if not _connected():
+        return {"connected": False, "today": None, "week": None, "month": None,
+                "pace_pct": None, "recent": [], "biggest_today": None}
+    try:
+        return await _spending()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 
 
 @app.get("/networth")

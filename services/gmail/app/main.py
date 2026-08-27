@@ -281,6 +281,13 @@ async def _fetch_inbox() -> list[dict] | None:
                 continue
             payload = mr.json()
             hdrs = {h["name"]: h["value"] for h in payload.get("payload", {}).get("headers", [])}
+            received = payload.get("internalDate")  # epoch ms, gmail-provided
+            age_hours = None
+            if received:
+                try:
+                    age_hours = round((time.time() * 1000 - int(received)) / 3_600_000, 1)
+                except (TypeError, ValueError):
+                    age_hours = None
             out.append(
                 {
                     "id": mid,
@@ -288,6 +295,8 @@ async def _fetch_inbox() -> list[dict] | None:
                     "from": hdrs.get("From", ""),
                     "subject": hdrs.get("Subject", ""),
                     "snippet": payload.get("snippet", ""),
+                    "received": received,
+                    "age_hours": age_hours,
                 }
             )
         return out

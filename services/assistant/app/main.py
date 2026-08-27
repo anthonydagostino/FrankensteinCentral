@@ -361,69 +361,29 @@ def _home_time(settings: dict) -> dict:
     }
 
 
-def _today_spend(firefly: dict) -> float | None:
-    """Sum today's withdrawals from Firefly's recent transactions."""
-    if not firefly or firefly.get("connected") is False:
-        return None
-    today = datetime.now(LOCAL_TZ).date().isoformat()
-    total = 0.0
-    seen = False
-    for t in firefly.get("recent", []):
-        if (t.get("date") or "")[:10] == today and t.get("type") == "withdrawal":
-            seen = True
-            try:
-                total += abs(float(t.get("amount") or 0))
-            except (TypeError, ValueError):
-                pass
-    return round(total, 2) if seen else 0.0
+def _event_minutes_until(events, now) -> tuple | None:
+    """(minutes_until, event) for the next confirmed event, if parseable."""
+    for e in events:
+        raw = e.get("starts_at") or e.get("start")
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=LOCAL_TZ)
+        mins = (dt - now).total_seconds() / 60
+        return (mins, e)
+    return None
 
 
-def _money_observations(firefly, finance, budget, today_spend, settings) -> list[str]:
-    obs: list[str] = []
-    upcoming = finance.get("upcoming", []) if finance else []
-    soon = [b for b in upcoming if (b.get("days_until") is None or b.get("days_until", 99) <= 7)]
-    if soon:
-        total = sum(float(b.get("amount") or 0) for b in soon)
-        obs.append(f"{len(soon)} bill(s) totaling ${total:,.0f} due within a week.")
-    cats = (firefly or {}).get("categories", []) or []
-    if cats:
-        top = max(cats, key=lambda c: c.get("amount", 0))
-        obs.append(f"{top['name']} is your biggest category this month (${top['amount']:,.0f}).")
-    thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
-    if today_spend and today_spend >= thr:
-        obs.append(f"You've spent ${today_spend:,.0f} today — above your ${thr} watch line.")
-    over = budget.get("over_budget", []) if budget else []
-    if over:
-        obs.append(f"Over budget on {', '.join(over[:3])}.")
-    return obs[:3]
-
-
-def _attention(core, gmail_emails, availability, finance, budget, firefly,
+def _attention(core, availability, finance, budget, firefly, spending,
                stocks, vault, settings, down) -> list[dict]:
+    """Cross-domain items that need you — email lives in its own Inbox card now,
+    so this is money / stocks / habits / infra only."""
     items: list[dict] = []
 
-    # 1) Important email (interview/deadline) needing a reply
-    for e in gmail_emails[:6]:
-        cat = e.get("category")
-        sev = "important" if cat in ("interview", "deadline") else "fyi"
-        verb = {"interview": "Interview", "deadline": "Deadline"}.get(cat, "Reply needed")
-        items.append({
-            "id": f"mail:{e.get('id')}", "severity": sev, "icon": "📧",
-            "title": f"{verb}: {_short(e.get('subject',''), 44)}",
-            "detail": _sender_name(e.get("from", "")),
-            "action": {"type": "gmail"},
-        })
-
-    # 2) Countered availability — the ball is in your court
-    for t in (availability.get("threads", []) if availability else []):
-        if t.get("status") == "countered":
-            items.append({
-                "id": f"thread:{t.get('thread_id')}", "severity": "important", "icon": "🗓️",
-                "title": f"{_sender_name(t.get('counterparty',''))} countered your time",
-                "detail": _short(t.get("subject", ""), 44), "action": {"type": "gmail"},
-            })
-
-    # 3) Bills due soon
     for b in (finance.get("upcoming", []) if finance else [])[:4]:
         du = b.get("days_until")
         sev = "important" if (du is not None and du <= 3) else "fyi"
@@ -434,23 +394,16 @@ def _attention(core, gmail_emails, availability, finance, budget, firefly,
             "action": {"type": "open", "app": "finance"},
         })
 
-    # 4) Big spend / unpaid bills from Firefly
     thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
-    for t in (firefly or {}).get("recent", [])[:8]:
-        try:
-            amt = abs(float(t.get("amount") or 0))
-        except (TypeError, ValueError):
-            continue
-        if t.get("type") == "withdrawal" and amt >= thr:
-            items.append({
-                "id": f"txn:{t.get('desc')}:{t.get('date')}", "severity": "fyi", "icon": "💸",
-                "title": f"Large charge: {_short(t.get('desc',''), 32)}",
-                "detail": f"${amt:,.0f} · {t.get('date','')}",
-                "action": {"type": "open", "app": "firefly"},
-            })
-            break
+    big = (spending or {}).get("biggest_today")
+    if big and big.get("amount", 0) >= thr:
+        items.append({
+            "id": f"txn:{big.get('desc')}", "severity": "fyi", "icon": "💸",
+            "title": f"Large charge: {_short(big.get('desc',''), 30)}",
+            "detail": f"${big['amount']:,.0f} today",
+            "action": {"type": "open", "app": "firefly"},
+        })
 
-    # 5) Stock moves beyond your threshold
     move_thr = (settings.get("market", {}) or {}).get("move_threshold_pct", 3)
     for p in (stocks.get("positions", []) if stocks else []):
         pct = p.get("change_pct")
@@ -463,7 +416,6 @@ def _attention(core, gmail_emails, availability, finance, budget, firefly,
                 "action": {"type": "open", "app": "stocks"},
             })
 
-    # 6) Personal nudges from core (study/gym/water/big3)
     for n in (core.get("nudges", []) if core else []):
         items.append({
             "id": f"nudge:{n['key']}", "severity": n.get("severity", "fyi"),
@@ -471,7 +423,6 @@ def _attention(core, gmail_emails, availability, finance, budget, firefly,
             "detail": n.get("detail", ""), "action": n.get("action"),
         })
 
-    # 7) Reused passwords
     if vault and vault.get("reused"):
         items.append({
             "id": "vault:reused", "severity": "fyi", "icon": "🔐",
@@ -479,7 +430,6 @@ def _attention(core, gmail_emails, availability, finance, budget, firefly,
             "action": {"type": "open", "app": "vault"},
         })
 
-    # 8) Infra: a service is down
     for name in down:
         items.append({
             "id": f"sys:{name}", "severity": "important", "icon": "⚠️",
@@ -492,72 +442,104 @@ def _attention(core, gmail_emails, availability, finance, budget, firefly,
     return items
 
 
-def _do_next(core, gmail_emails, settings) -> dict:
-    """One explainable recommendation. First matching rule wins."""
+def _study_pace_behind(study, hour) -> int:
+    """Minutes behind a linear 8am→10pm pace toward today's goal (0 if ahead)."""
+    goal = study.get("goal_min", 0)
+    done = study.get("today_min", 0)
+    if not goal:
+        return 0
+    frac = max(0.0, min(1.0, (hour - 8) / 14))
+    expected = goal * frac
+    return int(max(0, expected - done))
+
+
+def _do_next(core, inbox, money, events, settings, t) -> dict:
+    """ONE explainable recommendation, considering time, email, calendar,
+    study pace, gym, hydration and the Big 3. First matching rule wins."""
     now = datetime.now(LOCAL_TZ)
+    hour = t["hour"]
     study = (core or {}).get("study", {})
     gym = (core or {}).get("gym", {})
     water = (core or {}).get("water", {})
     big3 = (core or {}).get("big3", [])
 
-    important_mail = [e for e in gmail_emails if e.get("category") in ("interview", "deadline")]
-    if important_mail:
-        e = important_mail[0]
-        return {"title": f"Reply to {_sender_name(e.get('from',''))}",
-                "reason": f"\"{_short(e.get('subject',''), 50)}\" is waiting on you.",
+    ev = _event_minutes_until(events, now)
+
+    # 1) A calendar event that's imminent beats everything
+    if ev and 0 <= ev[0] <= 30:
+        return {"title": f"Head to {_short(ev[1].get('title',''), 40)}",
+                "reason": f"It starts in {int(ev[0])} min.",
+                "action": {"type": "open", "app": "schedule"}}
+
+    # 2) An important email that needs a response
+    needs = [i for i in inbox.get("items", []) if i.get("needs_reply") and i.get("important")]
+    if needs:
+        e = sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True)[0]
+        aged = f" — it's been sitting {e['age'].replace(' ago', '')}" if e.get("age") else ""
+        return {"title": f"Reply to {e['from']}",
+                "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
                 "action": {"type": "gmail"}}
 
-    goal = study.get("goal_min", 0)
-    done = study.get("today_min", 0)
-    if goal and done < goal:
+    # 3) A calendar event starting soon
+    if ev and 0 <= ev[0] <= 75:
+        return {"title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
+                "reason": f"It starts in {int(ev[0])} min.",
+                "action": {"type": "open", "app": "schedule"}}
+
+    # 3) Study, if you're behind pace
+    behind = _study_pace_behind(study, hour)
+    goal = study.get("goal_min", 0); done = study.get("today_min", 0)
+    if goal and done < goal and (behind >= 15 or hour >= 18):
         rem = goal - done
         mins = min(60, rem) or 25
-        behind = ""
-        wk = study.get("week_min", 0); wkgoal = study.get("week_goal_min", 0)
-        if wkgoal and wk < wkgoal:
-            behind = f" You're {round((wkgoal-wk)/60,1)}h behind your weekly pace."
+        why = (f"you're {behind} min behind today's pace" if behind >= 15
+               else f"{done//60}h {done%60}m / {goal//60}h done and the day's almost over")
         return {"title": f"Start a {mins}-minute study session",
-                "reason": f"{done//60}h {done%60}m / {goal//60}h {goal%60}m done today.{behind}",
-                "action": {"type": "focus", "minutes": mins}}
+                "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
 
+    # 4) Gym, if the week is slipping
     if gym.get("available") and gym.get("week", 0) < gym.get("goal", 0):
         rem = gym["goal"] - gym["week"]
         days_left = 7 - now.weekday()
-        if rem >= days_left or now.hour >= settings.get("evening_start_hour", 18):
+        if rem >= days_left or hour >= settings.get("evening_start_hour", 18):
             return {"title": "Go to the gym",
-                    "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go, {days_left} day(s) left.",
+                    "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
                     "action": {"type": "gym"}}
 
+    # 5) A Big 3 item
     undone = [b for b in big3 if not b.get("done")]
-    if undone:
-        return {"title": f"Do: {_short(undone[0]['text'], 40)}",
+    if undone and hour >= 10:
+        return {"title": f"Knock out: {_short(undone[0]['text'], 40)}",
                 "reason": "It's one of your Big 3 for today.",
                 "action": {"type": "big3", "id": undone[0]["id"]}}
 
-    if water.get("goal") and water.get("oz", 0) < water["goal"] and now.hour >= 15:
-        return {"title": "Log some water",
-                "reason": f"{water['oz']}/{water['goal']} oz — catch up before the day ends.",
+    # 6) Hydration, late in the day
+    if water.get("goal") and water.get("oz", 0) < water["goal"] and hour >= 16:
+        gap = water["goal"] - water["oz"]
+        return {"title": "Drink some water",
+                "reason": f"{gap} oz short of your {water['goal']} oz goal.",
                 "action": {"type": "water", "oz": 16}}
 
-    return {"title": "You're on track", "reason": "Nothing urgent right now.", "action": None}
+    return {"title": "You're on track", "reason": "Nothing urgent right now — nice.",
+            "action": None}
 
 
-def _briefing_line(core, gmail_emails, stocks, firefly, today_spend, schedule_events) -> list[str]:
+def _briefing_line(core, inbox, stocks, money, events) -> list[str]:
     out: list[str] = []
-    n = len(gmail_emails)
-    if n:
-        imp = sum(1 for e in gmail_emails if e.get("category") in ("interview", "deadline"))
-        out.append(f"{n} email(s) need a reply" + (f" ({imp} important)" if imp else ""))
+    need = inbox.get("need_reply", 0)
+    imp = sum(1 for i in inbox.get("items", []) if i.get("important"))
+    if need:
+        out.append(f"{need} email(s) need a reply" + (f" ({imp} important)" if imp else ""))
+    elif inbox.get("mode") == "live":
+        out.append("Inbox looks clear")
     if stocks and stocks.get("configured"):
         pct = stocks.get("day_change_pct", 0)
-        arrow = "up" if pct >= 0 else "down"
-        out.append(f"Portfolio {arrow} {abs(pct):.1f}% today")
-    if today_spend is not None:
-        out.append(f"${today_spend:,.0f} spent today")
+        out.append(f"Portfolio {'up' if pct >= 0 else 'down'} {abs(pct):.1f}% today")
+    if money.get("today") is not None:
+        out.append(f"${money['today']:,.0f} spent today")
     gym = (core or {}).get("gym", {})
     if gym.get("available"):
-        out.append(f"Gym {gym.get('week',0)}/{gym.get('goal',0)} this week"
-                   if gym.get("week") else "Gym not done yet")
+        out.append(f"Gym {gym.get('week',0)}/{gym.get('goal',0)} this week")
     study = (core or {}).get("study", {})
     if study.get("goal_min"):
         d = study.get("today_min", 0)
@@ -565,9 +547,124 @@ def _briefing_line(core, gmail_emails, stocks, firefly, today_spend, schedule_ev
     water = (core or {}).get("water", {})
     if water.get("goal"):
         out.append(f"{water.get('oz',0)}/{water['goal']} oz water")
-    if schedule_events:
-        out.append(f"Next: {_short(schedule_events[0].get('title',''), 30)}")
     return out[:6]
+
+
+def _age_str(hours) -> str:
+    if hours is None:
+        return ""
+    if hours < 1:
+        return "just now"
+    if hours < 24:
+        return f"{int(round(hours))}h ago"
+    return f"{int(hours // 24)}d ago"
+
+
+def _is_important_sender(addr: str, important: list) -> bool:
+    a = (addr or "").lower()
+    return any(s and s.lower() in a for s in (important or []))
+
+
+def _inbox(gmail_emails, availability, settings, gmail_mode) -> dict:
+    """The email signal: which messages actually matter, with sender/subject/
+    age — not a count of 40 unread."""
+    important = settings.get("important_senders", [])
+    tier = {"interview": 50, "deadline": 40, "personal": 20, "deal": 5, "fyi": 0}
+    scored = []
+    for e in gmail_emails:
+        rank = tier.get(e.get("category"), 0)
+        if _is_important_sender(e.get("from", ""), important):
+            rank += 100
+        if e.get("needs_reply"):
+            rank += 15
+        age = e.get("age_hours")
+        if age is not None:
+            rank += min(20, age / 6)
+        scored.append((rank, e))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    items = []
+    for rank, e in scored[:5]:
+        age = e.get("age_hours")
+        items.append({
+            "id": e.get("id"), "thread_id": e.get("thread_id"),
+            "from": _sender_name(e.get("from", "")),
+            "subject": _short(e.get("subject", ""), 60),
+            "snippet": _short(e.get("snippet", ""), 90),
+            "category": e.get("category"),
+            "age": _age_str(age), "age_hours": age,
+            "needs_reply": e.get("needs_reply", False),
+            "important": _is_important_sender(e.get("from", ""), important)
+            or e.get("category") in ("interview", "deadline"),
+            "stale": age is not None and age >= 48 and e.get("needs_reply"),
+        })
+
+    replies = []
+    for t in (availability.get("threads", []) if availability else []):
+        if t.get("status") == "countered":
+            replies.append({"counterparty": _sender_name(t.get("counterparty", "")),
+                            "subject": _short(t.get("subject", ""), 50)})
+
+    need = sum(1 for i in items if i["needs_reply"])
+    if gmail_mode == "disconnected":
+        empty = "Gmail not connected."
+    elif gmail_mode == "error":
+        empty = "Couldn't reach Gmail — token may need re-auth."
+    elif not items:
+        empty = "Inbox looks clear. 🎉"
+    else:
+        empty = None
+    return {"items": items, "replies": replies, "need_reply": need,
+            "total": len(gmail_emails), "empty": empty, "mode": gmail_mode}
+
+
+def _money(firefly, spending, finance, budget, networth, settings) -> dict:
+    connected = bool(firefly) and firefly.get("connected") is not False
+    sp = spending if (spending and spending.get("connected")) else {}
+    thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
+
+    def _m(key):
+        v = (firefly or {}).get(key)
+        return v if isinstance(v, dict) else {}
+
+    big = sp.get("biggest_today")
+    unusual = big if (big and big.get("amount", 0) >= thr) else None
+
+    obs = []
+    pace = sp.get("pace_pct")
+    if pace is not None:
+        if pace >= 15:
+            obs.append(f"Spending is {pace}% ahead of last month's pace.")
+        elif pace <= -15:
+            obs.append(f"Spending is {abs(pace)}% below last month's pace — nice.")
+    if unusual:
+        obs.append(f"Unusual charge today: {unusual['desc']} ${unusual['amount']:,.0f}.")
+    upcoming = (finance.get("upcoming", []) if finance else [])
+    soon = [b for b in upcoming if (b.get("days_until") is None or b.get("days_until", 99) <= 7)]
+    if soon:
+        tot = sum(float(b.get("amount") or 0) for b in soon)
+        obs.append(f"{len(soon)} bill(s) totaling ${tot:,.0f} due within a week.")
+    cats = (firefly or {}).get("categories", []) or []
+    if not obs and cats:
+        top = max(cats, key=lambda c: c.get("amount", 0))
+        obs.append(f"{top['name']} leads this month at ${top['amount']:,.0f}.")
+    if connected and not obs:
+        obs.append("No unusual spending detected.")
+
+    return {
+        "connected": connected,
+        "today": sp.get("today"), "week": sp.get("week"), "month": sp.get("month"),
+        "pace_pct": pace, "daily_avg": sp.get("daily_avg"),
+        "net_worth": (_m("net_worth").get("display")) or (
+            f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
+        "left_to_spend": _m("left_to_spend").get("display"),
+        "income_month": _m("earned").get("value"),
+        "top_categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True)[:4],
+        "recent": (sp.get("recent") or (firefly or {}).get("recent", []))[:6],
+        "upcoming_bills": soon[:4],
+        "unusual": unusual,
+        "observations": obs[:3],
+    }
 
 
 async def build_home(fresh: bool = False) -> dict:
@@ -577,8 +674,8 @@ async def build_home(fresh: bool = False) -> dict:
         return cached["data"]
 
     async with httpx.AsyncClient() as client:
-        (settings, core, emails_r, avail, finance, budget, firefly, networth,
-         schedule, deals, stocks, vault, captures) = await asyncio.gather(
+        (settings, core, emails_r, avail, finance, budget, firefly, spending,
+         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -586,6 +683,7 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{FINANCE_URL}/summary"),
             _get(client, f"{BUDGET_URL}/summary"),
             _get(client, f"{FIREFLY_SVC_URL}/dashboard"),
+            _get(client, f"{FIREFLY_SVC_URL}/spending"),
             _get(client, f"{NETWORTH_URL}/summary"),
             _get(client, f"{SCHEDULE_URL}/events"),
             _get(client, f"{DEALS_URL}/summary"),
@@ -596,37 +694,23 @@ async def build_home(fresh: bool = False) -> dict:
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
     gmail_emails = emails_r.get("emails", []) if emails_r else []
+    gmail_mode = (emails_r or {}).get("mode", "disconnected")
     events = [e for e in (schedule.get("events", []) if schedule else [])
               if e.get("status", "confirmed") == "confirmed"]
+    settings = settings or {}
 
-    t = _home_time(settings or {})
-    today_spend = _today_spend(firefly)
-
-    # money section
-    def _m(key):
-        v = (firefly or {}).get(key)
-        return v if isinstance(v, dict) else None
-    money = {
-        "today_spent": today_spend,
-        "month_spent": (_m("spent") or {}).get("value"),
-        "income_month": (_m("earned") or {}).get("value"),
-        "left_to_spend": (_m("left_to_spend") or {}).get("display"),
-        "net_worth": (_m("net_worth") or {}).get("display") or (
-            f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
-        "top_categories": sorted((firefly or {}).get("categories", []),
-                                 key=lambda c: c.get("amount", 0), reverse=True)[:4],
-        "upcoming_bills": (finance.get("upcoming", []) if finance else [])[:4],
-        "connected": (firefly or {}).get("connected", False),
-        "observations": _money_observations(firefly, finance, budget, today_spend, settings or {}),
-    }
+    t = _home_time(settings)
+    inbox = _inbox(gmail_emails, avail, settings, gmail_mode)
+    money = _money(firefly, spending, finance, budget, networth, settings)
 
     data = {
         **t,
-        "briefing": _briefing_line(core, gmail_emails, stocks, firefly, today_spend, events),
+        "briefing": _briefing_line(core, inbox, stocks, money, events),
         "big3": (core or {}).get("big3", []),
-        "do_next": _do_next(core, gmail_emails, settings or {}),
-        "attention": _attention(core, gmail_emails, avail, finance, budget, firefly,
-                                stocks, vault, settings or {}, down),
+        "do_next": _do_next(core, inbox, money, events, settings, t),
+        "inbox": inbox,
+        "attention": _attention(core, avail, finance, budget, firefly, spending,
+                                stocks, vault, settings, down),
         "money": money,
         "portfolio": stocks or {"configured": False},
         "health": {

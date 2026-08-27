@@ -51,25 +51,65 @@
   // ---- render ---------------------------------------------------------------
   function render(d) {
     paintClock();
-    // score pill
-    const sc = (d.score && d.score.score) || 0;
-    q("#cc-score-n").textContent = sc;
-    // briefing
+    q("#cc-score-n").textContent = (d.score && d.score.score) || 0;
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
+    renderSince(d);
     renderDoNext(d.do_next, d);
-    renderScore(d.score);
-    renderBig3(d.big3);
-    renderAttention(d.attention);
+    renderInbox(d.inbox);
     renderMoney(d.money);
     renderPortfolio(d.portfolio);
-    renderHealth(d.health);
+    renderAttention(d.attention);
+    renderToday(d);
+    renderHealth(d);
     renderCapture(d.captures);
-    // footer
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     const sys = d.systems || { healthy: true, down: [] };
     q("#cc-systems").textContent = sys.healthy ? "● Systems healthy" : "⚠ " + (sys.down || []).join(", ") + " down";
     q("#cc-systems").style.color = sys.healthy ? "var(--muted)" : "var(--imp)";
+    saveSnapshot(d);
+  }
+
+  // ---- since last check (per-device via localStorage) -----------------------
+  function snapshot(d) {
+    return {
+      ts: Date.now(),
+      importantIds: (d.inbox && d.inbox.items || []).filter((i) => i.important).map((i) => i.id),
+      spendMonth: d.money && d.money.month,
+      spendToday: d.money && d.money.today,
+      port: d.portfolio && d.portfolio.day_change_pct,
+      portVal: d.portfolio && d.portfolio.value,
+      score: d.score && d.score.score,
+      attn: (d.attention || []).length,
+    };
+  }
+  function saveSnapshot(d) {
+    try { localStorage.setItem("cc_snap", JSON.stringify(snapshot(d))); } catch {}
+  }
+  function renderSince(d) {
+    let prev;
+    try { prev = JSON.parse(localStorage.getItem("cc_snap") || "null"); } catch {}
+    const el = q("#cc-since");
+    if (!prev || Date.now() - prev.ts < 15 * 60 * 1000) { el.hidden = true; return; } // only after a 15-min+ gap
+    const bits = [];
+    const nowImp = (d.inbox && d.inbox.items || []).filter((i) => i.important).map((i) => i.id);
+    const newImp = nowImp.filter((id) => !(prev.importantIds || []).includes(id)).length;
+    if (newImp) bits.push(`<span class="it"><b>${newImp}</b> new important email${newImp > 1 ? "s" : ""}</span>`);
+    if (prev.portVal != null && d.portfolio && d.portfolio.value != null) {
+      const dp = (d.portfolio.day_change_pct || 0);
+      if (Math.abs(dp) >= 0.1) bits.push(`<span class="it">Portfolio <b>${dp >= 0 ? "+" : ""}${dp}%</b> today</span>`);
+    }
+    if (prev.spendToday != null && d.money && d.money.today != null) {
+      const diff = d.money.today - prev.spendToday;
+      if (diff > 0) bits.push(`<span class="it"><b>$${Math.round(diff)}</b> new spending</span>`);
+    }
+    if (d.score && prev.score != null && d.score.score !== prev.score) {
+      bits.push(`<span class="it">Score ${d.score.score > prev.score ? "up" : "down"} to <b>${d.score.score}</b></span>`);
+    }
+    if (!bits.length) bits.push('<span class="it">No new alerts. You\'re current.</span>');
+    el.innerHTML = `<span class="lbl">Since you last checked</span>${bits.join("")}<button class="x" title="dismiss">✕</button>`;
+    el.querySelector(".x").onclick = () => (el.hidden = true);
+    el.hidden = false;
   }
 
   function renderDoNext(dn, d) {
@@ -99,40 +139,56 @@
     return "Go";
   }
 
-  function renderScore(score) {
-    score = score || { score: 0, parts: {} };
-    const parts = score.parts || {};
-    const bars = Object.keys(parts).map((k) => {
-      const p = Math.round((parts[k].ratio || 0) * 100);
-      return `<div class="score-bar"><span>${esch(k)}</span><div class="track"><div class="fill" style="width:${p}%"></div></div></div>`;
-    }).join("");
-    q("#cc-score").innerHTML = `
-      <h3>Today's score</h3>
-      <div class="score-ring" style="--p:${score.score || 0}"><div class="hole">${score.score || 0}</div></div>
-      <div class="score-bars">${bars || '<span class="att-empty">No components tracked.</span>'}</div>`;
+  // ---- Inbox (email signal) ----
+  function renderInbox(inbox) {
+    inbox = inbox || {};
+    const items = inbox.items || [];
+    const catTag = (c) => (c === "interview" || c === "deadline")
+      ? `<span class="inbox-tag ${c}">${c}</span>` : "";
+    const rows = items.map((e) =>
+      `<div class="inbox-item ${e.important ? "important" : ""} ${e.stale ? "stale" : ""}" data-id="${esch(e.id)}">
+        <span class="cat"></span>
+        <div class="inbox-main">
+          <div class="s">${esch(e.subject || "(no subject)")}</div>
+          <div class="f"><span>${esch(e.from)}</span><span class="age">${esch(e.age || "")}</span></div>
+        </div>${catTag(e.category)}</div>`).join("");
+    const need = inbox.need_reply || 0;
+    const header = `<h3>Inbox${need ? ` · ${need} need a reply` : ""}</h3>`;
+    const replies = (inbox.replies || []).length
+      ? `<div class="att-empty" style="margin-top:8px">↩ ${inbox.replies.length} interview thread(s) countered your time.</div>` : "";
+    q("#cc-inbox").innerHTML = header +
+      `<div class="inbox">${rows || `<div class="att-empty">${esch(inbox.empty || "Inbox looks clear. 🎉")}</div>`}</div>` +
+      replies +
+      `<div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="inbox-open">Open Gmail ↗</button></div>`;
+    q("#cc-inbox").querySelectorAll(".inbox-item").forEach((el) => (el.onclick = () => openAppKey("gmail")));
+    q("#inbox-open").onclick = () => openAppKey("gmail");
   }
 
-  function renderBig3(items) {
-    items = items || [];
-    let inner;
+  // ---- Today (Big 3 + next event) ----
+  function renderToday(d) {
+    const items = d.big3 || [];
+    const ev = d.next_event;
+    let b3;
     if (!items.length) {
-      inner = `<div class="big3-empty">
-        <input class="cc-input" id="big3-input" placeholder="Your 3 wins for today, comma-separated" />
+      b3 = `<div class="big3-empty">
+        <input class="cc-input" id="big3-input" placeholder="Your 3 wins for today…" />
         <button class="hx-btn" id="big3-save">Set</button></div>`;
     } else {
-      inner = items.map((b) =>
+      b3 = items.map((b) =>
         `<div class="big3-item ${b.done ? "done" : ""}" data-id="${b.id}">
           <div class="big3-box">${b.done ? "✓" : ""}</div><div class="t">${esch(b.text)}</div></div>`).join("");
     }
-    q("#cc-big3").innerHTML = `<h3>Your Big 3</h3>${inner}`;
+    const evLine = ev ? `<div class="att-empty" style="margin-top:10px">🗓️ Next: <b style="color:var(--text)">${esch(ev.title)}</b>${ev.starts_at ? " · " + esch(String(ev.starts_at).slice(11, 16) || String(ev.starts_at).slice(0, 10)) : ""}</div>` : "";
+    q("#cc-today").innerHTML = `<h3>Today's Big 3</h3>${b3}${evLine}`;
     if (!items.length) {
       q("#big3-save").onclick = async () => {
         const v = q("#big3-input").value.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 3);
-        if (!v.length) return;
-        await post("/core/big3", { items: v }); refresh(true);
+        if (!v.length) return; await post("/core/big3", { items: v }); refresh(true);
       };
+      const inp = q("#big3-input");
+      if (inp) inp.onkeydown = (e) => { if (e.key === "Enter") q("#big3-save").click(); };
     } else {
-      q("#cc-big3").querySelectorAll(".big3-item").forEach((el) =>
+      q("#cc-today").querySelectorAll(".big3-item").forEach((el) =>
         (el.onclick = async () => { await post("/core/big3/" + el.dataset.id + "/toggle", {}); refresh(true); }));
     }
   }
@@ -156,51 +212,66 @@
 
   function renderMoney(m) {
     m = m || {};
+    if (!m.connected) {
+      q("#cc-money").innerHTML = `<h3>Money</h3><p class="att-empty">Firefly not connected — set FIREFLY_URL/FIREFLY_TOKEN to see live spending.</p>`;
+      return;
+    }
+    const pace = m.pace_pct;
+    const paceTxt = pace == null ? "" :
+      `<span class="${pace > 0 ? "down" : "up"}" style="font-size:12px">${pace > 0 ? "▲" : "▼"} ${Math.abs(pace)}% vs last mo</span>`;
     const cats = (m.top_categories || []);
     const max = Math.max(1, ...cats.map((c) => c.amount || 0));
     const catRows = cats.map((c) =>
       `<div class="cat"><span>${esch(c.name)}</span><div class="track"><div class="fill" style="width:${Math.round((c.amount / max) * 100)}%"></div></div><span class="mono">${money(c.amount)}</span></div>`).join("");
+    const recent = (m.recent || []).slice(0, 4).map((t) =>
+      `<div class="pos"><span>${esch(t.desc || t.description || "—")}</span><span class="mono down">-${money(Math.abs(Number(t.amount || 0)))}</span></div>`).join("");
     const bills = (m.upcoming_bills || []).map((b) =>
       `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
     const obs = (m.observations || []).map((o) => `<li>${esch(o)}</li>`).join("");
     q("#cc-money").innerHTML = `
       <h3>Money</h3>
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.today_spent != null ? money(m.today_spent) : "—"}</div><div class="l">Spent today</div></div>
-        <div class="mny-stat"><div class="v">${m.net_worth || "—"}</div><div class="l">Net worth</div></div>
-        <div class="mny-stat"><div class="v mono">${m.left_to_spend || "—"}</div><div class="l">Left this month</div></div>
+        <div class="mny-stat"><div class="v">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
+        <div class="mny-stat"><div class="v mono">${m.week != null ? money(m.week) : "—"}</div><div class="l">This week</div></div>
+        <div class="mny-stat"><div class="v mono">${m.month != null ? money(m.month) : "—"} ${paceTxt}</div><div class="l">This month</div></div>
+      </div>
+      <div class="mny-hero" style="margin-bottom:8px">
+        <div class="mny-stat"><div class="v" style="font-size:16px">${m.net_worth || "—"}</div><div class="l">Net worth</div></div>
+        <div class="mny-stat"><div class="v mono" style="font-size:16px">${m.left_to_spend || "—"}</div><div class="l">Left this month</div></div>
       </div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       ${catRows ? `<div class="cats">${catRows}</div>` : ""}
-      ${bills ? `<h3 style="margin-top:14px">Upcoming bills</h3>${bills}` : ""}
-      ${!m.connected ? '<p class="att-empty" style="margin-top:8px">Connect Firefly to see live spending.</p>' : ""}`;
+      ${recent ? `<h3 style="margin-top:14px">Recent</h3>${recent}` : ""}
+      ${bills ? `<h3 style="margin-top:14px">Upcoming bills</h3>${bills}` : ""}`;
   }
 
   function renderPortfolio(p) {
     p = p || { configured: false };
     if (!p.configured) {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
-        <p class="att-empty">No holdings yet. Add them with <b>⌘K → set stocks</b> (or Core settings) to track value & daily movers.</p>`;
+        <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your stocks →</b><br>Then you'll see daily change, movers & watchlist here.</p>`;
+      const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
       return;
     }
     const dc = p.day_change || 0, cls = dc >= 0 ? "up" : "down", arrow = dc >= 0 ? "▲" : "▼";
     const mv = p.movers || {};
-    const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b> <span class="${x.change_pct >= 0 ? "up" : "down"}">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}%</span></span><span class="mono ${x.day_change >= 0 ? "up" : "down"}">${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
+    const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b></span><span class="${x.change_pct >= 0 ? "up" : "down"} mono">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}% · ${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
     const positions = (p.positions || []).filter((x) => x.available).map((x) =>
       `<div class="pos"><span><b>${esch(x.symbol)}</b> <span class="${x.change_pct >= 0 ? "up" : "down"}">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}%</span></span><span class="mono">${money(x.value)}</span></div>`).join("");
     q("#cc-portfolio").innerHTML = `
-      <h3>Portfolio</h3>
+      <h3>Portfolio · what changed</h3>
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v mono">${money(p.value)}</div><div class="l">Value</div></div>
-        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${money(Math.abs(dc))} (${p.day_change_pct}%)</div><div class="l">Today</div></div>
-        ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
+        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">Today · ${dc >= 0 ? "+" : ""}${money(dc)}</div></div>
+        <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
+        ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>
-      ${moverRow(mv.up, "Top")}${moverRow(mv.down, "Worst")}
-      ${positions}`;
+      ${moverRow(mv.up, "▲")}${moverRow(mv.down, "▼")}
+      <div style="margin-top:6px">${positions}</div>`;
   }
 
-  function renderHealth(h) {
-    h = h || {};
+  function renderHealth(d) {
+    const h = d.health || {};
+    const score = d.score || { score: 0, parts: {} };
     const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
     const studyPct = st.goal_min ? Math.min(100, Math.round((st.today_min / st.goal_min) * 100)) : 0;
     const waterPct = w.goal ? Math.min(100, Math.round((w.oz / w.goal) * 100)) : 0;
@@ -210,8 +281,15 @@
     const rating = nut.rating;
     const nutBtns = ["poor", "okay", "good"].map((r) => `<button class="hx-btn ${rating === r ? "on" : ""}" data-nut="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join("");
     const exam = st.exam;
+    const parts = score.parts || {};
+    const scoreBars = Object.keys(parts).map((k) =>
+      `<div class="score-bar"><span>${esch(k)}</span><div class="track"><div class="fill" style="width:${Math.round((parts[k].ratio || 0) * 100)}%"></div></div></div>`).join("");
     q("#cc-health").innerHTML = `
-      <h3>Health &amp; discipline</h3>
+      <h3>Health &amp; discipline · today's score ${score.score || 0}</h3>
+      <div class="hx-score">
+        <div class="score-ring" style="--p:${score.score || 0}"><div class="hole">${score.score || 0}</div></div>
+        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}</div>
+      </div>
       <div class="hx">
         <div class="hx-row">
           <div class="hx-head"><span class="l">📚 Study${st.streak ? ` · ${st.streak}d streak` : ""}</span><span class="v">${fmtH(st.today_min)} / ${fmtH(st.goal_min)}</span></div>
@@ -326,8 +404,18 @@
       { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
       { ic: "🦴", label: "Open Bones' lounge", hint: "fun", run: () => (location.href = "/lounge.html") },
     ];
-    // one command per app -> opens its modal
-    Object.values(APPSMAP).forEach((a) => base.push({ ic: a.icon || "▦", label: "Open " + a.name, hint: a.key, run: () => openAppKey(a.key) }));
+    // one command per app -> opens its modal, with natural aliases
+    const ALIASES = {
+      gmail: "mail email inbox", firefly: "money finance spending firefly ledger",
+      vault: "passwords password vaultwarden bitwarden secrets", jellyfin: "media movies tv shows",
+      stocks: "stocks portfolio investments shares", schedule: "calendar cal events",
+      tasks: "todo task list", core: "score stats habits", networth: "net worth wealth",
+      finance: "bills subscriptions", budget: "budget categories",
+    };
+    Object.values(APPSMAP).forEach((a) => base.push({
+      ic: a.icon || "▦", label: "Open " + a.name,
+      hint: (a.key + " " + (ALIASES[a.key] || "")).trim(), run: () => openAppKey(a.key),
+    }));
     return base;
   }
   function openPalette() {

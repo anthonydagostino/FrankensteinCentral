@@ -27,17 +27,24 @@
       </div>
     </header>
 
+    <div class="cc-since" id="cc-since" hidden></div>
     <div class="cc-briefing" id="cc-briefing"></div>
 
-    <main class="cc-grid" id="cc-grid">
+    <main class="cc-main" id="cc-grid">
       <section class="cc-card hero" id="cc-donext"><div class="cc-loading">Loading your day…</div></section>
-      <section class="cc-card" id="cc-score"></section>
-      <section class="cc-card" id="cc-big3"></section>
-      <section class="cc-card wide" id="cc-attention"></section>
-      <section class="cc-card" id="cc-money"></section>
-      <section class="cc-card" id="cc-portfolio"></section>
-      <section class="cc-card" id="cc-health"></section>
-      <section class="cc-card" id="cc-capture"></section>
+      <div class="cc-cols">
+        <div class="cc-col">
+          <section class="cc-card" id="cc-inbox"></section>
+          <section class="cc-card" id="cc-attention"></section>
+          <section class="cc-card" id="cc-health"></section>
+        </div>
+        <div class="cc-col">
+          <section class="cc-card" id="cc-money"></section>
+          <section class="cc-card" id="cc-portfolio"></section>
+          <section class="cc-card" id="cc-today"></section>
+          <section class="cc-card" id="cc-capture"></section>
+        </div>
+      </div>
     </main>
 
     <footer class="cc-foot">
