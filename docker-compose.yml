@@ -246,6 +246,7 @@ services:
       FIREFLY_URL_SVC: http://firefly:8000
       CORE_URL: http://core:8000
       STOCKS_URL: http://stocks:8000
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}

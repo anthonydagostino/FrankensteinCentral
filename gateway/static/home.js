@@ -321,6 +321,8 @@
       { ic: "🍽️", label: "Nutrition: good", hint: "food", run: async () => { await post("/core/nutrition", { rating: "good" }); refresh(true); } },
       { ic: "📝", label: "Add a task", hint: "task", run: () => quickCapturePrompt("Add task", (t) => post("/tasks/tasks", { title: t })) },
       { ic: "💭", label: "Quick capture a note", hint: "capture", run: () => q("#cap-input") && q("#cap-input").focus() },
+      { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
+      { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
       { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
       { ic: "🦴", label: "Open Bones' lounge", hint: "fun", run: () => (location.href = "/lounge.html") },
     ];
@@ -376,6 +378,74 @@
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); q("#palette").hidden ? openPalette() : closePalette(); }
     else if (e.key === "Escape" && !q("#palette").hidden) closePalette();
   });
+
+  // ---- settings -------------------------------------------------------------
+  async function openSettings() {
+    let s = {};
+    try { s = await fetch("/api/core/settings").then((r) => r.json()); } catch {}
+    const w = s.score_weights || {};
+    const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
+    q("#settings-body").innerHTML = `
+      <div class="set-group"><h4>Goals</h4><div class="set-grid">
+        <div class="set-field"><label>Study/day (min)</label><input id="s-sd" type="number" value="${s.study_daily_min ?? 120}"></div>
+        <div class="set-field"><label>Study/week (min)</label><input id="s-sw" type="number" value="${s.study_weekly_min ?? 600}"></div>
+        <div class="set-field"><label>Workouts/week</label><input id="s-gw" type="number" value="${s.gym_weekly ?? 4}"></div>
+        <div class="set-field"><label>Water goal (oz)</label><input id="s-wg" type="number" value="${s.water_goal_oz ?? 80}"></div>
+      </div></div>
+      <div class="set-group"><h4>Exam / deadline (optional)</h4><div class="set-grid">
+        <div class="set-field"><label>Label</label><input id="s-el" value="${esch(s.exam_label || "")}"></div>
+        <div class="set-field"><label>Date (YYYY-MM-DD)</label><input id="s-ed" value="${esch(s.exam_date || "")}"></div>
+        <div class="set-field"><label>Target study hours</label><input id="s-eh" type="number" value="${s.exam_target_hours ?? ""}"></div>
+      </div></div>
+      <div class="set-group"><h4>Investments</h4><div class="set-grid">
+        <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line: SYMBOL:shares:costPerShare (cost optional)</label>
+          <textarea id="s-hold" placeholder="NVDA:10:150&#10;AAPL:5">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
+        <div class="set-field" style="grid-column:1/-1"><label>Watchlist (comma-separated symbols)</label>
+          <input id="s-watch" value="${esch((((s.market || {}).watchlist) || []).join(", "))}"></div>
+        <div class="set-field"><label>Alert on move ≥ (%)</label><input id="s-mv" type="number" value="${(s.market || {}).move_threshold_pct ?? 3}"></div>
+      </div></div>
+      <div class="set-group"><h4>Important senders (comma-separated emails/domains)</h4><div class="set-field">
+        <input id="s-imp" value="${esch((s.important_senders || []).join(", "))}"></div></div>
+      <div class="set-group"><h4>Daily-score weights (0 disables a component)</h4><div class="set-grid">
+        <div class="set-field"><label>Study</label><input id="w-study" type="number" value="${w.study ?? 30}"></div>
+        <div class="set-field"><label>Fitness</label><input id="w-fitness" type="number" value="${w.fitness ?? 20}"></div>
+        <div class="set-field"><label>Tasks/Big3</label><input id="w-tasks" type="number" value="${w.tasks ?? 20}"></div>
+        <div class="set-field"><label>Hydration</label><input id="w-hydration" type="number" value="${w.hydration ?? 10}"></div>
+        <div class="set-field"><label>Nutrition</label><input id="w-nutrition" type="number" value="${w.nutrition ?? 10}"></div>
+        <div class="set-field"><label>Sleep</label><input id="w-sleep" type="number" value="${w.sleep ?? 0}"></div>
+      </div></div>`;
+    q("#settings").hidden = false;
+  }
+  function parseHoldings(text) {
+    return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [sym, sh, cost] = l.split(":").map((x) => x && x.trim());
+      const o = { symbol: (sym || "").toUpperCase(), shares: Number(sh) || 0 };
+      if (cost) o.cost = Number(cost);
+      return o;
+    }).filter((h) => h.symbol && h.shares > 0);
+  }
+  async function saveSettings() {
+    const num = (id, d) => { const v = Number(q(id).value); return Number.isFinite(v) ? v : d; };
+    const list = (id) => q(id).value.split(",").map((x) => x.trim()).filter(Boolean);
+    const patch = {
+      study_daily_min: num("#s-sd", 120), study_weekly_min: num("#s-sw", 600),
+      gym_weekly: num("#s-gw", 4), water_goal_oz: num("#s-wg", 80),
+      exam_label: q("#s-el").value.trim() || "exam",
+      exam_date: q("#s-ed").value.trim() || null,
+      exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
+      important_senders: list("#s-imp"),
+      market: { holdings: parseHoldings(q("#s-hold").value), watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
+      score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
+    };
+    q("#settings-status").textContent = "Saving…";
+    await fetch("/api/core/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    q("#settings-status").textContent = "Saved ✓";
+    setTimeout(() => { q("#settings").hidden = true; q("#settings-status").textContent = ""; refresh(true); }, 600);
+  }
+  q("#cc-settings-btn").onclick = openSettings;
+  q("#settings-close").onclick = () => (q("#settings").hidden = true);
+  q("#settings-save").onclick = saveSettings;
+  q("#settings").onclick = (e) => { if (e.target.id === "settings") q("#settings").hidden = true; };
 
   // ---- boot -----------------------------------------------------------------
   setInterval(paintClock, 1000);

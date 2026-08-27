@@ -19,6 +19,7 @@
           <span>⌘K</span> Quick actions
         </button>
         <button class="cc-icon-btn" id="cc-apps" title="All apps">▦</button>
+        <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
         <a class="cc-icon-btn" href="/lounge.html" title="Bones' lounge">🦴</a>
         <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
           <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
@@ -63,6 +64,21 @@
           <button class="btn btn-ghost" id="focus-cancel">Cancel</button>
         </div>
         <p class="focus-hint">Time is logged to your study total when you finish.</p>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="settings-overlay" id="settings" hidden>
+      <div class="settings-box">
+        <div class="settings-head">
+          <h2>Settings</h2>
+          <button class="close" id="settings-close" aria-label="Close">×</button>
+        </div>
+        <div class="settings-body" id="settings-body"></div>
+        <div class="settings-foot">
+          <button class="btn" id="settings-save">Save</button>
+          <span id="settings-status" class="muted"></span>
+        </div>
       </div>
     </div>
 
