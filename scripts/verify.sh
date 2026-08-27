@@ -1,60 +1,259 @@
 #!/usr/bin/env bash
-# Verify the live deployment ON THE BOX: which services are up and whether
-# each is returning REAL data vs an empty/not-connected state. Run this on the
-# OptiPlex:  bash scripts/verify.sh
+# Live-deployment verification for FrankensteinCentral. Run ON THE BOX:
+#
+#   bash scripts/verify.sh
+#
+# Prints a PASS/WARN/FAIL report that is SAFE TO PASTE anywhere:
+#  - never reads or prints secret values (.env values are reported only as
+#    SET / EMPTY, by key name)
+#  - never prints email bodies/snippets (sender domain + truncated subject only)
+#  - redacts anything token-shaped that leaks through an upstream error string
 set -uo pipefail
 
-host="${1:-localhost}"
-echo "== FrankensteinCentral live check @ $host =="
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-j() { curl -s --max-time 8 "$@"; }
-line() { printf '%-14s %s\n' "$1" "$2"; }
+echo "== FrankensteinCentral verification — $(date '+%Y-%m-%d %H:%M %Z') =="
+echo "-- containers --"
+(cd "$REPO_DIR" && (docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null)) \
+  | sed -E 's/[A-Za-z0-9+\/_-]{40,}/REDACTED/g' || echo "(couldn't list containers)"
+echo
 
-# containers
-echo; echo "-- containers --"
-(docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null) | tail -n +1
+REPO_DIR="$REPO_DIR" python3 - <<'PY'
+import json, os, re, sys, urllib.request, urllib.error
+from datetime import datetime
 
-echo; echo "-- integrations (real data?) --"
+HOST = "localhost"
+REPO = os.environ.get("REPO_DIR", ".")
+RESULTS = []   # (level, section, message)
 
-# gateway
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$host:8080/")
-line "hub :8080" "$([ "$code" = 200 ] && echo 'UP' || echo "DOWN ($code)")"
+TOKENISH = re.compile(r"[A-Za-z0-9+/._-]{32,}")
+SECRETY = re.compile(r"(?i)(token|secret|password|api[_-]?key|authorization|bearer|cookie)\S*")
 
-# core
-t=$(j "http://$host:8098/today")
-line "core" "$(echo "$t" | grep -q '"score"' && echo "OK — score $(echo "$t" | grep -o '"score":[0-9]*' | head -1 | cut -d: -f2)" || echo 'no data')"
+def redact(s: str) -> str:
+    s = str(s)
+    s = SECRETY.sub("REDACTED", s)
+    s = TOKENISH.sub("REDACTED", s)
+    return s
 
-# firefly
-fh=$(j "http://$host:8097/health")
-if echo "$fh" | grep -q '"connected":true'; then
-  sp=$(j "http://$host:8097/spending")
-  line "firefly" "CONNECTED — today \$$(echo "$sp" | grep -o '"today":[0-9.]*' | cut -d: -f2), month \$$(echo "$sp" | grep -o '"month":[0-9.]*' | cut -d: -f2)"
-else
-  line "firefly" "NOT connected (set FIREFLY_URL + FIREFLY_TOKEN in .env)"
-fi
+def get(port, path, timeout=25):
+    url = f"http://{HOST}:{port}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            body = r.read().decode("utf-8", errors="replace")
+            try:
+                return r.status, json.loads(body), None
+            except json.JSONDecodeError:
+                return r.status, None, f"non-JSON response: {redact(body[:100])}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:150]
+        return e.code, None, f"HTTP {e.code}: {redact(body)}"
+    except Exception as e:  # noqa: BLE001
+        return None, None, redact(f"{type(e).__name__}: {e}")
 
-# gmail
-gm=$(j "http://$host:8083/needs-reply")
-mode=$(echo "$gm" | grep -o '"mode":"[a-z]*"' | head -1 | cut -d'"' -f4)
-n=$(echo "$gm" | grep -o '"id"' | wc -l)
-line "gmail" "mode=$mode, ${n} triaged email(s)$([ "$mode" != live ] && echo '  <-- connect for real inbox')"
+def add(level, section, msg):
+    RESULTS.append((level, section, msg))
+    print(f"[{level}] {section:<18} {msg}")
 
-# stocks
-pf=$(j "http://$host:8099/portfolio")
-line "stocks" "$(echo "$pf" | grep -q '"configured":true' && echo "CONFIGURED — value \$$(echo "$pf" | grep -o '"value":[0-9.]*' | head -1 | cut -d: -f2)" || echo 'no holdings (add in Settings)')"
+def domain(addr):
+    m = re.search(r"@([\w.-]+)", addr or "")
+    return m.group(1).lower() if m else "(unknown)"
 
-# tasks / schedule / fitness
-line "tasks" "$(j "http://$host:8087/summary" | grep -o '"open":[0-9]*' | head -1 | cut -d: -f2 | sed 's/^/open: /' || echo '—')"
-line "schedule" "$(j "http://$host:8084/events" | grep -o '"title"' | wc -l | sed 's/^/events: /')"
-line "fitness" "$(j "http://$host:8082/visits" | grep -o '"count":[0-9]*' | cut -d: -f2 | sed 's/^/visits: /' || echo '—')"
+def trunc(s, n=34):
+    s = str(s or "")
+    return s[: n - 1] + "…" if len(s) > n else s
 
-echo; echo "-- the assembled home payload --"
-home=$(j "http://$host:8085/home?fresh=1")
-if echo "$home" | grep -q '"do_next"'; then
-  echo "do_next : $(echo "$home" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["do_next"]["title"],"—",d["do_next"]["reason"])' 2>/dev/null)"
-  echo "briefing: $(echo "$home" | python3 -c 'import sys,json;print(" · ".join(json.load(sys.stdin)["briefing"]))' 2>/dev/null)"
-  echo "systems : $(echo "$home" | python3 -c 'import sys,json;s=json.load(sys.stdin)["systems"];print("healthy" if s["healthy"] else "DOWN: "+",".join(s["down"]))' 2>/dev/null)"
-else
-  echo "assistant /home did not respond — check: docker compose logs assistant"
-fi
-echo; echo "Done. Anything marked NOT connected / no holdings just needs config in .env or ⚙ Settings."
+print("-- env config (values never shown) --")
+env_keys = ["FIREFLY_URL", "FIREFLY_TOKEN", "FIREFLY_WEB_URL", "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GMAIL_QUERY", "LOCAL_TZ",
+            "AUTO_SYNC_SECONDS"]
+envfile = os.path.join(REPO, ".env")
+envset = {}
+if os.path.exists(envfile):
+    for line in open(envfile, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            envset[k.strip()] = bool(v.strip())
+    for k in env_keys:
+        state = "SET" if envset.get(k) else ("empty" if k in envset else "missing")
+        lvl = "PASS" if envset.get(k) else "WARN"
+        if k in ("GMAIL_QUERY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET") and not envset.get(k):
+            lvl = "WARN"
+        add(lvl, f".env {k}", state)
+else:
+    add("FAIL", ".env", "no .env file found in repo dir")
+print()
+
+print("-- gateway / core --")
+st, _, err = get(8080, "/api/apps")
+add("PASS" if st == 200 else "FAIL", "gateway :8080", "hub responding" if st == 200 else f"{err}")
+
+st, h, err = get(8098, "/health")
+if st == 200 and h:
+    tz = h.get("tz")
+    if tz:
+        add("PASS", "core", f"ok — tz={tz}, today={h.get('today')}")
+    else:
+        add("WARN", "core", "running an OLD build (no tz field) — redeploy needed")
+    st2, t, err2 = get(8098, "/today")
+    if st2 == 200 and t:
+        add("PASS", "core /today", f"score={t.get('score',{}).get('score')}, "
+            f"study {t.get('study',{}).get('today_min')}m, water {t.get('water',{}).get('oz')}oz, "
+            f"gym {t.get('gym',{}).get('week')}/{t.get('gym',{}).get('goal')} "
+            f"(gym source {'reachable' if t.get('gym',{}).get('available') else 'UNREACHABLE'})")
+    else:
+        add("FAIL", "core /today", f"{err2}")
+else:
+    add("FAIL", "core", f"{err}")
+print()
+
+print("-- Firefly (money) --")
+st, fh, err = get(8097, "/health")
+if st == 200 and fh:
+    if fh.get("connected"):
+        add("PASS", "firefly conn", "CONNECTED (token + URL accepted)")
+        st2, sp, err2 = get(8097, "/spending", timeout=40)
+        if st2 == 200 and sp and sp.get("connected"):
+            if "txn_count" not in sp:
+                add("WARN", "firefly build", "OLD build (no txn_count/tz) — redeploy needed")
+            add("PASS", "firefly txns", f"{sp.get('txn_count','?')} withdrawals fetched "
+                f"(last month start → today), tz={sp.get('tz','?')}")
+            add("PASS", "firefly calc", f"today=${sp.get('today')}, week=${sp.get('week')}, "
+                f"month=${sp.get('month')}, daily_avg=${sp.get('daily_avg')}")
+            pace = sp.get("pace_pct"); lm = sp.get("last_month_to_date")
+            if lm:
+                add("PASS", "firefly pace", f"last-month-to-date=${lm}, pace={pace:+}% vs same period")
+            else:
+                add("WARN", "firefly pace", "no last-month data — pace unavailable (fine if Firefly is new)")
+            big = sp.get("biggest_today")
+            add("PASS", "firefly today", f"biggest charge today: "
+                f"{trunc(big['desc'],24)+' $'+str(big['amount']) if big else 'none'}")
+        else:
+            add("FAIL", "firefly /spending", f"{err2 or (sp or {}).get('error','no data')}")
+        st3, nw, err3 = get(8097, "/networth")
+        if st3 == 200 and nw and nw.get("connected"):
+            add("PASS", "firefly networth", f"total={nw.get('total_display') or nw.get('total')}, "
+                f"{len(nw.get('accounts', []))} account line(s)")
+        else:
+            add("WARN", "firefly networth", f"{err3 or 'not available'}")
+        st4, db, err4 = get(8097, "/dashboard", timeout=40)
+        if st4 == 200 and db:
+            add("PASS", "firefly extras", f"{len(db.get('categories',[]))} spend categories, "
+                f"{len(db.get('recent',[]))} recent txns, {len(db.get('liabilities',[]))} liability account(s)")
+        else:
+            add("WARN", "firefly extras", f"{err4}")
+    else:
+        add("FAIL", "firefly conn", "NOT connected — FIREFLY_URL/FIREFLY_TOKEN not reaching the container")
+else:
+    add("FAIL", "firefly svc", f"{err}")
+print()
+
+print("-- Gmail (email) --")
+st, gh, err = get(8083, "/health")
+if st == 200 and gh:
+    add("PASS" if gh.get("connected") else "FAIL", "gmail conn",
+        "connected (token present)" if gh.get("connected") else "NOT connected — no Google token")
+    st2, nr, err2 = get(8083, "/needs-reply", timeout=40)
+    if st2 == 200 and nr:
+        mode = nr.get("mode")
+        emails = nr.get("emails", [])
+        lvl = "PASS" if mode == "live" else "FAIL"
+        add(lvl, "gmail fetch", f"mode={mode}, {len(emails)} message(s) classified needs-reply"
+            + ("" if mode == "live" else " — token likely needs re-auth" if mode == "error" else ""))
+        if emails:
+            with_age = [e for e in emails if e.get("age_hours") is not None]
+            if with_age:
+                ages = sorted(e["age_hours"] for e in with_age)
+                add("PASS", "gmail age", f"{len(with_age)}/{len(emails)} have age "
+                    f"(newest {ages[0]}h, oldest {ages[-1]}h)")
+            else:
+                add("WARN", "gmail age", "no age on messages — gmail container is an OLD build, redeploy")
+            cats = {}
+            for e in emails:
+                cats[e.get("category", "?")] = cats.get(e.get("category", "?"), 0) + 1
+            add("PASS", "gmail classify", "categories: " +
+                ", ".join(f"{k}×{v}" for k, v in sorted(cats.items())))
+            print("      examples (sender domain · category · age · truncated subject):")
+            for e in emails[:3]:
+                age = e.get("age_hours")
+                print(f"        - {domain(e.get('from'))} · {e.get('category')} · "
+                      f"{str(age) + 'h' if age is not None else '?'} · \"{trunc(e.get('subject'))}\"")
+    else:
+        add("FAIL", "gmail fetch", f"{err2}")
+else:
+    add("FAIL", "gmail svc", f"{err}")
+print()
+
+print("-- stocks / tasks / schedule / fitness --")
+st, pf, err = get(8099, "/portfolio", timeout=40)
+if st == 200 and pf:
+    if pf.get("configured"):
+        pos = pf.get("positions", [])
+        dead = [p["symbol"] for p in pos if not p.get("available")]
+        add("PASS", "stocks", f"{len(pos)} position(s), value=${pf.get('value')}, "
+            f"day {pf.get('day_change_pct')}%" + (f" — quotes FAILED for {dead}" if dead else ""))
+        if dead:
+            add("WARN", "stocks quotes", f"no quote for {dead} — check symbols / Stooq reachability")
+    else:
+        add("WARN", "stocks", "no holdings configured yet (⚙ Settings → Investments)")
+else:
+    add("FAIL", "stocks svc", f"{err}")
+
+st, ts, err = get(8087, "/summary")
+add("PASS" if st == 200 else "FAIL", "tasks",
+    f"{(ts or {}).get('open')} open task(s)" if st == 200 else f"{err}")
+st, ev, err = get(8084, "/events")
+add("PASS" if st == 200 else "FAIL", "schedule",
+    f"{len((ev or {}).get('events', []))} event(s)" if st == 200 else f"{err}")
+st, vs, err = get(8082, "/visits")
+add("PASS" if st == 200 else "FAIL", "fitness",
+    f"{(vs or {}).get('count')} gym visit(s) logged" if st == 200 else f"{err}")
+print()
+
+print("-- homepage aggregator (assistant /home) --")
+st, home, err = get(8085, "/home?fresh=1", timeout=60)
+if st == 200 and home:
+    missing = [k for k in ("inbox", "money", "portfolio", "do_next", "attention",
+                           "health", "score", "briefing") if k not in home]
+    if missing:
+        add("WARN", "home build", f"payload missing {missing} — assistant is an OLD build, redeploy")
+    else:
+        add("PASS", "home build", f"all sections present, mode={home.get('mode')}, "
+            f"greeting=\"{home.get('greeting')}\", now={home.get('now','')[:19]}")
+    dn = home.get("do_next", {})
+    add("PASS" if dn.get("title") else "WARN", "home do_next",
+        f"\"{dn.get('title')}\" — {trunc(dn.get('reason'), 70)}")
+    money = home.get("money", {})
+    add("PASS" if money.get("connected") else "WARN", "home money",
+        f"connected={money.get('connected')}, today=${money.get('today')}, "
+        f"month=${money.get('month')}, pace={money.get('pace_pct')}%, "
+        f"obs={len(money.get('observations', []))}")
+    inbox = home.get("inbox", {})
+    add("PASS" if inbox.get("mode") == "live" else "WARN", "home inbox",
+        f"mode={inbox.get('mode')}, {len(inbox.get('items', []))} surfaced, "
+        f"{inbox.get('need_reply')} need reply")
+    sysh = home.get("systems", {})
+    add("PASS" if sysh.get("healthy") else "FAIL", "home systems",
+        "healthy" if sysh.get("healthy") else f"down: {sysh.get('down')}")
+    # cache check
+    st2, cached, _ = get(8085, "/home")
+    if st2 == 200 and cached:
+        same = cached.get("last_updated") == home.get("last_updated")
+        add("PASS", "home cache", "cached copy served within TTL (~30s)" if same
+            else "cache refreshed between calls (also fine)")
+else:
+    add("FAIL", "home", f"{err}")
+
+print()
+print("== summary ==")
+counts = {"PASS": 0, "WARN": 0, "FAIL": 0}
+for lvl, _, _ in RESULTS:
+    counts[lvl] = counts.get(lvl, 0) + 1
+print(f"PASS {counts['PASS']}   WARN {counts['WARN']}   FAIL {counts['FAIL']}")
+if counts["FAIL"]:
+    print("FAILs:")
+    for lvl, sec, msg in RESULTS:
+        if lvl == "FAIL":
+            print(f"  - {sec}: {msg}")
+print("\nThis output contains no secrets — safe to paste back.")
+PY

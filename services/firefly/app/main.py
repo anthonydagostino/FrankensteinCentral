@@ -233,6 +233,8 @@ async def _spending() -> dict:
     return {
         "connected": True,
         "currency": "USD",
+        "tz": str(LOCAL_TZ),
+        "txn_count": len(wd),
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,

@@ -403,7 +403,8 @@ def _nudges(s, study, gym, water_oz, nutrition, big3_done, big3_total, open_task
 # ---- endpoints --------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {"service": "core", "ok": True}
+    return {"service": "core", "ok": True, "tz": str(EASTERN),
+            "today": _today().isoformat()}
 
 
 @app.get("/today")
