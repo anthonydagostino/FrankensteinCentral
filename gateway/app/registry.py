@@ -20,6 +20,20 @@ def load_registry() -> list[SubApp]:
     """
     return [
         SubApp(
+            key="core",
+            name="Core",
+            description="Your personal state & daily score — study, water, nutrition, Big 3, captures.",
+            icon="🧩",
+            url=os.environ.get("CORE_URL", "http://core:8000"),
+        ),
+        SubApp(
+            key="stocks",
+            name="Stocks",
+            description="Portfolio & watchlist — value, daily movers, positions. Keyless quotes.",
+            icon="📈",
+            url=os.environ.get("STOCKS_URL", "http://stocks:8000"),
+        ),
+        SubApp(
             key="assistant",
             name="Assistant",
             description="Your manager. Reads across every sub-app, surfaces deadlines, and routes info where it belongs.",

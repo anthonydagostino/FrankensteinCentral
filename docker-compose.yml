@@ -160,6 +160,39 @@ services:
     ports:
       - "8097:8000"
 
+  # Personal state & daily-score engine (study/focus, water, nutrition, Big 3,
+  # captures, history). Reads gym from fitness and open tasks from tasks.
+  core:
+    build: ./services/core
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      FITNESS_URL: http://fitness:8000
+      TASKS_URL: http://tasks:8000
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
+    depends_on:
+      db:
+        condition: service_healthy
+      fitness:
+        condition: service_started
+      tasks:
+        condition: service_started
+    ports:
+      - "8098:8000"
+
+  # Portfolio & watchlist quotes (keyless, via Stooq). Holdings/watchlist are
+  # configured in core settings (market.holdings / market.watchlist).
+  stocks:
+    build: ./services/stocks
+    restart: unless-stopped
+    environment:
+      CORE_URL: http://core:8000
+    depends_on:
+      core:
+        condition: service_started
+    ports:
+      - "8099:8000"
+
   gmail:
     build: ./services/gmail
     restart: unless-stopped
@@ -211,6 +244,8 @@ services:
       VAULT_URL: http://vault:8000
       JELLYFIN_SVC_URL: http://jellyfin:8000
       FIREFLY_URL_SVC: http://firefly:8000
+      CORE_URL: http://core:8000
+      STOCKS_URL: http://stocks:8000
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
       AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
@@ -253,6 +288,10 @@ services:
       jellyfin:
         condition: service_started
       firefly:
+        condition: service_started
+      core:
+        condition: service_started
+      stocks:
         condition: service_started
 
 volumes:
