@@ -5,58 +5,68 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FrankensteinCentral</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/home.css" />
   </head>
-  <body>
-    <div class="hq-screen" id="hq">
-      <div class="stage-wrap">
-        <canvas id="stage"></canvas>
+  <body class="cc" data-mode="day">
+    <header class="cc-top">
+      <div class="cc-hello">
+        <div class="cc-time" id="cc-clock">—</div>
+        <h1 id="cc-greeting">Good day</h1>
+        <p class="cc-date" id="cc-date"></p>
       </div>
-
-      <header class="hud-top">
-        <div class="brand">
-          <span class="bolt">⚡</span>
-          <div>
-            <h1>FrankensteinCentral</h1>
-            <p class="tagline">Bones runs the floor. Click a station to open it — click Bones' Desk for your briefing.</p>
-          </div>
+      <div class="cc-top-actions">
+        <button class="cc-k" id="cc-open-palette" title="Command palette (Ctrl/⌘ K)">
+          <span>⌘K</span> Quick actions
+        </button>
+        <button class="cc-icon-btn" id="cc-apps" title="All apps">▦</button>
+        <a class="cc-icon-btn" href="/lounge.html" title="Bones' lounge">🦴</a>
+        <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
+          <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
         </div>
-        <div class="hud-top-right">
-          <a href="/jobs.html" class="job-hunt-link" title="Ongoing pros/cons — 233 Analytics, DeepL, AIRIA, EliseAI">
-            🧭 Job Hunt Tracker
-          </a>
-          <div id="clock" class="clock"></div>
-        </div>
-      </header>
-
-      <section id="overview" class="overview hud-overview"></section>
-
-      <div class="hud-controls">
-        <button class="btn" id="dispatch">Dispatch team ▶</button>
-        <label class="hq-toggle">
-          <input type="checkbox" id="auto" /> Auto every 12s
-        </label>
       </div>
+    </header>
 
-      <aside class="hq-aside hud-aside">
-        <div class="hq-card">
-          <h4>Bones' Notebook</h4>
-          <div id="notes"><p class="empty">No notes yet. Hit Dispatch.</p></div>
-        </div>
-        <div class="hq-card">
-          <h4>Deadlines spotted</h4>
-          <div id="deadlines"><p class="empty">Nothing tracked yet.</p></div>
-        </div>
-        <div class="hq-card">
-          <h4>Floor activity</h4>
-          <div id="feed" class="feed"><p class="empty">Quiet on the floor.</p></div>
-        </div>
-        <div class="hq-card">
-          <h4>The team</h4>
-          <div class="hq-legend" id="legend"></div>
-        </div>
-      </aside>
+    <div class="cc-briefing" id="cc-briefing"></div>
+
+    <main class="cc-grid" id="cc-grid">
+      <section class="cc-card hero" id="cc-donext"><div class="cc-loading">Loading your day…</div></section>
+      <section class="cc-card" id="cc-score"></section>
+      <section class="cc-card" id="cc-big3"></section>
+      <section class="cc-card wide" id="cc-attention"></section>
+      <section class="cc-card" id="cc-money"></section>
+      <section class="cc-card" id="cc-portfolio"></section>
+      <section class="cc-card" id="cc-health"></section>
+      <section class="cc-card" id="cc-capture"></section>
+    </main>
+
+    <footer class="cc-foot">
+      <span id="cc-updated">—</span>
+      <span id="cc-systems"></span>
+    </footer>
+
+    <!-- Command palette -->
+    <div class="palette-overlay" id="palette" hidden>
+      <div class="palette" role="dialog" aria-modal="true">
+        <input id="palette-input" placeholder="Type a command…  (study 45, water 16, gym, email, firefly, add task…)" autocomplete="off" />
+        <ul class="palette-list" id="palette-list"></ul>
+      </div>
     </div>
 
+    <!-- Focus timer -->
+    <div class="focus-overlay" id="focus" hidden>
+      <div class="focus-box">
+        <div class="focus-label" id="focus-label">Focus</div>
+        <div class="focus-clock" id="focus-clock">45:00</div>
+        <div class="focus-actions">
+          <button class="btn" id="focus-toggle">Pause</button>
+          <button class="btn btn-ghost" id="focus-done">Log &amp; finish</button>
+          <button class="btn btn-ghost" id="focus-cancel">Cancel</button>
+        </div>
+        <p class="focus-hint">Time is logged to your study total when you finish.</p>
+      </div>
+    </div>
+
+    <!-- App detail modal (reused by app.js) -->
     <div class="overlay" id="overlay">
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
@@ -72,5 +82,6 @@
     </div>
 
     <script src="/app.js"></script>
+    <script src="/home.js"></script>
   </body>
 </html>

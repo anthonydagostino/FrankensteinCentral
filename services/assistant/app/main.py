@@ -570,9 +570,10 @@ def _briefing_line(core, gmail_emails, stocks, firefly, today_spend, schedule_ev
     return out[:6]
 
 
-async def build_home() -> dict:
+async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
-    if cached["data"] and cached["at"] and (datetime.now(LOCAL_TZ) - cached["at"]).total_seconds() < _HOME_TTL:
+    if (not fresh and cached["data"] and cached["at"]
+            and (datetime.now(LOCAL_TZ) - cached["at"]).total_seconds() < _HOME_TTL):
         return cached["data"]
 
     async with httpx.AsyncClient() as client:
@@ -646,8 +647,8 @@ async def build_home() -> dict:
 
 
 @app.get("/home")
-async def home():
-    return await build_home()
+async def home(fresh: int = 0):
+    return await build_home(fresh=bool(fresh))
 
 
 async def compose_digest() -> str:

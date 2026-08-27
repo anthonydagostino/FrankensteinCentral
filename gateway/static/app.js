@@ -2,6 +2,7 @@ const $ = (sel) => document.querySelector(sel);
 
 function tickClock() {
   const el = $("#clock");
+  if (!el) return;  // lounge-only element; the command center has its own clock
   const now = new Date();
   el.textContent = now.toLocaleString(undefined, {
     weekday: "short",
@@ -39,6 +40,7 @@ function timeAgo(iso) {
 
 async function loadOverview() {
   const el = document.querySelector("#overview");
+  if (!el) return;  // lounge-only element
   let o;
   try {
     o = await fetch("/api/assistant/overview").then((r) => r.json());
@@ -844,11 +846,14 @@ setInterval(() => {
   }
 }, 20000);
 
-// ---- Assistant HQ — now the whole dashboard ---------------------------------
+// ---- Assistant HQ — the "lounge" view (secondary page /lounge.html) ---------
 // The lounge where Bones dispatches worker agents to API "stations". Idle
 // agents wander; working agents walk to their station, do the job, then walk
-// back. Every station is clickable and opens that app's real detail view —
-// Bones' Desk opens the assistant briefing.
+// back. Every station is clickable and opens that app's real detail view.
+// This whole section only runs when the lounge canvas is present, so app.js
+// can also be loaded by the command-center homepage (which reuses the modals
+// above but has no canvas).
+if (document.getElementById("stage")) {
 
 const WORLD = { w: 1000, h: 640 };
 const canvas = document.getElementById("stage");
@@ -1584,3 +1589,5 @@ $("#auto").addEventListener("change", (e) => {
   await refreshSpace();
   requestAnimationFrame(loop);
 })();
+
+}  // end lounge-only guard (document.getElementById("stage"))
