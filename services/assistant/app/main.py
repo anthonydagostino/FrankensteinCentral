@@ -632,11 +632,15 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
     obs = []
     pace = sp.get("pace_pct")
+    baseline = sp.get("baseline")
     if pace is not None:
         if pace >= 15:
             obs.append(f"Spending is {pace}% ahead of last month's pace.")
         elif pace <= -15:
             obs.append(f"Spending is {abs(pace)}% below last month's pace — nice.")
+    elif baseline in ("partial_history", "stale_data") and sp.get("pace_note"):
+        # Label, don't manufacture: partial windows produce arithmetic, not insight.
+        obs.append(f"Month-over-month comparison hidden — {sp['pace_note']}.")
     if unusual:
         obs.append(f"Unusual charge today: {unusual['desc']} ${unusual['amount']:,.0f}.")
     upcoming = (finance.get("upcoming", []) if finance else [])
@@ -654,7 +658,7 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     return {
         "connected": connected,
         "today": sp.get("today"), "week": sp.get("week"), "month": sp.get("month"),
-        "pace_pct": pace, "daily_avg": sp.get("daily_avg"),
+        "pace_pct": pace, "baseline": baseline, "daily_avg": sp.get("daily_avg"),
         "net_worth": (_m("net_worth").get("display")) or (
             f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
         "left_to_spend": _m("left_to_spend").get("display"),

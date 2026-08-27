@@ -228,7 +228,26 @@ async def _spending() -> dict:
             lm_to_date += t["amount"]
     day_n = today.day
     daily_avg = round(month_sum / day_n, 2) if day_n else 0
-    pace_pct = round(((month_sum - lm_to_date) / lm_to_date) * 100) if lm_to_date else None
+
+    # Evidentiary confidence for the month-over-month comparison. Arithmetic on
+    # a partial window is not an insight: only emit pace when the ledger
+    # plausibly covers BOTH sides of the comparison. Raw totals always display.
+    all_dates = [x for x in (d(t["date"]) for t in wd) if x is not None]
+    earliest = min(all_dates) if all_dates else None
+    latest = max(all_dates) if all_dates else None
+    if not lm_to_date:
+        baseline, pace_note = "none", "no last-month spending in the ledger to compare against"
+    elif earliest and earliest > last_month_start + timedelta(days=5):
+        baseline = "partial_history"
+        pace_note = f"ledger history starts {earliest.isoformat()}, so last month is incomplete"
+    elif latest and (today - latest).days >= 7:
+        baseline = "stale_data"
+        pace_note = f"newest transaction is {(today - latest).days} days old, so this month may be incomplete"
+    else:
+        baseline, pace_note = "ok", None
+    pace_pct = (round(((month_sum - lm_to_date) / lm_to_date) * 100)
+                if baseline == "ok" else None)
+
     recent = sorted([t for t in wd], key=lambda t: t["date"], reverse=True)[:12]
     return {
         "connected": True,
@@ -237,6 +256,9 @@ async def _spending() -> dict:
         "txn_count": len(wd),
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
+        "baseline": baseline, "pace_note": pace_note,
+        "earliest_txn": earliest.isoformat() if earliest else None,
+        "latest_txn": latest.isoformat() if latest else None,
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
     }
 

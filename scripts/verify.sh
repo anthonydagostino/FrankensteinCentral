@@ -121,10 +121,14 @@ if st == 200 and fh:
             add("PASS", "firefly calc", f"today=${sp.get('today')}, week=${sp.get('week')}, "
                 f"month=${sp.get('month')}, daily_avg=${sp.get('daily_avg')}")
             pace = sp.get("pace_pct"); lm = sp.get("last_month_to_date")
-            if lm:
-                add("PASS", "firefly pace", f"last-month-to-date=${lm}, pace={pace:+}% vs same period")
+            base = sp.get("baseline"); note = sp.get("pace_note")
+            if base is None:
+                add("WARN", "firefly pace", "OLD build (no baseline confidence field) — redeploy needed")
+            elif base == "ok":
+                add("PASS", "firefly pace", f"last-month-to-date=${lm}, pace={pace:+}% "
+                    f"(ledger covers comparison window: {sp.get('earliest_txn')} → {sp.get('latest_txn')})")
             else:
-                add("WARN", "firefly pace", "no last-month data — pace unavailable (fine if Firefly is new)")
+                add("PASS", "firefly pace", f"comparison correctly SUPPRESSED ({base}) — {note}")
             big = sp.get("biggest_today")
             add("PASS", "firefly today", f"biggest charge today: "
                 f"{trunc(big['desc'],24)+' $'+str(big['amount']) if big else 'none'}")
