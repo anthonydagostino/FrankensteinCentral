@@ -222,15 +222,28 @@ else:
 print()
 
 print("-- stocks / tasks / schedule / fitness --")
-st, pf, err = get(8099, "/portfolio", timeout=40)
+st, pq, errq = get(8099, "/quotes?symbols=NVDA", timeout=30)
+if st == 200 and pq is not None:
+    got = (pq.get("quotes") or [])
+    if got:
+        q0 = got[0]
+        add("PASS", "quote sources", f"pipeline OK — NVDA ${q0.get('price')} via {q0.get('source','?')}")
+    else:
+        add("WARN", "quote sources", "NVDA returned no quote — both sources unreachable "
+            "or rate-limited from this network right now (retries automatically)")
+else:
+    add("FAIL", "quote sources", f"{errq}")
+
+st, pf, err = get(8099, "/portfolio", timeout=60)
 if st == 200 and pf:
     if pf.get("configured"):
         pos = pf.get("positions", [])
-        dead = [p["symbol"] for p in pos if not p.get("available")]
-        add("PASS", "stocks", f"{len(pos)} position(s), value=${pf.get('value')}, "
-            f"day {pf.get('day_change_pct')}%" + (f" — quotes FAILED for {dead}" if dead else ""))
+        dead = pf.get("quotes_failed", [p["symbol"] for p in pos if not p.get("available")])
+        add("PASS", "stocks", f"{len(pos)} position(s), {pf.get('quotes_ok', len(pos)-len(dead))} priced, "
+            f"value=${pf.get('value')}, day {pf.get('day_change_pct')}%")
         if dead:
-            add("WARN", "stocks quotes", f"no quote for {dead} — check symbols / Stooq reachability")
+            add("WARN", "stocks quotes", f"{len(dead)} symbol(s) unpriced: {', '.join(dead[:8])}"
+                + ("…" if len(dead) > 8 else ""))
     else:
         add("WARN", "stocks", "no holdings configured yet (⚙ Settings → Investments)")
 else:
