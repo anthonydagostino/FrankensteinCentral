@@ -103,6 +103,14 @@ if st == 200 and h:
             f"(gym source {'reachable' if t.get('gym',{}).get('available') else 'UNREACHABLE'})")
     else:
         add("FAIL", "core /today", f"{err2}")
+    st3, cs, err3 = get(8098, "/settings")
+    if st3 == 200 and cs:
+        hl = ((cs.get("market") or {}).get("holdings") or [])
+        syms = ", ".join(f"{h.get('symbol')}×{h.get('shares')}" for h in hl) or "none"
+        add("PASS" if hl else "WARN", "core holdings",
+            f"{len(hl)} persisted: {syms}" if hl else "none persisted (⚙ Settings → Investments)")
+    else:
+        add("WARN", "core holdings", f"{err3}")
 else:
     add("FAIL", "core", f"{err}")
 print()

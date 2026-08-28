@@ -259,17 +259,24 @@
     const dc = p.day_change || 0, cls = dc >= 0 ? "up" : "down", arrow = dc >= 0 ? "▲" : "▼";
     const mv = p.movers || {};
     const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b></span><span class="${x.change_pct >= 0 ? "up" : "down"} mono">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}% · ${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
-    const positions = (p.positions || []).filter((x) => x.available).map((x) =>
+    const live = (p.positions || []).filter((x) => x.available);
+    const dead = (p.positions || []).filter((x) => !x.available);
+    const positions = live.map((x) =>
       `<div class="pos"><span><b>${esch(x.symbol)}</b> <span class="${x.change_pct >= 0 ? "up" : "down"}">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}%</span></span><span class="mono">${money(x.value)}</span></div>`).join("");
+    // Unsupported/unreachable symbols must be visible, never silently vanish.
+    const deadLine = dead.length
+      ? `<p class="att-empty" style="margin-top:8px">⚠ No quote for ${dead.map((x) => esch(x.symbol)).join(", ")} — symbol not on the quote source, or it's unreachable. Other holdings still shown.</p>` : "";
+    const noneLive = !live.length
+      ? `<p class="att-empty">Quotes unavailable right now — your ${(p.positions || []).length} holding(s) are saved and will price when the quote source responds.</p>` : "";
     q("#cc-portfolio").innerHTML = `
       <h3>Portfolio · what changed</h3>
-      <div class="mny-hero">
+      ${live.length ? `<div class="mny-hero">
         <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">Today · ${dc >= 0 ? "+" : ""}${money(dc)}</div></div>
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
         ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
-      </div>
+      </div>` : ""}
       ${moverRow(mv.up, "▲")}${moverRow(mv.down, "▼")}
-      <div style="margin-top:6px">${positions}</div>`;
+      <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
   }
 
   function renderHealth(d) {
@@ -554,8 +561,8 @@
         <div class="set-field"><label>Target study hours</label><input id="s-eh" type="number" value="${s.exam_target_hours ?? ""}"></div>
       </div></div>
       <div class="set-group"><h4>Investments</h4><div class="set-grid">
-        <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line: SYMBOL:shares:costPerShare (cost optional)</label>
-          <textarea id="s-hold" placeholder="NVDA:10:150&#10;AAPL:5">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
+        <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line (or comma-separated): SYMBOL shares cost — cost optional, fractional shares OK</label>
+          <textarea id="s-hold" placeholder="NVDA 10 150&#10;AAPL 2.5&#10;VOO:1.25:380">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
         <div class="set-field" style="grid-column:1/-1"><label>Watchlist (comma-separated symbols)</label>
           <input id="s-watch" value="${esch((((s.market || {}).watchlist) || []).join(", "))}"></div>
         <div class="set-field"><label>Alert on move ≥ (%)</label><input id="s-mv" type="number" value="${(s.market || {}).move_threshold_pct ?? 3}"></div>
@@ -572,17 +579,35 @@
       </div></div>`;
     q("#settings").hidden = false;
   }
+  // Tolerant holdings parser. Accepts one holding per line OR comma-separated,
+  // with ":" or whitespace between fields: "NVDA:10:150", "aapl 5", "MSFT 2.5",
+  // "VOO: 1.25 : 380". Fractional shares supported. Returns what parsed and
+  // what didn't, so the UI can be honest instead of silently dropping input.
   function parseHoldings(text) {
-    return text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [sym, sh, cost] = l.split(":").map((x) => x && x.trim());
-      const o = { symbol: (sym || "").toUpperCase(), shares: Number(sh) || 0 };
-      if (cost) o.cost = Number(cost);
-      return o;
-    }).filter((h) => h.symbol && h.shares > 0);
+    const tokens = (text || "").split(/[\n,]+/).map((t) => t.trim()).filter(Boolean);
+    const holdings = [], rejected = [];
+    for (const t of tokens) {
+      const m = t.match(/^([A-Za-z][A-Za-z.^-]{0,11})[\s:]+(\d*\.?\d+)(?:[\s:]+\$?(\d*\.?\d+))?\s*(?:sh(?:are)?s?)?$/i);
+      if (!m) { rejected.push(t); continue; }
+      const o = { symbol: m[1].toUpperCase(), shares: parseFloat(m[2]) };
+      if (m[3]) o.cost = parseFloat(m[3]);
+      if (o.shares > 0) holdings.push(o); else rejected.push(t);
+    }
+    return { holdings, rejected };
   }
   async function saveSettings() {
     const num = (id, d) => { const v = Number(q(id).value); return Number.isFinite(v) ? v : d; };
     const list = (id) => q(id).value.split(",").map((x) => x.trim()).filter(Boolean);
+    const status = q("#settings-status");
+
+    const parsed = parseHoldings(q("#s-hold").value);
+    if (parsed.rejected.length) {
+      status.textContent = "⚠ Couldn't read: " + parsed.rejected.slice(0, 3).map((r) => `"${r}"`).join(", ")
+        + " — use SYMBOL shares [cost], e.g.  NVDA 10 150  or  AAPL:2.5";
+      status.style.color = "var(--down)";
+      return;  // don't silently drop the user's input — let them fix it
+    }
+
     const patch = {
       study_daily_min: num("#s-sd", 120), study_weekly_min: num("#s-sw", 600),
       gym_weekly: num("#s-gw", 4), water_goal_oz: num("#s-wg", 80),
@@ -590,13 +615,25 @@
       exam_date: q("#s-ed").value.trim() || null,
       exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
       important_senders: list("#s-imp"),
-      market: { holdings: parseHoldings(q("#s-hold").value), watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
+      market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
       score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
     };
-    q("#settings-status").textContent = "Saving…";
-    await fetch("/api/core/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-    q("#settings-status").textContent = "Saved ✓";
-    setTimeout(() => { q("#settings").hidden = true; q("#settings-status").textContent = ""; refresh(true); }, 600);
+    status.style.color = "";
+    status.textContent = "Saving…";
+    let saved = null;
+    try {
+      const res = await fetch("/api/core/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      if (res.ok) saved = await res.json();
+    } catch {}
+    if (!saved || typeof saved !== "object" || saved.error) {
+      status.textContent = "✗ Save failed — the core service didn't accept it. Try again or check the stack.";
+      status.style.color = "var(--down)";
+      return;  // keep the modal open; never claim success on failure
+    }
+    // Round-trip confirmation: report what the SERVER now holds, not what we sent.
+    const n = ((saved.market || {}).holdings || []).length;
+    status.textContent = `Saved ✓ — ${n} holding${n === 1 ? "" : "s"} stored`;
+    setTimeout(() => { q("#settings").hidden = true; status.textContent = ""; refresh(true); }, 900);
   }
   q("#cc-settings-btn").onclick = openSettings;
   q("#settings-close").onclick = () => (q("#settings").hidden = true);
