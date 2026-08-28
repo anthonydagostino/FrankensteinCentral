@@ -431,7 +431,7 @@
     // one command per app -> opens its modal, with natural aliases
     const ALIASES = {
       gmail: "mail email inbox", firefly: "money finance spending firefly ledger",
-      vault: "passwords password vaultwarden bitwarden secrets", jellyfin: "media movies tv shows",
+      vault: "passwords password vaultwarden bitwarden secrets", plex: "media movies tv shows jellyfin",
       stocks: "stocks portfolio investments shares", schedule: "calendar cal events",
       tasks: "todo task list", core: "score stats habits", networth: "net worth wealth",
       finance: "bills subscriptions", budget: "budget categories",
@@ -494,7 +494,7 @@
 
   // ---- apps & services launcher ---------------------------------------------
   // The one place to reach every sub-app/container: tile -> dashboard modal,
-  // ↗ -> the full underlying application (Firefly, Jellyfin, importer…).
+  // ↗ -> the full underlying application (Firefly, Plex, importer…).
   let EXT_LINKS = null;  // cached {key: url}
   async function externalLinks() {
     if (EXT_LINKS) return EXT_LINKS;
@@ -505,8 +505,8 @@
       if (ff.importer_url) links._importer = ff.importer_url;
     } catch {}
     try {
-      const jf = await fetch("/api/jellyfin/summary").then((r) => r.json());
-      if (jf.web_url) links.jellyfin = jf.web_url + "/web/";
+      const px = await fetch("/api/plex/summary").then((r) => r.json());
+      if (px.web_url) links.plex = px.web_url;
     } catch {}
     EXT_LINKS = links;
     return links;

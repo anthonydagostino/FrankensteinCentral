@@ -127,17 +127,16 @@ services:
     ports:
       - "8091:8000"
 
-  jellyfin:
-    build: ./services/jellyfin
+  # Read-only client for a Plex server SHARED with you (auto-discovered via
+  # plex.tv using your own account token). Empty token = "not connected".
+  # The token never reaches the browser. See docs/SETUP-PLEX.md.
+  plex:
+    build: ./services/plex
     restart: unless-stopped
-    # Read-only client for your Jellyfin. Empty vars = sample data. Fill in when
-    # you're home (Jellyfin dashboard -> API Keys).
     environment:
-      JELLYFIN_URL: ${JELLYFIN_URL:-}
-      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
-      JELLYFIN_USER_ID: ${JELLYFIN_USER_ID:-}
-      # Address your browser uses for Jellyfin deep links (defaults to JELLYFIN_URL)
-      JELLYFIN_WEB_URL: ${JELLYFIN_WEB_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      PLEX_SERVER_NAME: ${PLEX_SERVER_NAME:-}
+      PLEX_URL: ${PLEX_URL:-}
     ports:
       - "8092:8000"
 
@@ -243,7 +242,7 @@ services:
       DEALS_URL: http://deals:8000
       NETWORTH_URL: http://networth:8000
       VAULT_URL: http://vault:8000
-      JELLYFIN_SVC_URL: http://jellyfin:8000
+      PLEX_SVC_URL: http://plex:8000
       FIREFLY_URL_SVC: http://firefly:8000
       CORE_URL: http://core:8000
       STOCKS_URL: http://stocks:8000
@@ -287,7 +286,7 @@ services:
         condition: service_started
       vault:
         condition: service_started
-      jellyfin:
+      plex:
         condition: service_started
       firefly:
         condition: service_started

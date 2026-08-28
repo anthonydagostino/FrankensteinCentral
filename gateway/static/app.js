@@ -739,49 +739,38 @@ const RENDERERS = {
       <p class="empty" style="margin-top:10px">Read-only — manage entries in Vaultwarden itself.</p>`;
   },
 
-  async jellyfin(app, body) {
-    const d = await api("/jellyfin/dashboard");
+  async plex(app, body) {
+    const d = await api("/plex/dashboard");
     setMode(d.connected === false ? "disconnected" : "");
     const web = d.web_url;
-    // Deep-link a title to its Jellyfin details/play page (when connected).
+    // Deep-link a title to its page on app.plex.tv (works from anywhere).
     const link = (label, id) =>
       web && id
-        ? `<a href="${web}/web/#/details?id=${encodeURIComponent(id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px">${esc(label)}</a>`
+        ? `<a href="${web}/details?key=${encodeURIComponent("/library/metadata/" + id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px">${esc(label)}</a>`
         : esc(label);
     const banner = d.connected === false
-      ? `<p class="empty" style="margin-bottom:14px">🎬 <b>Not connected.</b> Set <code>JELLYFIN_URL</code> and <code>JELLYFIN_API_KEY</code> (docs/SETUP-JELLYFIN.md) to see your real library — then every title here opens straight in Jellyfin.</p>`
+      ? `<p class="empty" style="margin-bottom:14px">🎬 <b>Not connected.</b> Set <code>PLEX_TOKEN</code> (docs/SETUP-PLEX.md) to see the Plex server shared with you — continue watching, new stuff, and one-click open in Plex.</p>`
       : "";
     const openBtn = web
-      ? `<a class="btn" href="${web}/web/" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">▶ Open in Jellyfin ↗</a>`
+      ? `<a class="btn" href="${web}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block;margin-bottom:14px">▶ Open in Plex ↗</a>`
       : "";
-    const now = (d.nowplaying || [])
-      .map((s) => `<div class="row"><span class="chip" style="background:rgba(170,92,195,.18);color:#c77dde">▶ now</span>
-        <div class="grow"><b>${link(s.item, s.id)}</b><div class="sub">${esc(s.user)} · ${esc(s.device)}</div></div></div>`)
-      .join("");
     const cont = (d.continue || [])
       .map((c) => `<div class="bar-row"><div class="top"><b>${link(c.name, c.id)}</b><span class="amt">${esc(c.percent)}%</span></div>
-        <div class="bar"><span style="width:${Math.min(100, c.percent)}%;background:#aa5cc3"></span></div></div>`)
+        <div class="bar"><span style="width:${Math.min(100, c.percent)}%;background:#e5a00d"></span></div></div>`)
       .join("");
-    const nextup = (d.nextup || [])
-      .map((n) => `<div class="row"><div class="grow">${link(n.name, n.id)}</div></div>`).join("");
     const recent = (d.recent || [])
       .map((r) => web && r.id
-        ? `<a class="pill" href="${web}/web/#/details?id=${encodeURIComponent(r.id)}" target="_blank" rel="noopener" style="text-decoration:none">${esc(r.name)}</a>`
+        ? `<a class="pill" href="${web}/details?key=${encodeURIComponent("/library/metadata/" + r.id)}" target="_blank" rel="noopener" style="text-decoration:none">${esc(r.name)}</a>`
         : `<span class="pill">${esc(r.name)}</span>`).join("");
-    const c = d.counts || {};
+    const libs = (d.libraries || [])
+      .map((l) => `<div class="tile"><div class="n">${l.count != null ? esc(l.count) : "—"}</div><div class="l">${esc(l.title)}</div></div>`)
+      .join("");
     body.innerHTML = `
       ${banner}${openBtn}
-      <div class="tiles">
-        <div class="tile"><div class="n">${esc(c.movies ?? 0)}</div><div class="l">Movies</div></div>
-        <div class="tile"><div class="n">${esc(c.series ?? 0)}</div><div class="l">Series</div></div>
-        <div class="tile"><div class="n">${esc(c.episodes ?? 0)}</div><div class="l">Episodes</div></div>
-        <div class="tile ${(d.nowplaying || []).length ? "good" : ""}"><div class="n">${(d.nowplaying || []).length}</div><div class="l">Streaming now</div></div>
-      </div>
-      ${now ? `<h4>Streaming now</h4><div class="rows">${now}</div>` : ""}
+      ${d.server ? `<p class="empty" style="margin-bottom:10px">Server: <b style="color:var(--text)">${esc(d.server)}</b></p>` : ""}
+      ${libs ? `<div class="tiles">${libs}</div>` : ""}
       <h4>Continue watching</h4>
       <div>${cont || '<p class="empty">Nothing in progress.</p>'}</div>
-      <h4>Next up</h4>
-      <div class="rows">${nextup || '<p class="empty">All caught up.</p>'}</div>
       <h4>Recently added</h4>
       <div class="pill-list">${recent || '<p class="empty">Nothing new.</p>'}</div>`;
   },
@@ -872,7 +861,7 @@ const STATIONS = {
   budget:   { name: "Budget",       color: "#f5c542", x: 880, y: 325, spot: { x: 790, y: 325 } },
   networth: { name: "Net Worth",    color: "#38bdf8", x: 300, y: 200, spot: { x: 300, y: 258 } },
   vault:    { name: "Vault",        color: "#8b98a9", x: 700, y: 200, spot: { x: 700, y: 258 } },
-  jellyfin: { name: "Jellyfin",     color: "#aa5cc3", x: 500, y: 566, spot: { x: 500, y: 512 } },
+  plex:     { name: "Plex",         color: "#e5a00d", x: 500, y: 566, spot: { x: 500, y: 512 } },
   firefly:  { name: "Firefly",      color: "#e0592a", x: 750, y: 104, spot: { x: 750, y: 158 } },
 };
 
@@ -889,7 +878,7 @@ const STATION_APP_KEY = {
   budget: "budget",
   networth: "networth",
   vault: "vault",
-  jellyfin: "jellyfin",
+  plex: "plex",
   firefly: "firefly",
 };
 
@@ -906,7 +895,7 @@ const STATION_EMOJI = {
   budget: "📊",
   networth: "💎",
   vault: "🔐",
-  jellyfin: "🎬",
+  plex: "🎬",
   firefly: "📒",
 };
 
@@ -978,7 +967,7 @@ async function loadRoster() {
       { id: "scout", name: "Scout", role: "worker", station: "deals", color: "#a3e635" },
       { id: "wade", name: "Wade", role: "worker", station: "networth", color: "#38bdf8" },
       { id: "vic", name: "Vic", role: "worker", station: "vault", color: "#8b98a9" },
-      { id: "milo", name: "Milo", role: "worker", station: "jellyfin", color: "#aa5cc3" },
+      { id: "milo", name: "Milo", role: "worker", station: "plex", color: "#e5a00d" },
       { id: "fitz", name: "Fitz", role: "worker", station: "firefly", color: "#e0592a" },
     ];
   }

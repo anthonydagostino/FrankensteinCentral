@@ -23,7 +23,7 @@ BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
 VAULT_URL = os.environ.get("VAULT_URL", "http://vault:8000")
-JELLYFIN_SVC_URL = os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000")
+PLEX_SVC_URL = os.environ.get("PLEX_SVC_URL", "http://plex:8000")
 FIREFLY_SVC_URL = os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000")
 CORE_URL = os.environ.get("CORE_URL", "http://core:8000")
 STOCKS_URL = os.environ.get("STOCKS_URL", "http://stocks:8000")
@@ -66,8 +66,8 @@ AGENTS = [
      "color": "#38bdf8", "blurb": "Wealth desk — account balances, applies recurring contributions."},
     {"id": "vic", "name": "Vic", "role": "worker", "station": "vault",
      "color": "#8b98a9", "blurb": "Vault guard — password health: weak, reused, no-2FA."},
-    {"id": "milo", "name": "Milo", "role": "worker", "station": "jellyfin",
-     "color": "#aa5cc3", "blurb": "Media runner — continue watching, next up, who's streaming."},
+    {"id": "milo", "name": "Milo", "role": "worker", "station": "plex",
+     "color": "#e5a00d", "blurb": "Media runner — continue watching and what's newly added on Plex."},
     {"id": "fitz", "name": "Fitz", "role": "worker", "station": "firefly",
      "color": "#e0592a", "blurb": "Ledger keeper — Firefly III net worth, spend, transactions."},
 ]
@@ -1234,17 +1234,17 @@ async def sync():
             jobs.append({"agent": vic["id"], "name": vic["name"], "station": "vault",
                          "summary": vic_summary})
 
-            # Milo -> Jellyfin (media server status)
-            milo = _BY_STATION["jellyfin"]
-            jf = await _get(client, f"{JELLYFIN_SVC_URL}/summary")
-            if jf.get("now_playing"):
-                milo_summary = f"{jf['now_playing']} streaming now"
-            elif jf:
-                milo_summary = f"{jf.get('continue_count', 0)} to continue"
+            # Milo -> Plex (shared media server)
+            milo = _BY_STATION["plex"]
+            px = await _get(client, f"{PLEX_SVC_URL}/summary")
+            if px.get("connected"):
+                milo_summary = f"{px.get('continue_count', 0)} to continue watching"
+            elif px:
+                milo_summary = "plex not connected"
             else:
                 milo_summary = "media server offline"
-            await _log(conn, milo["name"], "jellyfin", "checked media", milo_summary)
-            jobs.append({"agent": milo["id"], "name": milo["name"], "station": "jellyfin",
+            await _log(conn, milo["name"], "plex", "checked media", milo_summary)
+            jobs.append({"agent": milo["id"], "name": milo["name"], "station": "plex",
                          "summary": milo_summary})
 
             # Fitz -> Firefly (personal finances)

@@ -111,11 +111,11 @@ def load_registry() -> list[SubApp]:
             url=os.environ.get("VAULT_URL", "http://vault:8000"),
         ),
         SubApp(
-            key="jellyfin",
-            name="Jellyfin",
-            description="Your media server — continue watching, next up, recently added, and who's streaming.",
+            key="plex",
+            name="Plex",
+            description="The Plex server shared with you — continue watching, recently added, libraries.",
             icon="🎬",
-            url=os.environ.get("JELLYFIN_SVC_URL", "http://jellyfin:8000"),
+            url=os.environ.get("PLEX_SVC_URL", "http://plex:8000"),
         ),
         SubApp(
             key="firefly",
