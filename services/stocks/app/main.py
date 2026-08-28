@@ -11,6 +11,10 @@ Holdings/watchlist live in the core service's settings (market.holdings =
 [{symbol, shares, cost?}]). Fractional shares supported. If a symbol can't be
 priced by either source it is returned with available:false — the rest of the
 portfolio still prices. No credentials are stored or returned.
+
+PRIVACY: the ONLY data sent to the external quote providers (Stooq, Yahoo) is
+the ticker symbol itself. Share counts, cost basis, portfolio values, and all
+position math stay local — computed in this service from the returned prices.
 """
 import asyncio
 import os
