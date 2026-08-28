@@ -579,20 +579,42 @@
       </div></div>`;
     q("#settings").hidden = false;
   }
-  // Tolerant holdings parser. Accepts one holding per line OR comma-separated,
-  // with ":" or whitespace between fields: "NVDA:10:150", "aapl 5", "MSFT 2.5",
-  // "VOO: 1.25 : 380". Fractional shares supported. Returns what parsed and
-  // what didn't, so the UI can be honest instead of silently dropping input.
+  // Tolerant holdings parser — token-stream based, so ANY separator mix works:
+  // "MET, 1.63" · "NVDA 10 150" · "aapl:2.5" · "VOO: 1.25 : 380" · all on one
+  // line or one per line. Grammar: a symbol (letters) starts a holding; the
+  // following 1–2 numbers are shares [and cost]. Fractional shares supported.
+  // Returns what parsed AND what didn't, so the UI stays honest.
   function parseHoldings(text) {
-    const tokens = (text || "").split(/[\n,]+/).map((t) => t.trim()).filter(Boolean);
+    const atoms = (text || "")
+      .split(/[\s,:\n]+/)
+      .map((a) => a.trim().replace(/^\$/, ""))
+      .filter(Boolean)
+      .filter((a) => !/^(sh|shs|share|shares|of|x|@)$/i.test(a));  // filler words
     const holdings = [], rejected = [];
-    for (const t of tokens) {
-      const m = t.match(/^([A-Za-z][A-Za-z.^-]{0,11})[\s:]+(\d*\.?\d+)(?:[\s:]+\$?(\d*\.?\d+))?\s*(?:sh(?:are)?s?)?$/i);
-      if (!m) { rejected.push(t); continue; }
-      const o = { symbol: m[1].toUpperCase(), shares: parseFloat(m[2]) };
-      if (m[3]) o.cost = parseFloat(m[3]);
-      if (o.shares > 0) holdings.push(o); else rejected.push(t);
+    let cur = null;
+    const flush = () => {
+      if (!cur) return;
+      if (cur.nums.length >= 1 && parseFloat(cur.nums[0]) > 0) {
+        const o = { symbol: cur.sym, shares: parseFloat(cur.nums[0]) };
+        if (cur.nums[1] != null) o.cost = parseFloat(cur.nums[1]);
+        holdings.push(o);
+      } else {
+        rejected.push(cur.sym + " (no share count)");
+      }
+      cur = null;
+    };
+    for (const a of atoms) {
+      if (/^[A-Za-z][A-Za-z.^-]{0,11}$/.test(a)) {
+        flush();
+        cur = { sym: a.toUpperCase(), nums: [] };
+      } else if (/^\d*\.?\d+$/.test(a)) {
+        if (cur && cur.nums.length < 2) cur.nums.push(a);
+        else rejected.push(a);
+      } else {
+        rejected.push(a);
+      }
     }
+    flush();
     return { holdings, rejected };
   }
   async function saveSettings() {
