@@ -569,7 +569,8 @@ def _inbox(gmail_emails, availability, settings, gmail_mode) -> dict:
     """The email signal: which messages actually matter, with sender/subject/
     age — not a count of 40 unread."""
     important = settings.get("important_senders", [])
-    tier = {"interview": 50, "deadline": 40, "personal": 20, "deal": 5, "fyi": 0}
+    tier = {"interview": 50, "deadline": 40, "personal": 20, "finance": 12,
+            "notification": 4, "deal": 5, "fyi": 0}
     scored = []
     for e in gmail_emails:
         rank = tier.get(e.get("category"), 0)
@@ -627,10 +628,20 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         v = (firefly or {}).get(key)
         return v if isinstance(v, dict) else {}
 
+    # Zero vs unknown: a ledger that hasn't been updated can't tell you what
+    # you spent today. Suppress current-period figures instead of implying $0.
+    days_stale = sp.get("days_stale")
+    stale = days_stale is not None and days_stale >= 2
+    today_spend = None if stale else sp.get("today")
+    week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
+
     big = sp.get("biggest_today")
-    unusual = big if (big and big.get("amount", 0) >= thr) else None
+    unusual = big if (not stale and big and big.get("amount", 0) >= thr) else None
 
     obs = []
+    if stale:
+        obs.append(f"Ledger last updated {days_stale} days ago — today's spending is "
+                   "unknown, not zero. Import newer transactions in Firefly.")
     pace = sp.get("pace_pct")
     baseline = sp.get("baseline")
     if pace is not None:
@@ -657,7 +668,8 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
     return {
         "connected": connected,
-        "today": sp.get("today"), "week": sp.get("week"), "month": sp.get("month"),
+        "today": today_spend, "week": week_spend, "month": sp.get("month"),
+        "stale_days": days_stale if stale else None,
         "pace_pct": pace, "baseline": baseline, "daily_avg": sp.get("daily_avg"),
         "net_worth": (_m("net_worth").get("display")) or (
             f"${networth['total']:,.0f}" if networth.get("total") is not None else None),

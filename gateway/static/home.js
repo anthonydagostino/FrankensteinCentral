@@ -228,8 +228,11 @@
     const bills = (m.upcoming_bills || []).map((b) =>
       `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
     const obs = (m.observations || []).map((o) => `<li>${esch(o)}</li>`).join("");
+    const staleLine = m.stale_days
+      ? `<p class="mny-stale">📅 Financial data last updated <b>${m.stale_days} days ago</b> — current-period figures unavailable</p>` : "";
     q("#cc-money").innerHTML = `
       <h3>Money</h3>
+      ${staleLine}
       <div class="mny-hero">
         <div class="mny-stat"><div class="v">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
         <div class="mny-stat"><div class="v mono">${m.week != null ? money(m.week) : "—"}</div><div class="l">This week</div></div>

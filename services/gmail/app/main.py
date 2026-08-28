@@ -66,8 +66,61 @@ def _save_token(refresh_token: str) -> None:
 
 _load_saved_token()
 
-# Senders/subjects that are almost never worth a human reply.
-_NOREPLY = re.compile(r"no[-_]?reply|do[-_]?not[-_]?reply|notifications?@|mailer@", re.I)
+# Local-parts machines send from — never a human awaiting your reply. This is
+# one of several automation signals; headers and Gmail's own category labels
+# are checked too (see _is_automated).
+_AUTOMATED_SENDER = re.compile(
+    r"no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|notifications?@|alerts?@|"
+    r"mailer|daemon|bounce|newsletters?@|news@|updates?@|info@|support@|"
+    r"service@|billing@|receipts?@|statements?@|confirmations?@|accounts?@|"
+    r"security@|verify@|hello@|team@|marketing@|offers?@|promotions?@|"
+    r"automated?@|system@|robot|feedback@|surveys?@|invoices?@|orders?@|"
+    r"shipping@|tracking@|reminders?@|customerservice|memberservices",
+    re.I,
+)
+
+# Transactional life-admin notifications: orders, shipping, codes, sign-ins…
+# Matched against the SUBJECT only (high precision).
+_TRANSACTIONAL = re.compile(
+    r"\breceipt\b|order (confirm|receiv|updat|shipp|deliver)|has (shipped|been delivered)|"
+    r"out for delivery|delivery (update|confirmation|notification)|tracking (number|update)|"
+    r"verification code|security (code|alert)|sign[- ]?in|new login|password (reset|change)|"
+    r"one[- ]?time (code|passcode)|\b2fa\b|\botp\b|confirm your|"
+    r"your (order|package|receipt|reservation|appointment|subscription|account|ticket)|"
+    r"invoice\s*#?\d|booking confirm|thank you for (your payment|shopping|your order)",
+    re.I,
+)
+
+# Financial/account notifications: deposits, transfers, statements, bills…
+# Subject-first (high precision); body text counts only for automated senders.
+_FINANCIAL = re.compile(
+    r"\beft\b|\bach\b|direct deposit|deposit(ed)?\s+(received|posted|complete)|"
+    r"funds?\s+(received|transferred|available)|withdrawal|transaction (alert|posted|complete)|"
+    r"payment (received|posted|due|scheduled|confirmation|processed)|"
+    r"statement (is )?(ready|available)|balance (alert|update|low)|card (charge|purchase)|"
+    r"transfer (initiated|complete|received)|\breceived\b[^.]{0,20}\$|"
+    r"your (bill|statement)|bill is ready|auto-?pay|credit card payment|"
+    r"dividend|trade confirmation|interest (payment|earned)|wire transfer",
+    re.I,
+)
+
+# Language that actually implies a human wants a response from YOU.
+_HUMAN_ASK = re.compile(
+    r"\b(can|could|would|will|did) you\b|let me know|what do you think|"
+    r"are you (free|available|around|able|interested)|when (are|can|would|works)|"
+    r"work(s)? for you|please (confirm|advise|respond|reply|review|send|share)|"
+    r"\brsvp\b|get back to (me|us)|would love to hear|any updates?|"
+    r"checking in|following up|circling back|do you (have|want|need|know)|"
+    r"what time|which (day|time)|works best|your (availability|thoughts|feedback)",
+    re.I,
+)
+
+# "?" occurrences that are boilerplate, not a question aimed at the recipient.
+_BOILERPLATE_Q = re.compile(
+    r"questions\?|questions or concerns|have questions|need help\?|"
+    r"forgot (your )?password\?|\?utm_|\?id=|\?ref=|\?src=",
+    re.I,
+)
 # Job boards/recruiting-alert services — these send bulk "you might like this
 # job" mail that routinely contains real-looking deadline/interview language
 # ("Applications are due...") despite being unsolicited marketing, not
@@ -108,8 +161,39 @@ def _extract_deal(subject: str, snippet: str, sender: str) -> tuple[str, str | N
 
 
 
+_BULK_LABELS = {"CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
+
+
+def _is_automated(msg: dict) -> bool:
+    """Deterministic machine-mail detection: sender local-part, standard
+    automation headers, and Gmail's own tab classification."""
+    if _AUTOMATED_SENDER.search(msg.get("from", "")):
+        return True
+    if msg.get("list_unsubscribe"):
+        return True
+    auto = (msg.get("auto_submitted") or "").strip().lower()
+    if auto and auto != "no":
+        return True
+    if (msg.get("precedence") or "").strip().lower() in ("bulk", "list", "junk", "auto_reply"):
+        return True
+    if _BULK_LABELS.intersection(msg.get("labels") or []):
+        return True
+    return False
+
+
 def triage(msg: dict) -> dict:
-    """Classify one message: category, whether it wants a reply, and a priority."""
+    """Classify one message.
+
+    Categories: interview (job/application correspondence), finance
+    (financial/account notifications), notification (transactional life-admin),
+    deal (a concrete promo), deadline (time-sensitive), personal (likely human
+    correspondence), fyi (everything automated/low-priority).
+
+    needs_reply favors PRECISION over recall: it fires only for non-automated
+    mail whose language actually implies a human expects a response — never
+    for transactional/financial notifications, no matter what boilerplate
+    question marks they contain.
+    """
     sender = msg.get("from", "")
     subject = msg.get("subject", "")
     snippet = msg.get("snippet", "")
@@ -118,36 +202,49 @@ def triage(msg: dict) -> dict:
     if _JOB_BOARD.search(sender):
         # Bulk "you might like this job" mail — never let it look like a real
         # interview or deadline, no matter what language it uses.
-        return {**msg, "category": "fyi", "needs_reply": False, "priority": 0}
+        return {**msg, "category": "fyi", "needs_reply": False, "priority": 0,
+                "automated": True}
 
-    automated = bool(_NOREPLY.search(sender))
+    automated = _is_automated(msg)
 
     extra: dict = {}
     if _INTERVIEW.search(text):
         category = "interview"
-    elif _DEADLINE.search(text):
-        category = "deadline"
+    elif _FINANCIAL.search(subject) or (automated and _FINANCIAL.search(text)):
+        category = "finance"
+    elif _TRANSACTIONAL.search(subject):
+        category = "notification"
     elif _DEAL.search(text):
         category = "deal"
         merchant, offer = _extract_deal(subject, snippet, sender)
         extra = {"merchant": merchant, "offer": offer}
+    elif _DEADLINE.search(text):
+        category = "deadline"
     elif automated:
         category = "fyi"
     else:
         category = "personal"
 
-    asks_something = "?" in text or _DEADLINE.search(text) is not None
+    # A question aimed at the recipient — boilerplate "Questions? Call us"
+    # and URL query-strings are stripped before looking for "?".
+    cleaned = _BOILERPLATE_Q.sub(" ", f"{subject} {snippet[:200]}")
+    direct_question = subject.strip().endswith("?") or (
+        "?" in cleaned and category in ("personal", "interview", "deadline"))
+    asks = bool(_HUMAN_ASK.search(_BOILERPLATE_Q.sub(" ", text))) or direct_question
+
     needs_reply = (
         not automated
-        and category not in ("deal", "fyi")
-        and (asks_something or category in ("interview", "deadline"))
+        and category in ("interview", "deadline", "personal")
+        and (asks or category == "interview")
     )
 
-    priority = {"interview": 3, "deadline": 3, "personal": 2, "deal": 1, "fyi": 0}[category]
+    priority = {"interview": 3, "deadline": 3, "personal": 2, "finance": 1,
+                "notification": 1, "deal": 1, "fyi": 0}[category]
     if needs_reply and priority < 1:
         priority = 1
 
-    return {**msg, **extra, "category": category, "needs_reply": needs_reply, "priority": priority}
+    return {**msg, **extra, "category": category, "needs_reply": needs_reply,
+            "priority": priority, "automated": automated}
 
 
 def triage_all(messages: list[dict]) -> list[dict]:
@@ -273,14 +370,16 @@ async def _fetch_inbox() -> list[dict] | None:
         for mid in ids:
             mr = await client.get(
                 f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
-                params={"format": "metadata", "metadataHeaders": ["From", "Subject"]},
+                params={"format": "metadata",
+                        "metadataHeaders": ["From", "Subject", "List-Unsubscribe",
+                                            "Auto-Submitted", "Precedence", "Reply-To"]},
                 headers=headers,
                 timeout=15,
             )
             if mr.status_code != 200:
                 continue
             payload = mr.json()
-            hdrs = {h["name"]: h["value"] for h in payload.get("payload", {}).get("headers", [])}
+            hdrs = {h["name"].lower(): h["value"] for h in payload.get("payload", {}).get("headers", [])}
             received = payload.get("internalDate")  # epoch ms, gmail-provided
             age_hours = None
             if received:
@@ -292,11 +391,17 @@ async def _fetch_inbox() -> list[dict] | None:
                 {
                     "id": mid,
                     "thread_id": payload.get("threadId", mid),
-                    "from": hdrs.get("From", ""),
-                    "subject": hdrs.get("Subject", ""),
+                    "from": hdrs.get("from", ""),
+                    "subject": hdrs.get("subject", ""),
                     "snippet": payload.get("snippet", ""),
                     "received": received,
                     "age_hours": age_hours,
+                    # deterministic automation metadata
+                    "list_unsubscribe": bool(hdrs.get("list-unsubscribe")),
+                    "auto_submitted": hdrs.get("auto-submitted", ""),
+                    "precedence": hdrs.get("precedence", ""),
+                    "reply_to": hdrs.get("reply-to", ""),
+                    "labels": payload.get("labelIds", []),
                 }
             )
         return out
@@ -491,6 +596,36 @@ async def needs_reply():
     """Triaged emails that actually want a response, most important first."""
     items, mode = await _current_inbox()
     return {"emails": [m for m in items if m["needs_reply"]], "mode": mode}
+
+
+@app.get("/sample")
+async def sample():
+    """Sanitized classification sample of the WHOLE recent inbox — for judging
+    classifier quality, not just the needs-reply survivors. Metadata only:
+    sender domain, category, flags, age, and a server-side truncated subject.
+    Never bodies or snippets."""
+    items, mode = await _current_inbox()
+
+    def _domain(addr: str) -> str:
+        m = re.search(r"@([\w.-]+)", addr or "")
+        return m.group(1).lower() if m else "(unknown)"
+
+    out = []
+    counts: dict[str, int] = {}
+    for m in items:
+        counts[m["category"]] = counts.get(m["category"], 0) + 1
+        subj = m.get("subject") or "(no subject)"
+        out.append({
+            "domain": _domain(m.get("from", "")),
+            "category": m["category"],
+            "needs_reply": m["needs_reply"],
+            "automated": m.get("automated", False),
+            "age_hours": m.get("age_hours"),
+            "subject": subj[:40] + ("…" if len(subj) > 40 else ""),
+        })
+    return {"mode": mode, "total": len(out), "counts": counts,
+            "needs_reply_count": sum(1 for m in items if m["needs_reply"]),
+            "items": out}
 
 
 @app.get("/deals")

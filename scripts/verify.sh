@@ -118,6 +118,17 @@ if st == 200 and fh:
                 add("WARN", "firefly build", "OLD build (no txn_count/tz) — redeploy needed")
             add("PASS", "firefly txns", f"{sp.get('txn_count','?')} withdrawals fetched "
                 f"(last month start → today), tz={sp.get('tz','?')}")
+            # Freshness root-cause: any-type newest vs withdrawal newest.
+            ds = sp.get("days_stale"); ll = sp.get("ledger_latest_txn"); lw = sp.get("latest_txn")
+            if ll is None and lw is None:
+                add("WARN", "firefly fresh", "couldn't determine ledger freshness")
+            else:
+                verdict = ("FRESH" if (ds is not None and ds < 2) else f"STALE ({ds}d)")
+                src = ("source-data staleness — Firefly itself has nothing newer (import needed)"
+                       if ll == lw or ll is None else
+                       "newer non-withdrawal activity exists — ledger is fresher than the withdrawal window")
+                add("PASS", "firefly fresh", f"{verdict}: newest ANY-type txn {ll}, "
+                    f"newest withdrawal {lw} → {src}")
             add("PASS", "firefly calc", f"today=${sp.get('today')}, week=${sp.get('week')}, "
                 f"month=${sp.get('month')}, daily_avg=${sp.get('daily_avg')}")
             pace = sp.get("pace_pct"); lm = sp.get("last_month_to_date")
@@ -172,18 +183,32 @@ if st == 200 and gh:
                     f"(newest {ages[0]}h, oldest {ages[-1]}h)")
             else:
                 add("WARN", "gmail age", "no age on messages — gmail container is an OLD build, redeploy")
-            cats = {}
-            for e in emails:
-                cats[e.get("category", "?")] = cats.get(e.get("category", "?"), 0) + 1
-            add("PASS", "gmail classify", "categories: " +
-                ", ".join(f"{k}×{v}" for k, v in sorted(cats.items())))
-            print("      examples (sender domain · category · age · truncated subject):")
-            for e in emails[:3]:
-                age = e.get("age_hours")
-                print(f"        - {domain(e.get('from'))} · {e.get('category')} · "
-                      f"{str(age) + 'h' if age is not None else '?'} · \"{trunc(e.get('subject'))}\"")
     else:
         add("FAIL", "gmail fetch", f"{err2}")
+    # Whole-inbox classification sample (sanitized server-side): the review set
+    # for judging classifier quality, not just the needs-reply survivors.
+    st3, smp, err3 = get(8083, "/sample", timeout=45)
+    if st3 == 404 or (err3 and "404" in str(err3)):
+        add("WARN", "gmail sample", "OLD build (no /sample endpoint) — redeploy needed")
+    elif st3 == 200 and smp and smp.get("items") is not None:
+        counts = smp.get("counts", {})
+        add("PASS", "gmail classify", f"{smp.get('total')} recent messages: " +
+            ", ".join(f"{k}×{v}" for k, v in sorted(counts.items())) +
+            f" — {smp.get('needs_reply_count')} flagged needs-reply")
+        auto_n = sum(1 for i in smp["items"] if i.get("automated"))
+        add("PASS", "gmail automation", f"{auto_n}/{smp.get('total')} detected as automated senders")
+        bad = [i for i in smp["items"] if i.get("automated") and i.get("needs_reply")]
+        add("PASS" if not bad else "FAIL", "gmail precision",
+            "no automated mail flagged needs-reply" if not bad
+            else f"{len(bad)} automated message(s) still flagged needs-reply")
+        print("      sample (domain · category · reply? · age · truncated subject):")
+        for i in smp["items"][:10]:
+            age = i.get("age_hours")
+            print(f"        - {i.get('domain'):<24} {i.get('category'):<12} "
+                  f"{'REPLY' if i.get('needs_reply') else '     '} "
+                  f"{(str(age) + 'h') if age is not None else '?':>7}  \"{i.get('subject')}\"")
+    else:
+        add("WARN", "gmail sample", f"{err3 or 'no sample available'}")
 else:
     add("FAIL", "gmail svc", f"{err}")
 print()

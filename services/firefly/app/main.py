@@ -194,6 +194,23 @@ async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
     return out
 
 
+async def _ledger_latest(client) -> date | None:
+    """Date of the newest transaction of ANY type — the ledger's true
+    freshness. Firefly returns transactions newest-first."""
+    try:
+        r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
+                             params={"limit": 1}, headers=_headers(), timeout=15)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        if not data:
+            return None
+        splits = data[0].get("attributes", {}).get("transactions", [])
+        raw = (splits[0].get("date") or "")[:10] if splits else ""
+        return date.fromisoformat(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _spending() -> dict:
     today = datetime.now(LOCAL_TZ).date()
     week_start = today - timedelta(days=today.weekday())
@@ -204,6 +221,7 @@ async def _spending() -> dict:
     lm_cutoff = last_month_start + timedelta(days=(today.day - 1))
     async with httpx.AsyncClient() as client:
         wd = await _fetch_withdrawals(client, last_month_start.isoformat(), today.isoformat())
+        ledger_latest = await _ledger_latest(client)
 
     def d(s):
         try:
@@ -234,15 +252,21 @@ async def _spending() -> dict:
     # plausibly covers BOTH sides of the comparison. Raw totals always display.
     all_dates = [x for x in (d(t["date"]) for t in wd) if x is not None]
     earliest = min(all_dates) if all_dates else None
-    latest = max(all_dates) if all_dates else None
+    latest_wd = max(all_dates) if all_dates else None
+    # True ledger freshness: newest transaction of ANY type (a fresh deposit
+    # means the ledger is being updated even if there are no recent withdrawals).
+    freshness_ref = ledger_latest or latest_wd
+    # clamp: future-dated transactions (Firefly allows them) must not go negative
+    days_stale = max(0, (today - freshness_ref).days) if freshness_ref else None
+
     if not lm_to_date:
         baseline, pace_note = "none", "no last-month spending in the ledger to compare against"
     elif earliest and earliest > last_month_start + timedelta(days=5):
         baseline = "partial_history"
         pace_note = f"ledger history starts {earliest.isoformat()}, so last month is incomplete"
-    elif latest and (today - latest).days >= 7:
+    elif days_stale is not None and days_stale >= 7:
         baseline = "stale_data"
-        pace_note = f"newest transaction is {(today - latest).days} days old, so this month may be incomplete"
+        pace_note = f"ledger hasn't been updated in {days_stale} days, so this month is incomplete"
     else:
         baseline, pace_note = "ok", None
     pace_pct = (round(((month_sum - lm_to_date) / lm_to_date) * 100)
@@ -258,7 +282,9 @@ async def _spending() -> dict:
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "baseline": baseline, "pace_note": pace_note,
         "earliest_txn": earliest.isoformat() if earliest else None,
-        "latest_txn": latest.isoformat() if latest else None,
+        "latest_txn": latest_wd.isoformat() if latest_wd else None,
+        "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
+        "days_stale": days_stale,
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
     }
 
