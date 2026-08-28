@@ -160,8 +160,8 @@
       `<div class="inbox">${rows || `<div class="att-empty">${esch(inbox.empty || "Inbox looks clear. 🎉")}</div>`}</div>` +
       replies +
       `<div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="inbox-open">Open Gmail ↗</button></div>`;
-    q("#cc-inbox").querySelectorAll(".inbox-item").forEach((el) => (el.onclick = () => openAppKey("gmail")));
-    q("#inbox-open").onclick = () => openAppKey("gmail");
+    q("#cc-inbox").querySelectorAll(".inbox-item").forEach((el) => (el.onclick = () => openGmail()));
+    q("#inbox-open").onclick = () => openGmail();
   }
 
   // ---- Today (Big 3 + next event) ----
@@ -347,13 +347,18 @@
     const app = APPSMAP[key];
     if (app && typeof openApp === "function") openApp(app);
   }
+  // "Open Gmail" means GMAIL — the real thing, new tab. (The dashboard's own
+  // triage view stays reachable from the Apps launcher tile.)
+  function openGmail() {
+    window.open("https://mail.google.com/", "_blank", "noopener");
+  }
   async function handleAction(a) {
     if (!a) return;
     if (a.type === "focus") return startFocus(a.minutes || 45, a.label || "Study");
     if (a.type === "water") { await post("/core/water", { oz: a.oz || 16 }); toast(`+${a.oz || 16} oz`); return refresh(true); }
     if (a.type === "gym") { await post("/core/gym", {}); toast("Workout logged 💪"); return refresh(true); }
     if (a.type === "big3") { await post("/core/big3/" + a.id + "/toggle", {}); return refresh(true); }
-    if (a.type === "gmail") return openAppKey("gmail");
+    if (a.type === "gmail") return openGmail();
     if (a.type === "open") return openAppKey(a.app);
   }
 
@@ -401,6 +406,7 @@
       { ic: "💭", label: "Quick capture a note", hint: "capture", run: () => q("#cap-input") && q("#cap-input").focus() },
       { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
       { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
+      { ic: "📬", label: "Open Gmail (web)", hint: "gmail mail email inbox", run: () => openGmail() },
       { ic: "▦", label: "Apps & services launcher", hint: "apps containers launcher", run: () => openLauncher() },
       { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
       { ic: "🦴", label: "Legacy lounge view", hint: "lounge legacy old", run: () => (location.href = "/lounge.html") },
