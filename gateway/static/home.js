@@ -345,7 +345,14 @@
   // ---- actions --------------------------------------------------------------
   function openAppKey(key) {
     const app = APPSMAP[key];
-    if (app && typeof openApp === "function") openApp(app);
+    if (!app) { toast("App '" + key + "' isn't registered — try a refresh."); return; }
+    if (typeof openApp !== "function") {
+      // app.js didn't load/execute (usually a stale cached copy). Be loud.
+      toast("Stale page detected — hard-refresh (Ctrl+Shift+R) to load the new version.");
+      console.error("openApp missing: app.js stale or failed to load");
+      return;
+    }
+    openApp(app);
   }
   // "Open Gmail" means GMAIL — the real thing, new tab. (The dashboard's own
   // triage view stays reachable from the Apps launcher tile.)

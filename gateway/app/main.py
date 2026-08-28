@@ -83,4 +83,16 @@ async def proxy(app_key: str, path: str, request: Request):
     )
 
 
+@app.middleware("http")
+async def no_stale_static(request: Request, call_next):
+    """Static assets must revalidate on every load. Without this, browsers
+    heuristically cache app.js/home.js across deploys and users end up running
+    week-old JS against a new page — buttons silently do nothing. no-cache
+    still allows 304s, so it stays fast."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
