@@ -27,21 +27,29 @@ Until it's connected it shows an empty **"not connected"** state (no sample data
    vault through the official Bitwarden CLI running in "serve" mode, pointed at
    your Vaultwarden:
    ```bash
-   npm install -g @bitwarden/cli
+   sudo npm install -g @bitwarden/cli   # or: sudo snap install bw
    bw config server http://<homelab-ip>:8222
    bw login                       # your Vaultwarden email + master password
    export BW_SESSION=$(bw unlock --raw)   # unlock; keep this session
-   bw serve --hostname 0.0.0.0 --port 8087
+   nohup bw serve --hostname 172.17.0.1 --port 8200 >/dev/null 2>&1 &
    ```
-   (Best run as its own small container/service on the homelab so it stays
-   unlocked. We'll wire that up together.)
+   Two deliberate choices here:
+   - **`--hostname 172.17.0.1`** (the docker bridge) — reachable by the host
+     and the hub's containers but **NOT by other devices on your LAN**. Never
+     use `0.0.0.0`: an unlocked `bw serve` answers with real secrets to anyone
+     who can reach the port.
+   - **port 8200** — NOT the CLI's default 8087, which collides with the
+     hub's Tasks service on this box.
+
+   `bw serve` stays unlocked until the process exits (e.g. a reboot) — after a
+   reboot, re-run the `export BW_SESSION=…` and `nohup bw serve …` lines.
 
 3. **Point the hub at it.** In the FrankensteinCentral `.env`:
    ```
    VAULT_MODE=bitwarden
-   BW_SERVE_URL=http://<homelab-ip>:8087
+   BW_SERVE_URL=http://172.17.0.1:8200
    ```
-   Then `docker compose up -d --build vault assistant`.
+   Then `docker compose up -d vault assistant`.
 
 4. Open **Vault** on the hub — you'll see your real password health, and Vic
    will report it on the floor ("5 weak, 3 reused"). Bones flags reused
@@ -61,5 +69,6 @@ Until it's connected it shows an empty **"not connected"** state (no sample data
   password — only counts and per-item issue flags.
 - `BW_SESSION` / master password live only on the `bw serve` process on your
   homelab, never in this repo.
-- Keep `bw serve` on your LAN (or behind your VPN) — don't expose port 8087 to
-  the internet.
+- Keep `bw serve` bound to the docker bridge (172.17.0.1) — it must never be
+  reachable from the LAN or the internet, because an unlocked `bw serve`
+  returns real secrets to anyone who can reach it.
