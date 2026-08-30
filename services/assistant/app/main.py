@@ -394,6 +394,14 @@ def _attention(core, availability, finance, budget, firefly, spending,
             "action": {"type": "open", "app": "finance"},
         })
 
+    for w in (budget.get("warnings", []) if budget else [])[:2]:
+        items.append({
+            "id": f"budget:{w.get('budget')}", "severity": w.get("severity", "fyi"),
+            "icon": "🫙", "title": f"{w.get('budget')} budget: {w.get('state')}",
+            "detail": _short(w.get("text", ""), 90),
+            "action": {"type": "open", "app": "budget"},
+        })
+
     thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
     big = (spending or {}).get("biggest_today")
     if big and big.get("amount", 0) >= thr:
@@ -683,6 +691,28 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     }
 
 
+def _budget_brief(status) -> dict:
+    """The homepage's budget signal: safe-to-spend, the single worst warning,
+    and whether everything is on track — never the whole budget database."""
+    if not status or not status.get("available"):
+        return {"available": False, "configured": bool(status and status.get("configured"))}
+    warns = status.get("warnings", [])
+    counts = status.get("state_counts", {})
+    fresh = (status.get("freshness") or {}).get("current_ok", False)
+    return {
+        "available": True,
+        "configured": status.get("configured", False),
+        "fresh": fresh,
+        "safe_to_spend": status.get("safe_to_spend"),
+        "safe_scope": status.get("safe_scope"),
+        "worst": warns[0] if warns else None,
+        "on_track": fresh and not warns and bool(status.get("budgets")),
+        "budget_count": len(status.get("budgets", [])),
+        "days_left": (status.get("month") or {}).get("days_left"),
+        "uncat_flag": (status.get("uncategorized") or {}).get("low_confidence", False),
+    }
+
+
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
     if (not fresh and cached["data"] and cached["at"]
@@ -697,7 +727,7 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{GMAIL_URL}/needs-reply"),
             _get(client, f"{GMAIL_URL}/thread-availability"),
             _get(client, f"{FINANCE_URL}/summary"),
-            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/status"),
             _get(client, f"{FIREFLY_SVC_URL}/dashboard"),
             _get(client, f"{FIREFLY_SVC_URL}/spending"),
             _get(client, f"{NETWORTH_URL}/summary"),
@@ -728,6 +758,7 @@ async def build_home(fresh: bool = False) -> dict:
         "attention": _attention(core, avail, finance, budget, firefly, spending,
                                 stocks, vault, settings, down),
         "money": money,
+        "budget": _budget_brief(budget),
         "portfolio": stocks or {"configured": False},
         "health": {
             "study": (core or {}).get("study", {}),

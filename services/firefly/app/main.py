@@ -167,12 +167,15 @@ async def dashboard():
             "connected": _connected()}
 
 
-async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
-    """All withdrawal splits in [start, end], paging through Firefly."""
+async def _fetch_txns(client, txn_type: str, start: str, end: str,
+                      max_pages: int = 6) -> list[dict]:
+    """All splits of one type in [start, end], paging through Firefly.
+    Transfers are never fetched here — moving money between your own accounts
+    is not spending or income."""
     out, page = [], 1
-    while page <= 6:
+    while page <= max_pages:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
-                             params={"type": "withdrawal", "start": start, "end": end,
+                             params={"type": txn_type, "start": start, "end": end,
                                      "limit": 50, "page": page},
                              headers=_headers(), timeout=20)
         r.raise_for_status()
@@ -187,11 +190,16 @@ async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
                     amt = 0
                 out.append({"desc": t.get("description", ""), "amount": round(amt, 2),
                             "date": (t.get("date") or "")[:10],
+                            "type": t.get("type", txn_type),
                             "category": t.get("category_name") or "Uncategorized"})
         if len(data) < 50:
             break
         page += 1
     return out
+
+
+async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
+    return await _fetch_txns(client, "withdrawal", start, end)
 
 
 async def _ledger_latest(client) -> date | None:
@@ -296,6 +304,157 @@ async def spending():
                 "pace_pct": None, "recent": [], "biggest_today": None}
     try:
         return await _spending()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
+
+
+async def _month_payload() -> dict:
+    """Raw material for the budget engine: this month's withdrawals and
+    categorized deposits (refunds/credits), per-category nets, income, and
+    ledger freshness. Transfers are excluded entirely."""
+    import calendar
+    today = datetime.now(LOCAL_TZ).date()
+    month_start = today.replace(day=1)
+    days_total = calendar.monthrange(today.year, today.month)[1]
+    async with httpx.AsyncClient() as client:
+        wd = await _fetch_txns(client, "withdrawal", month_start.isoformat(), today.isoformat())
+        dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
+        ledger_latest = await _ledger_latest(client)
+    days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
+
+    categories: dict[str, dict] = {}
+    for t in wd:
+        c = categories.setdefault(t["category"], {"spent": 0.0, "refunds": 0.0, "count": 0})
+        c["spent"] += t["amount"]
+        c["count"] += 1
+    # A categorized deposit is treated as a refund/credit against that
+    # category. Uncategorized deposits are income, not refunds.
+    income = 0.0
+    for t in dep:
+        if t["category"] != "Uncategorized":
+            c = categories.setdefault(t["category"], {"spent": 0.0, "refunds": 0.0, "count": 0})
+            c["refunds"] += t["amount"]
+        else:
+            income += t["amount"]
+    for c in categories.values():
+        c["spent"] = round(c["spent"], 2)
+        c["refunds"] = round(c["refunds"], 2)
+        c["net"] = round(c["spent"] - c["refunds"], 2)
+
+    txns = sorted(
+        [{**t, "amount": -t["amount"]} for t in wd]
+        + [{**t, "amount": t["amount"]} for t in dep if t["category"] != "Uncategorized"],
+        key=lambda t: t["date"], reverse=True)
+    return {
+        "connected": True,
+        "tz": str(LOCAL_TZ),
+        "today": today.isoformat(),
+        "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
+                  "days_total": days_total, "days_elapsed": today.day,
+                  "days_left": days_total - today.day},
+        "days_stale": days_stale,
+        "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
+        "categories": categories,
+        "income_month": round(income, 2),
+        "transactions": txns[:400],
+    }
+
+
+@app.get("/month")
+async def month():
+    if not _connected():
+        return {"connected": False}
+    try:
+        return await _month_payload()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
+
+
+@app.get("/bills")
+async def bills():
+    """Firefly's own bills, normalized — Firefly stays the source of truth for
+    fixed costs. `supported:false` means the user hasn't set bills up there."""
+    if not _connected():
+        return {"connected": False, "supported": False, "items": []}
+    try:
+        today = datetime.now(LOCAL_TZ).date()
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{FIREFLY_URL}/api/v1/bills",
+                                 headers=_headers(), timeout=20)
+            r.raise_for_status()
+            data = r.json().get("data", [])
+        items = []
+        for b in data:
+            at = b.get("attributes", {})
+            if at.get("active") is False:
+                continue
+            try:
+                lo = float(at.get("amount_min") or 0)
+                hi = float(at.get("amount_max") or lo)
+                amount = round((lo + hi) / 2, 2)
+            except (TypeError, ValueError):
+                amount = None
+            nxt = (at.get("next_expected_match") or "")[:10]
+            paid_dates = [p.get("date", "")[:10] for p in (at.get("paid_dates") or [])]
+            paid_this_month = any(p[:7] == today.isoformat()[:7] for p in paid_dates if p)
+            items.append({"name": at.get("name", ""), "amount": amount,
+                          "next_due": nxt or None, "paid_this_month": paid_this_month})
+        items.sort(key=lambda b: b.get("next_due") or "9999")
+        return {"connected": True, "supported": len(items) > 0, "items": items}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
+
+
+@app.get("/audit")
+async def audit():
+    """Real-data quality audit for budgeting: history span, categorization
+    quality, category totals, and whether Firefly budgets/bills exist. Reads
+    up to ~600 transactions over the last year; metadata only."""
+    if not _connected():
+        return {"connected": False}
+    try:
+        today = datetime.now(LOCAL_TZ).date()
+        year_ago = today - timedelta(days=365)
+        async with httpx.AsyncClient() as client:
+            wd = await _fetch_txns(client, "withdrawal", year_ago.isoformat(),
+                                   today.isoformat(), max_pages=10)
+            dep = await _fetch_txns(client, "deposit", year_ago.isoformat(),
+                                    today.isoformat(), max_pages=4)
+            ledger_latest = await _ledger_latest(client)
+            fb = await client.get(f"{FIREFLY_URL}/api/v1/budgets",
+                                  headers=_headers(), timeout=15)
+            firefly_budgets = ([b.get("attributes", {}).get("name", "")
+                                for b in fb.json().get("data", [])]
+                               if fb.status_code == 200 else [])
+            bl = await client.get(f"{FIREFLY_URL}/api/v1/bills",
+                                  headers=_headers(), timeout=15)
+            bill_count = (len(bl.json().get("data", []))
+                          if bl.status_code == 200 else 0)
+
+        dates = sorted(t["date"] for t in wd if t["date"])
+        categorized = [t for t in wd if t["category"] != "Uncategorized"]
+        cat_totals: dict[str, float] = {}
+        for t in wd:
+            cat_totals[t["category"]] = round(cat_totals.get(t["category"], 0) + t["amount"], 2)
+        top = sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
+        uncat_amt = cat_totals.get("Uncategorized", 0.0)
+        total_amt = sum(cat_totals.values())
+        return {
+            "connected": True,
+            "window": {"from": year_ago.isoformat(), "to": today.isoformat()},
+            "withdrawals": len(wd),
+            "deposits": len(dep),
+            "span": {"first": dates[0] if dates else None, "last": dates[-1] if dates else None},
+            "categorized_pct": round(100 * len(categorized) / len(wd)) if wd else None,
+            "uncategorized": {"count": len(wd) - len(categorized),
+                              "amount": round(uncat_amt, 2),
+                              "pct_of_spend": round(100 * uncat_amt / total_amt) if total_amt else 0},
+            "categories": [{"name": k, "total": v} for k, v in top[:15]],
+            "category_count": len([k for k in cat_totals if k != "Uncategorized"]),
+            "firefly_budgets": firefly_budgets,
+            "firefly_bill_count": bill_count,
+            "days_stale": max(0, (today - ledger_latest).days) if ledger_latest else None,
+        }
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 

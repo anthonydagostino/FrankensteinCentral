@@ -221,6 +221,53 @@ else:
     add("FAIL", "gmail svc", f"{err}")
 print()
 
+print("-- budget (time-aware, over Firefly) --")
+st, bs, err = get(8088, "/status?fresh=1", timeout=60)
+if st == 200 and bs is not None:
+    if not bs.get("available"):
+        add("WARN", "budget", f"unavailable — {bs.get('reason','?')}")
+    elif not bs.get("configured"):
+        add("WARN", "budget", "no budgets configured yet (⚙ Settings → Monthly budgets)")
+    else:
+        fr = bs.get("freshness", {})
+        mo = bs.get("month", {})
+        add("PASS", "budget", f"{len(bs.get('budgets', []))} budget(s), "
+            f"{mo.get('days_left')}d left, fresh={fr.get('current_ok')} "
+            f"(ledger stale {fr.get('days_stale')}d)")
+        for b in bs.get("budgets", [])[:8]:
+            add("PASS", f"  {b['name'][:12]}", f"{b['state']:<12} ${b['spent']} / ${b['limit']} "
+                f"(safe/day {b.get('safe_per_day')}, proj {b.get('projected')})")
+        add("PASS", "budget safe", f"safe-to-spend={bs.get('safe_to_spend')} ({bs.get('safe_scope')})")
+        un = bs.get("uncategorized", {})
+        if un.get("amount"):
+            add("WARN" if un.get("low_confidence") else "PASS", "budget uncat",
+                f"${un['amount']} uncategorized ({un.get('pct_of_spend')}% of spend, "
+                f"{un.get('count')} txns)" + (" — LOW CONFIDENCE" if un.get("low_confidence") else ""))
+else:
+    add("FAIL", "budget svc", f"{err}")
+
+print()
+print("-- Firefly data-quality audit (last 12 months) --")
+st, au, err = get(8097, "/audit", timeout=90)
+if st == 200 and au and au.get("connected"):
+    add("PASS", "audit txns", f"{au.get('withdrawals')} withdrawals + {au.get('deposits')} deposits, "
+        f"span {au.get('span', {}).get('first')} → {au.get('span', {}).get('last')}")
+    cp = au.get("categorized_pct")
+    add("PASS" if (cp or 0) >= 80 else "WARN", "audit categorized",
+        f"{cp}% of withdrawals categorized; uncategorized "
+        f"{au.get('uncategorized', {}).get('count')} txns / ${au.get('uncategorized', {}).get('amount')} "
+        f"({au.get('uncategorized', {}).get('pct_of_spend')}% of spend)")
+    cats = au.get("categories", [])[:10]
+    add("PASS", "audit categories", f"{au.get('category_count')} categories; top: " +
+        ", ".join(f"{c['name']} ${c['total']:.0f}" for c in cats[:6]))
+    fbud = au.get("firefly_budgets", [])
+    add("PASS", "audit ff-budgets", f"Firefly budgets defined: {len(fbud)}"
+        + (f" ({', '.join(fbud[:5])})" if fbud else " — none (category-mapped budgets are the right model)"))
+    add("PASS", "audit ff-bills", f"Firefly bills defined: {au.get('firefly_bill_count')}")
+else:
+    add("WARN", "firefly audit", f"{err or 'not connected'}")
+
+print()
 print("-- stocks / tasks / schedule / fitness --")
 st, pq, errq = get(8099, "/quotes?symbols=NVDA", timeout=30)
 if st == 200 and pq is not None:

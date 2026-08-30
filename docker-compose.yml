@@ -78,14 +78,19 @@ services:
     ports:
       - "8087:8000"
 
+  # Time-aware budgets over Firefly (stateless; budget definitions live in
+  # core settings, transactions come from the firefly service).
   budget:
     build: ./services/budget
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      FIREFLY_SVC_URL: http://firefly:8000
+      CORE_URL: http://core:8000
     depends_on:
-      db:
-        condition: service_healthy
+      firefly:
+        condition: service_started
+      core:
+        condition: service_started
     ports:
       - "8088:8000"
 

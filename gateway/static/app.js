@@ -396,55 +396,126 @@ const RENDERERS = {
   },
 
   async budget(app, body) {
-    const [sum, list] = await Promise.all([api("/budget/summary"), api("/budget/categories")]);
-    setMode();
-    const bars = (list.categories || [])
-      .map((c) => {
-        const lim = Number(c.limit_amount) || 0;
-        const spent = Number(c.spent) || 0;
-        const pct = lim ? Math.min(100, Math.round((spent / lim) * 100)) : 0;
-        const cls = spent > lim ? "over" : pct >= 80 ? "warn" : "";
-        return `<div class="bar-row" data-id="${c.id}" style="cursor:pointer" title="Click to add $10 spent">
-          <div class="top"><b>${esc(c.name)}</b><span class="amt">$${esc(spent)} / $${esc(lim)}</span></div>
-          <div class="bar ${cls}"><span style="width:${pct}%"></span></div></div>`;
-      })
-      .join("");
-    body.innerHTML = `
-      <div class="tiles">
-        <div class="tile good"><div class="n">$${esc(sum.remaining ?? 0)}</div><div class="l">Left this month</div></div>
-        <div class="tile"><div class="n">${esc(sum.percent_used ?? 0)}%</div><div class="l">Of budget used</div></div>
-        <div class="tile ${sum.over_budget?.length ? "alert" : ""}"><div class="n">${esc(sum.over_budget?.length ?? 0)}</div><div class="l">Over budget</div></div>
-      </div>
-      <h4>Spending by category</h4>
-      <div id="bud-rows">${bars || '<p class="empty">No categories yet.</p>'}</div>
-      <p class="empty" style="margin-top:8px">Click a category to add $10 spent.</p>
-      <h4>Add a category</h4>
-      <div class="inline-form">
-        <input id="bud-name" placeholder="Category (e.g. Coffee)" />
-        <input id="bud-limit" type="number" placeholder="Monthly $" style="max-width:110px" />
-        <button class="btn" id="bud-add">Add</button>
+    const d = await api("/budget/status");
+    setMode(d.available === false ? "disconnected" : (d.freshness && !d.freshness.current_ok ? "paused" : ""));
+    $(".modal").classList.add("wide");
+
+    if (d.available === false) {
+      body.innerHTML = `<p class="empty">🫙 Budget status unavailable — ${esc(d.reason || "Firefly unreachable")}.</p>`;
+      return;
+    }
+    const fresh = d.freshness && d.freshness.current_ok;
+    const mo = d.month || {};
+    const fmt = (n, dec = 0) => n == null ? "—" : "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
+
+    // ---- paused banner (stale ledger) ----
+    const paused = !fresh
+      ? `<p class="bud-paused">⏸ <b>Budget tracking paused</b> — financial data was last updated ${esc((d.freshness || {}).days_stale ?? "?")} days ago. Totals below are as of the ledger; pace, projections and safe-to-spend are hidden rather than guessed.</p>`
+      : "";
+
+    // ---- setup empty state ----
+    if (!d.configured) {
+      body.innerHTML = `${paused}
+        <p class="empty" style="margin:8px 0 14px">🫙 No budgets configured yet. Give each spending area a monthly limit and map it to your Firefly categories — then this page shows how full each "glass" is, your safe pace, and calm warnings before the money runs out.</p>
+        <button class="btn" id="bud-setup2">Set up budgets</button>`;
+      const b = document.getElementById("bud-setup2");
+      if (b) b.onclick = () => { closeModal(); window.ccOpenSettings && window.ccOpenSettings(); };
+      return;
+    }
+
+    // ---- header stats ----
+    const bills = d.bills || {};
+    const billsRemaining = bills.supported
+      ? bills.items.filter((b) => !b.paid_this_month && b.amount != null).reduce((s, b) => s + b.amount, 0)
+      : null;
+    const stats = `
+      <div class="bstats">
+        <div class="bstat"><div class="l">${esc(mo.label || "This month")}</div><div class="v">${mo.days_left ?? "—"}<span class="u"> days left</span></div></div>
+        <div class="bstat"><div class="l">Income</div><div class="v">${d.income_month ? fmt(d.income_month) : "—"}</div></div>
+        <div class="bstat"><div class="l">Spent</div><div class="v">${fmt((d.totals || {}).spent_month)}</div></div>
+        <div class="bstat"><div class="l">Bills remaining</div><div class="v">${billsRemaining != null ? fmt(billsRemaining) : "—"}</div></div>
+        <div class="bstat safe"><div class="l">Safe to spend<span class="u"> · ${esc(d.safe_scope || "")}</span></div><div class="v">${fmt(d.safe_to_spend)}</div></div>
       </div>`;
-    body.querySelectorAll("#bud-rows .bar-row").forEach((r) => {
-      r.onclick = async () => {
-        await api(`/budget/categories/${r.dataset.id}/spend`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ amount: 10 }),
-        });
-        openApp(app);
-      };
-    });
-    $("#bud-add").onclick = async () => {
-      const name = $("#bud-name").value.trim();
-      const limit = parseFloat($("#bud-limit").value) || 0;
-      if (!name) return;
-      await api("/budget/categories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, limit }),
-      });
-      openApp(app);
+
+    // ---- warnings ----
+    const warns = (d.warnings || []).map((w) =>
+      `<div class="bwarn ${esc(w.state)}"><span class="dot"></span>${esc(w.text)}</div>`).join("");
+
+    // ---- vessels ----
+    const vessel = (b) => {
+      const pct = Math.max(0, Math.min(100, b.pct || 0));
+      const over = b.state === "over";
+      const fillH = over ? 100 : pct;
+      const stateTxt = { healthy: "on track", watch: "pacing high", approaching: "running low", over: "over budget", paused: "paused" }[b.state] || b.state;
+      const pace = (b.state !== "paused" && b.safe_per_day != null)
+        ? `<div class="vpace">${fmt(b.safe_per_day, 2)}/day safe · ${mo.days_left} days</div>` : "";
+      const proj = (b.state === "watch" || b.state === "over") && b.projected != null
+        ? `<div class="vproj">→ ${fmt(b.projected)} projected</div>` : "";
+      return `
+      <div class="vcard st-${esc(b.state)}" data-bid="${esc(b.id)}" title="Click for transactions">
+        <svg class="vessel" viewBox="0 0 84 108" width="84" height="108">
+          <defs><clipPath id="clip-${esc(b.id)}"><rect x="6" y="4" width="72" height="100" rx="14"/></clipPath></defs>
+          <rect x="6" y="4" width="72" height="100" rx="14" class="vglass"/>
+          <g clip-path="url(#clip-${esc(b.id)})">
+            <rect class="vfill" x="6" width="72" y="104" height="0" data-h="${fillH}"/>
+            ${over ? '<rect x="6" y="4" width="72" height="3" class="vover-rim"/>' : ""}
+          </g>
+          <text x="42" y="58" text-anchor="middle" class="vpct">${b.state === "paused" ? "⏸" : pct + "%"}</text>
+        </svg>
+        <div class="vname">${esc(b.name)}</div>
+        <div class="vnum">${fmt(b.spent)} / ${fmt(b.limit)}</div>
+        <div class="vrem">${b.remaining >= 0 ? fmt(b.remaining) + " left" : fmt(-b.remaining) + " over"}</div>
+        ${pace}${proj}
+        <div class="vstate">${esc(stateTxt)}</div>
+        <div class="bdetail" hidden>
+          <div class="sub" style="margin:6px 0 4px">${esc((b.categories || []).join(", ") || "no categories mapped")}</div>
+          ${(b.txns || []).map((t) => `<div class="btxn"><span>${esc(t.date.slice(5))}</span><span class="grow">${esc(t.desc)}</span><span class="mono ${t.amount < 0 ? "down" : "up"}">${t.amount < 0 ? "-" : "+"}$${Math.abs(t.amount).toFixed(2)}</span></div>`).join("") || '<p class="empty">No transactions yet this month.</p>'}
+        </div>
+      </div>`;
     };
+    const vessels = (d.budgets || []).map(vessel).join("");
+
+    // ---- uncategorized + unbudgeted ----
+    const un = d.uncategorized || {};
+    const uncat = un.amount > 0 ? `
+      <div class="bwarn uncat"><span class="dot"></span>
+        <b>Uncategorized: ${fmt(un.amount)}</b> across ${un.count} transaction(s) this month — needs review in Firefly.
+        ${un.low_confidence ? " That's " + un.pct_of_spend + "% of this month's spending, so budget conclusions may be off." : ""}
+      </div>` : "";
+    const ub = d.unbudgeted || {};
+    const ubCats = Object.entries(ub.categories || {}).sort((a, b2) => b2[1] - a[1]).slice(0, 4);
+    const unbudgeted = ubCats.length ? `
+      <p class="empty" style="margin-top:10px">Not in any budget: ${ubCats.map(([k, v]) => `${esc(k)} ${fmt(v)}`).join(" · ")}</p>` : "";
+
+    // ---- bills ----
+    const billRows = bills.supported ? bills.items.slice(0, 8).map((b) => `
+      <div class="btxn"><span class="grow"><b>${esc(b.name)}</b></span>
+        <span class="sub">${b.paid_this_month ? "paid ✓" : (b.next_due ? "due " + esc(b.next_due.slice(5)) : "")}</span>
+        <span class="mono">${b.amount != null ? fmt(b.amount) : "—"}</span></div>`).join("") : "";
+
+    body.innerHTML = `
+      ${paused}${stats}
+      ${warns ? `<div class="bwarns">${warns}</div>` : (fresh && (d.budgets || []).length ? '<p class="empty" style="margin:4px 0 10px">✓ All budgets compatible with the time remaining.</p>' : "")}
+      <div class="vgrid">${vessels}</div>
+      ${uncat}${unbudgeted}
+      ${billRows ? `<h4>Fixed bills (from Firefly)</h4><div>${billRows}</div>` : ""}
+      <div class="hx-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" id="bud-edit">Edit budgets</button>
+      </div>`;
+
+    body.querySelectorAll(".vcard").forEach((el) => {
+      el.onclick = () => { const det = el.querySelector(".bdetail"); det.hidden = !det.hidden; };
+    });
+    const be = document.getElementById("bud-edit");
+    if (be) be.onclick = () => { closeModal(); window.ccOpenSettings && window.ccOpenSettings(); };
+    // fill animation: from empty to target on next frame
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      body.querySelectorAll(".vfill").forEach((r) => {
+        const h = Number(r.dataset.h);
+        r.setAttribute("y", 104 - h);
+        r.setAttribute("height", h);
+      });
+    }));
   },
 
   async tasks(app, body) {

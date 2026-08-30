@@ -90,6 +90,10 @@ DEFAULT_SETTINGS = {
     "important_senders": [],     # emails/domains the attention feed prioritises
     "market": {"holdings": [], "watchlist": [], "move_threshold_pct": 3.0},
     "finance": {"large_txn": 200, "low_balance": 100},
+    # Monthly budgets over Firefly categories. Each: {id, name, limit,
+    # categories: [firefly category names]}. The budget service computes
+    # spend/pace/warnings from these; nothing else is stored.
+    "budgets": [],
 }
 
 NUTRITION_RATIO = {"poor": 0.34, "okay": 0.67, "good": 1.0}

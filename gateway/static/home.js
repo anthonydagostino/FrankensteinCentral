@@ -57,7 +57,7 @@
     renderSince(d);
     renderDoNext(d.do_next, d);
     renderInbox(d.inbox);
-    renderMoney(d.money);
+    renderMoney(d.money, d.budget);
     renderPortfolio(d.portfolio);
     renderAttention(d.attention);
     renderToday(d);
@@ -210,42 +210,49 @@
     });
   }
 
-  function renderMoney(m) {
-    m = m || {};
+  function renderMoney(m, bud) {
+    m = m || {}; bud = bud || {};
     if (!m.connected) {
       q("#cc-money").innerHTML = `<h3>Money</h3><p class="att-empty">Firefly not connected — set FIREFLY_URL/FIREFLY_TOKEN to see live spending.</p>`;
       return;
     }
-    const pace = m.pace_pct;
-    const paceTxt = pace == null ? "" :
-      `<span class="${pace > 0 ? "down" : "up"}" style="font-size:12px">${pace > 0 ? "▲" : "▼"} ${Math.abs(pace)}% vs last mo</span>`;
-    const cats = (m.top_categories || []);
-    const max = Math.max(1, ...cats.map((c) => c.amount || 0));
-    const catRows = cats.map((c) =>
-      `<div class="cat"><span>${esch(c.name)}</span><div class="track"><div class="fill" style="width:${Math.round((c.amount / max) * 100)}%"></div></div><span class="mono">${money(c.amount)}</span></div>`).join("");
-    const recent = (m.recent || []).slice(0, 4).map((t) =>
-      `<div class="pos"><span>${esch(t.desc || t.description || "—")}</span><span class="mono down">-${money(Math.abs(Number(t.amount || 0)))}</span></div>`).join("");
-    const bills = (m.upcoming_bills || []).map((b) =>
-      `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
-    const obs = (m.observations || []).map((o) => `<li>${esch(o)}</li>`).join("");
     const staleLine = m.stale_days
       ? `<p class="mny-stale">📅 Financial data last updated <b>${m.stale_days} days ago</b> — current-period figures unavailable</p>` : "";
+
+    // The single most important budget signal — never the whole database.
+    let budLine = "";
+    if (bud.available && bud.configured) {
+      if (!bud.fresh) {
+        budLine = `<p class="bud-line paused">🫙 Budget tracking paused — transaction data is stale.</p>`;
+      } else if (bud.worst) {
+        const w = bud.worst;
+        budLine = `<p class="bud-line ${esch(w.state)}">⚠ ${esch(w.text)}</p>`;
+      } else if (bud.on_track) {
+        budLine = `<p class="bud-line ok">✓ All monthly budgets are on track.</p>`;
+      }
+    } else if (bud.available && !bud.configured) {
+      budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
+    }
+    const safe = (bud.fresh && bud.safe_to_spend != null)
+      ? `<div class="mny-stat"><div class="v mono up">${money(bud.safe_to_spend)}</div><div class="l">Safe to spend<br><span style="font-size:10px">${esch(bud.safe_scope || "")}</span></div></div>` : "";
+    const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
+      `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
+    const obs = (m.observations || []).slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");
     q("#cc-money").innerHTML = `
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
         <div class="mny-stat"><div class="v">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
         <div class="mny-stat"><div class="v mono">${m.week != null ? money(m.week) : "—"}</div><div class="l">This week</div></div>
-        <div class="mny-stat"><div class="v mono">${m.month != null ? money(m.month) : "—"} ${paceTxt}</div><div class="l">This month</div></div>
+        ${safe}
       </div>
-      <div class="mny-hero" style="margin-bottom:8px">
-        <div class="mny-stat"><div class="v" style="font-size:16px">${m.net_worth || "—"}</div><div class="l">Net worth</div></div>
-        <div class="mny-stat"><div class="v mono" style="font-size:16px">${m.left_to_spend || "—"}</div><div class="l">Left this month</div></div>
-      </div>
+      ${budLine}
+      <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
-      ${catRows ? `<div class="cats">${catRows}</div>` : ""}
-      ${recent ? `<h3 style="margin-top:14px">Recent</h3>${recent}` : ""}
-      ${bills ? `<h3 style="margin-top:14px">Upcoming bills</h3>${bills}` : ""}`;
+      ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}`;
+    q("#money-budget").onclick = () => openAppKey("budget");
+    const setup = q("#bud-setup");
+    if (setup) setup.onclick = () => openSettings();
   }
 
   function renderPortfolio(p) {
@@ -567,6 +574,13 @@
           <input id="s-watch" value="${esch((((s.market || {}).watchlist) || []).join(", "))}"></div>
         <div class="set-field"><label>Alert on move ≥ (%)</label><input id="s-mv" type="number" value="${(s.market || {}).move_threshold_pct ?? 3}"></div>
       </div></div>
+      <div class="set-group"><h4>Monthly budgets</h4>
+        <p class="set-hint">Each budget maps to one or more Firefly category names. Spending in those
+        categories fills the budget's vessel on the Budget page.</p>
+        <div id="s-budgets"></div>
+        <button class="hx-btn" id="s-budget-add" type="button">+ Add budget</button>
+        <p class="set-hint" id="s-cat-hint"></p>
+      </div>
       <div class="set-group"><h4>Important senders (comma-separated emails/domains)</h4><div class="set-field">
         <input id="s-imp" value="${esch((s.important_senders || []).join(", "))}"></div></div>
       <div class="set-group"><h4>Daily-score weights (0 disables a component)</h4><div class="set-grid">
@@ -578,6 +592,32 @@
         <div class="set-field"><label>Sleep</label><input id="w-sleep" type="number" value="${w.sleep ?? 0}"></div>
       </div></div>`;
     q("#settings").hidden = false;
+
+    // budgets editor: one row per budget (name / $limit / mapped categories)
+    const budRow = (b) => {
+      const div = document.createElement("div");
+      div.className = "budget-row";
+      div.innerHTML = `
+        <input class="b-name" placeholder="Name (e.g. Dining)" value="${esch(b.name || "")}">
+        <input class="b-limit" type="number" min="1" step="1" placeholder="$/mo" value="${b.limit ?? ""}">
+        <input class="b-cats" placeholder="Firefly categories, comma-separated" value="${esch((b.categories || []).join(", "))}">
+        <button class="b-x" type="button" title="remove">✕</button>`;
+      div.querySelector(".b-x").onclick = () => div.remove();
+      return div;
+    };
+    const wrap = q("#s-budgets");
+    (s.budgets || []).forEach((b) => wrap.appendChild(budRow(b)));
+    if (!(s.budgets || []).length) wrap.appendChild(budRow({}));
+    q("#s-budget-add").onclick = () => wrap.appendChild(budRow({}));
+
+    // category hints from live budget status (what Firefly actually has)
+    fetch("/api/budget/status").then((r) => r.json()).then((st) => {
+      const names = new Set();
+      (st.budgets || []).forEach((b) => (b.categories || []).forEach((c) => names.add(c)));
+      Object.keys((st.unbudgeted || {}).categories || {}).forEach((c) => names.add(c));
+      if (names.size) q("#s-cat-hint").textContent =
+        "Categories seen in Firefly this month: " + [...names].slice(0, 12).join(" · ");
+    }).catch(() => {});
   }
   // Tolerant holdings parser — token-stream based, so ANY separator mix works:
   // "MET, 1.63" · "NVDA 10 150" · "aapl:2.5" · "VOO: 1.25 : 380" · all on one
@@ -630,6 +670,21 @@
       return;  // don't silently drop the user's input — let them fix it
     }
 
+    // budget rows: a row with any content must have a name and a limit > 0
+    const budgets = [];
+    for (const row of q("#settings-body").querySelectorAll(".budget-row")) {
+      const name = row.querySelector(".b-name").value.trim();
+      const limit = Number(row.querySelector(".b-limit").value);
+      const cats = row.querySelector(".b-cats").value.split(",").map((c) => c.trim()).filter(Boolean);
+      if (!name && !limit && !cats.length) continue;  // untouched blank row
+      if (!name || !(limit > 0)) {
+        status.textContent = `⚠ Budget row "${name || "(unnamed)"}" needs a name and a monthly limit above 0.`;
+        status.style.color = "var(--down)";
+        return;
+      }
+      budgets.push({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, limit, categories: cats });
+    }
+
     const patch = {
       study_daily_min: num("#s-sd", 120), study_weekly_min: num("#s-sw", 600),
       gym_weekly: num("#s-gw", 4), water_goal_oz: num("#s-wg", 80),
@@ -637,6 +692,7 @@
       exam_date: q("#s-ed").value.trim() || null,
       exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
       important_senders: list("#s-imp"),
+      budgets: budgets,
       market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
       score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
     };
@@ -654,9 +710,12 @@
     }
     // Round-trip confirmation: report what the SERVER now holds, not what we sent.
     const n = ((saved.market || {}).holdings || []).length;
-    status.textContent = `Saved ✓ — ${n} holding${n === 1 ? "" : "s"} stored`;
+    const nb = (saved.budgets || []).length;
+    status.textContent = `Saved ✓ — ${n} holding${n === 1 ? "" : "s"}, ${nb} budget${nb === 1 ? "" : "s"} stored`;
+    fetch("/api/budget/status?fresh=1").catch(() => {});  // recompute budgets now
     setTimeout(() => { q("#settings").hidden = true; status.textContent = ""; refresh(true); }, 900);
   }
+  window.ccOpenSettings = openSettings;  // used by the Budget deep view's setup button
   q("#cc-settings-btn").onclick = openSettings;
   q("#settings-close").onclick = () => (q("#settings").hidden = true);
   q("#settings-save").onclick = saveSettings;

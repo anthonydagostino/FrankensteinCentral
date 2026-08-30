@@ -1,118 +1,105 @@
-import os
-from datetime import datetime
+"""Budget service — the time-aware budgeting layer over Firefly III.
 
+Firefly stays the financial system of record; this service turns its
+transaction history into forward-looking guidance: per-budget spend vs limit,
+pace, safe-per-day, month-end projection, calm rule-based warnings, and a
+clearly-scoped "safe to spend" number. Stateless — budget definitions live in
+core settings (budgets: [{id, name, limit, categories}]), transactions come
+from the firefly service each request (with a short cache).
+
+All math lives in engine.py (pure + unit-tested); formulas and thresholds are
+documented in docs/BUDGETS.md. Stale ledgers pause current-period guidance
+rather than pretending $0 = "on track".
+"""
+import os
+import time
+
+import httpx
 from fastapi import FastAPI
-from psycopg.rows import dict_row, tuple_row
-from psycopg_pool import AsyncConnectionPool
-from pydantic import BaseModel
+
+from .engine import budget_status
 
 app = FastAPI(title="Budget Service")
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
+FIREFLY_SVC_URL = os.environ.get("FIREFLY_SVC_URL", "http://firefly:8000").rstrip("/")
+CORE_URL = os.environ.get("CORE_URL", "http://core:8000").rstrip("/")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS budget (
-    id           SERIAL PRIMARY KEY,
-    name         TEXT NOT NULL,
-    limit_amount NUMERIC NOT NULL DEFAULT 0,
-    spent        NUMERIC NOT NULL DEFAULT 0,
-    created_at   TEXT NOT NULL
-);
-"""
-
-class Category(BaseModel):
-    name: str
-    limit: float = 0
+_CACHE: dict = {"at": 0.0, "data": None}
+_TTL = 60  # seconds; /status?fresh=1 bypasses
 
 
-class Spend(BaseModel):
-    amount: float = 0
+async def _get(client, url, timeout=25):
+    try:
+        r = await client.get(url, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
+        return None
 
 
-@app.on_event("startup")
-async def startup():
-    await pool.open(wait=True, timeout=30)
-    async with pool.connection() as conn:
-        await conn.execute(SCHEMA)
+async def _build(fresh: bool = False) -> dict:
+    now = time.time()
+    if not fresh and _CACHE["data"] and now - _CACHE["at"] < _TTL:
+        return _CACHE["data"]
 
+    async with httpx.AsyncClient() as client:
+        settings = await _get(client, f"{CORE_URL}/settings", timeout=8)
+        month = await _get(client, f"{FIREFLY_SVC_URL}/month", timeout=40)
+        bills = await _get(client, f"{FIREFLY_SVC_URL}/bills", timeout=20)
 
-@app.on_event("shutdown")
-async def shutdown():
-    await pool.close()
+    budgets_cfg = (settings or {}).get("budgets") or []
 
+    if not month or not month.get("connected"):
+        data = {
+            "available": False,
+            "connected": bool(month and month.get("connected")),
+            "configured": bool(budgets_cfg),
+            "reason": "firefly not connected" if month else "firefly unreachable",
+            "budgets": [], "warnings": [], "safe_to_spend": None,
+        }
+        _CACHE.update(at=now, data=data)
+        return data
 
-async def _categories() -> list[dict]:
-    async with pool.connection() as conn:
-        conn.row_factory = dict_row
-        cur = await conn.execute(
-            "SELECT id, name, limit_amount, spent FROM budget ORDER BY id"
-        )
-        return await cur.fetchall()
-
-
-def _summarize(cats: list[dict]) -> dict:
-    total_budget = round(sum(float(c["limit_amount"]) for c in cats), 2)
-    total_spent = round(sum(float(c["spent"]) for c in cats), 2)
-    over = [
-        c["name"] for c in cats if float(c["spent"]) > float(c["limit_amount"])
-    ]
-    pct = round(100 * total_spent / total_budget) if total_budget else 0
-    return {
-        "total_budget": total_budget,
-        "total_spent": total_spent,
-        "remaining": round(total_budget - total_spent, 2),
-        "percent_used": pct,
-        "over_budget": over,
-    }
+    status = budget_status(
+        budgets_cfg=budgets_cfg,
+        month=month.get("month", {}),
+        categories=month.get("categories", {}),
+        txns=month.get("transactions", []),
+        days_stale=month.get("days_stale"),
+    )
+    status.update({
+        "available": True,
+        "connected": True,
+        "configured": bool(budgets_cfg),
+        "income_month": month.get("income_month"),
+        "ledger_latest_txn": month.get("ledger_latest_txn"),
+        "bills": bills if (bills and bills.get("connected")) else
+                 {"connected": False, "supported": False, "items": []},
+    })
+    _CACHE.update(at=now, data=status)
+    return status
 
 
 @app.get("/health")
 async def health():
-    async with pool.connection() as conn:
-        conn.row_factory = tuple_row
-        cur = await conn.execute("SELECT COUNT(*) FROM budget")
-        (count,) = await cur.fetchone()
-    return {"service": "budget", "categories": count}
+    return {"service": "budget", "ok": True, "mode": "firefly-driven"}
 
 
-@app.get("/categories")
-async def get_categories():
-    cats = await _categories()
-    return {"categories": cats, "count": len(cats)}
-
-
-@app.post("/categories")
-async def add_category(cat: Category):
-    async with pool.connection() as conn:
-        conn.row_factory = tuple_row
-        cur = await conn.execute(
-            "INSERT INTO budget (name, limit_amount, created_at) VALUES (%s, %s, %s) "
-            "RETURNING id",
-            (cat.name, cat.limit, datetime.utcnow().isoformat()),
-        )
-        (new_id,) = await cur.fetchone()
-    return {"added": {"id": new_id, "name": cat.name, "limit": cat.limit, "spent": 0}}
-
-
-@app.post("/categories/{cat_id}/spend")
-async def add_spend(cat_id: int, spend: Spend):
-    async with pool.connection() as conn:
-        conn.row_factory = dict_row
-        cur = await conn.execute(
-            "UPDATE budget SET spent = spent + %s WHERE id = %s "
-            "RETURNING id, name, limit_amount, spent",
-            (spend.amount, cat_id),
-        )
-        row = await cur.fetchone()
-    return {"category": row}
+@app.get("/status")
+async def status(fresh: int = 0):
+    return await _build(fresh=bool(fresh))
 
 
 @app.get("/summary")
 async def summary():
-    return _summarize(await _categories())
+    """Compat shim for older consumers (legacy lounge overview/briefing)."""
+    s = await _build()
+    over = [b["name"] for b in s.get("budgets", []) if b.get("state") == "over"]
+    return {"remaining": s.get("safe_to_spend") or 0,
+            "over_budget": over, "count": len(s.get("budgets", []))}
 
 
 @app.get("/")
 async def root():
-    return {"app": "Budget", "endpoints": ["/categories", "/summary", "/health"]}
+    return {"app": "Budget", "endpoints": ["/status", "/summary", "/health"],
+            "note": "time-aware budgets over Firefly; config lives in core settings"}
