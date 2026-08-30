@@ -410,8 +410,12 @@ const RENDERERS = {
 
     // ---- freshness: paused banner (stale ingestion) or active sync line ----
     const fr = d.freshness || {};
+    const importBtn = d.importer_url
+      ? ` <a class="btn bud-import" href="${esc(d.importer_url)}" target="_blank" rel="noopener">Import transactions ↗</a>`
+      : "";
     const paused = !fresh
-      ? `<p class="bud-paused">⏸ <b>Budget tracking paused</b> — ${esc(fr.paused_reason || "ledger freshness unknown")}. Totals below are as of the ledger; pace, projections and budget room are hidden rather than guessed.</p>`
+      ? `<div class="bud-paused"><p style="margin:0"><b>⏸ Financial data isn't current</b> — ${esc(fr.paused_reason || "ledger freshness unknown")}${d.ingest_latest ? ` (last import evidence: ${esc(d.ingest_latest)})` : ""}.</p>
+         <p style="margin:6px 0 0">Budget guidance is paused so it can't mislead you — totals below are as of the ledger. To make it current, import your latest bank transactions.${importBtn}</p></div>`
       : "";
     const agoTxt = (n) => n === 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`;
     const syncLine = fresh && fr.ingest_days != null

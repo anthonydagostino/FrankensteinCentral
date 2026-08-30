@@ -136,8 +136,8 @@ if st == 200 and fh:
                 if ing is not None:
                     verdict = ("SYNCED" if ing < 3 else f"NOT IMPORTED for {ing}d")
                     add("PASS" if ing < 3 else "WARN", "firefly ingest",
-                        f"{verdict}: data last entered Firefly {ingl} "
-                        f"(txn created/updated + account updates)")
+                        f"{verdict}: newest txn created_at {ingl} "
+                        f"(created_at only — edits/account metadata don't count)")
                 else:
                     add("WARN", "firefly ingest", "no ingestion signal (OLD build?) — "
                         "budget freshness falls back to activity")

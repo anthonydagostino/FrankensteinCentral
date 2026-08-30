@@ -223,7 +223,10 @@
     let budLine = "";
     if (bud.available && bud.configured) {
       if (!bud.fresh) {
-        budLine = `<p class="bud-line paused">🫙 Budget tracking paused — ${esch(bud.paused_reason || "ledger freshness unknown")}.</p>`;
+        const imp = bud.importer_url
+          ? ` <a href="${esch(bud.importer_url)}" target="_blank" rel="noopener" style="color:var(--accent-2)">Import transactions ↗</a>`
+          : "";
+        budLine = `<p class="bud-line paused">🫙 Budget guidance paused — ${esch(bud.paused_reason || "ledger freshness unknown")}.${imp}</p>`;
       } else if (bud.worst) {
         const w = bud.worst;
         budLine = `<p class="bud-line ${esch(w.state)}">⚠ ${esch(w.text)}</p>`;

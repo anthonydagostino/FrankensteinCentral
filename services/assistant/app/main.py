@@ -709,6 +709,7 @@ def _budget_brief(status) -> dict:
         "configured": status.get("configured", False),
         "fresh": fresh,
         "paused_reason": freshness.get("paused_reason"),
+        "importer_url": status.get("importer_url"),
         "budget_room": status.get("budget_room"),
         "budget_room_scope": status.get("budget_room_scope"),
         "worst": warns[0] if warns else None,

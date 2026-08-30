@@ -68,10 +68,18 @@ plan"), never guilt.
 
 Two distinct signals, never conflated:
 
-- **`ingest_days`** — days since data last **entered** Firefly. Derived from
-  transaction `created_at`/`updated_at` timestamps plus asset-account
-  `updated_at` (server-side timestamps: querying Firefly never refreshes
-  them). This is *synchronization recency* — did an import/sync happen?
+- **`ingest_days`** — days since transaction data last **entered** Firefly.
+  Evidence is transaction **`created_at` only**: Firefly stamps it when the
+  record is written and never changes it, so importing an old-dated bank
+  transaction today yields `created_at = today, date = 20 days ago` —
+  precisely "imported today; activity 20 days ago". Querying Firefly never
+  refreshes it. Two look-alike timestamps are **deliberately rejected**:
+  transaction `updated_at` (bumped by ordinary edits — recategorizing an
+  old transaction is not an import and must not revive stale guidance) and
+  account `updated_at` (bumped by metadata changes with no financial
+  ingestion). Firefly's API can't sort or filter by `created_at`, so the
+  signal is gathered from the month's transactions plus a newest-dated
+  ledger-wide probe — the strongest provenance the API exposes.
 - **`activity_days`** — days since the newest transaction **date** of any
   type. This is *spending recency* — supporting info only, never a pause
   trigger on its own when an ingestion signal exists.
@@ -88,6 +96,12 @@ Rules (engine constants `INGEST_MAX_DAYS=3`, `ACTIVITY_FALLBACK_MAX=2`):
 - No ingestion signal at all (old firefly build) → conservative fallback:
   active only if `activity_days < 2`, and the payload says
   `signal: "activity_fallback"` so the degradation is visible.
+
+The paused state answers three questions rather than dead-ending: what's
+wrong (financial data isn't current), why it matters (guidance is paused so
+it can't mislead), and what to do (an **Import transactions ↗** action
+deep-linking to the existing Firefly Data Importer — the importer is never
+recreated or automated here).
 
 ## Budget Room
 

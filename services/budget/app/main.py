@@ -74,6 +74,8 @@ async def _build(fresh: bool = False) -> dict:
         "configured": bool(budgets_cfg),
         "income_month": month.get("income_month"),
         "ledger_latest_txn": month.get("ledger_latest_txn"),
+        "ingest_latest": month.get("ingest_latest"),
+        "importer_url": month.get("importer_url"),
         "bills": bills if (bills and bills.get("connected")) else
                  {"connected": False, "supported": False, "items": []},
     })

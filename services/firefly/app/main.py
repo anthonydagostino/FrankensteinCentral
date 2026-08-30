@@ -184,10 +184,13 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
             break
         for g in data:
             gat = g.get("attributes", {})
-            # created_at/updated_at are Firefly-server ingestion timestamps —
-            # when the record entered/changed in the ledger, independent of the
-            # transaction's own date. This is the honest "last import" signal.
-            ingested = (gat.get("updated_at") or gat.get("created_at") or "")[:10]
+            # created_at is the Firefly-server timestamp of when this record
+            # ENTERED the ledger (a CSV import of an old-dated bank transaction
+            # still creates the record today) — the honest "last import" signal.
+            # updated_at is deliberately NOT used: editing a category or
+            # description on an old transaction bumps it, and an edit is not
+            # an import — it must never revive stale budget guidance.
+            ingested = (gat.get("created_at") or "")[:10]
             for t in gat.get("transactions", []):
                 try:
                     amt = abs(float(t.get("amount") or 0))
@@ -209,25 +212,37 @@ async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
 
 
 async def _ingest_latest(client, txns: list[dict]) -> date | None:
-    """When data last ENTERED the ledger (synchronization recency) — distinct
-    from the newest transaction date (spending recency). Sources: the
-    created/updated timestamps on fetched transactions, plus asset accounts'
-    updated_at (bumped whenever an import touches balances, so imports of
-    old-dated transactions are caught too). Reading Firefly never changes
-    these, so a mere query can't fake freshness."""
+    """When transaction data last ENTERED the ledger (synchronization
+    recency) — distinct from the newest transaction date (spending recency).
+
+    Evidence: transaction created_at ONLY. Firefly sets created_at when the
+    record is written (so importing an old-dated bank transaction today gives
+    created_at=today, date=20 days ago — exactly "imported today, activity 20
+    days ago"), and never changes it afterward. Reading Firefly can't touch
+    it, so a query can't fake freshness. We deliberately reject the two
+    look-alike signals: transaction updated_at (bumped by ordinary edits —
+    recategorizing an old transaction is not an import) and account
+    updated_at (bumped by metadata changes with no financial ingestion).
+
+    Sources: created_at on the date-windowed transactions passed in, plus a
+    probe of the newest-dated transactions ledger-wide — catches an import
+    whose transactions are all dated outside the queried window. Firefly's
+    API can't sort by created_at, so this is the strongest evidence it
+    exposes; if none exists the caller falls back to conservative
+    activity-based labeling rather than guessing."""
     best = None
     for t in txns:
         i = t.get("ingested")
         if i and (best is None or i > best):
             best = i
     try:
-        r = await client.get(f"{FIREFLY_URL}/api/v1/accounts",
-                             params={"type": "asset"}, headers=_headers(), timeout=15)
+        r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
+                             params={"limit": 50}, headers=_headers(), timeout=15)
         r.raise_for_status()
-        for a in r.json().get("data", []):
-            u = (a.get("attributes", {}).get("updated_at") or "")[:10]
-            if u and (best is None or u > best):
-                best = u
+        for g in r.json().get("data", []):
+            c = (g.get("attributes", {}).get("created_at") or "")[:10]
+            if c and (best is None or c > best):
+                best = c
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -395,6 +410,7 @@ async def _month_payload() -> dict:
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
         "ingest_days": ingest_days,
+        "importer_url": FIREFLY_IMPORTER_URL or None,
         "categories": categories,
         "income_month": round(income, 2),
         "transactions": txns[:400],
