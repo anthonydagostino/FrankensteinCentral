@@ -217,13 +217,13 @@
       return;
     }
     const staleLine = m.stale_days
-      ? `<p class="mny-stale">📅 Financial data last updated <b>${m.stale_days} days ago</b> — current-period figures unavailable</p>` : "";
+      ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — current-period figures unavailable</p>` : "";
 
     // The single most important budget signal — never the whole database.
     let budLine = "";
     if (bud.available && bud.configured) {
       if (!bud.fresh) {
-        budLine = `<p class="bud-line paused">🫙 Budget tracking paused — transaction data is stale.</p>`;
+        budLine = `<p class="bud-line paused">🫙 Budget tracking paused — ${esch(bud.paused_reason || "ledger freshness unknown")}.</p>`;
       } else if (bud.worst) {
         const w = bud.worst;
         budLine = `<p class="bud-line ${esch(w.state)}">⚠ ${esch(w.text)}</p>`;
@@ -233,8 +233,8 @@
     } else if (bud.available && !bud.configured) {
       budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
     }
-    const safe = (bud.fresh && bud.safe_to_spend != null)
-      ? `<div class="mny-stat"><div class="v mono up">${money(bud.safe_to_spend)}</div><div class="l">Safe to spend<br><span style="font-size:10px">${esch(bud.safe_scope || "")}</span></div></div>` : "";
+    const safe = (bud.fresh && bud.budget_room != null)
+      ? `<div class="mny-stat"><div class="v mono up">${money(bud.budget_room)}</div><div class="l">Budget room<br><span style="font-size:10px">remaining ${esch(bud.budget_room_scope || "across active budgets")}</span></div></div>` : "";
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
       `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
     const obs = (m.observations || []).slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");

@@ -5,16 +5,25 @@ All formulas are documented in docs/BUDGETS.md. Inputs:
   month       : {"days_total": D, "days_elapsed": d, "days_left": r, "label": str}
   categories  : {name: {"spent": w, "refunds": c, "net": w-c, "count": n}}
   txns        : [{date, desc, amount(+credit/-spend), category}]
-  days_stale  : int|None  (from the ledger's newest ANY-type transaction)
+  freshness   : {"ingest_days": int|None, "activity_days": int|None}
+                ingest_days   = days since data last ENTERED Firefly
+                                (transaction created/updated timestamps +
+                                account updated_at) — synchronization recency
+                activity_days = days since the newest transaction DATE —
+                                spending recency (supporting info only)
 
 Freshness: current-period guidance (pace, projection, safe/day, warnings,
-safe-to-spend) is only computed when days_stale < FRESH_MAX_DAYS. Totals that
-are true "as of the ledger" (spent, limit, remaining) always compute. Zero and
-unknown stay distinct: suppressed values are None, never 0.
+budget room) is only computed when the INGESTION signal is fresh
+(ingest_days < INGEST_MAX_DAYS). A user who synced today but simply hasn't
+spent in 3 days stays ACTIVE. If no ingestion signal exists at all, we fall
+back conservatively to activity (< ACTIVITY_FALLBACK_MAX days) and say so.
+Totals that are true "as of the ledger" always compute. Zero and unknown stay
+distinct: suppressed values are None, never 0.
 """
 from __future__ import annotations
 
-FRESH_MAX_DAYS = 2          # ledger newer than this => current guidance allowed
+INGEST_MAX_DAYS = 3         # data imported within this many days => guidance allowed
+ACTIVITY_FALLBACK_MAX = 2   # no ingestion signal: fall back to newest-txn age
 EARLY_MONTH_DAYS = 3        # before this many elapsed days, pace is too noisy for WATCH
 APPROACH_REMAINING_PCT = 0.10   # remaining <= 10% of limit => approaching
 APPROACH_PACE_FACTOR = 0.5      # safe/day < 50% of the budget's implied daily => approaching
@@ -27,11 +36,27 @@ def _norm(name: str) -> str:
 
 
 def budget_status(budgets_cfg: list, month: dict, categories: dict,
-                  txns: list, days_stale) -> dict:
+                  txns: list, freshness) -> dict:
     D = max(1, int(month.get("days_total") or 1))
     d = min(D, max(1, int(month.get("days_elapsed") or 1)))
     r = max(0, int(month.get("days_left") if month.get("days_left") is not None else D - d))
-    fresh = days_stale is not None and days_stale < FRESH_MAX_DAYS
+
+    fr = freshness if isinstance(freshness, dict) else {"ingest_days": None,
+                                                        "activity_days": freshness}
+    ingest_days = fr.get("ingest_days")
+    activity_days = fr.get("activity_days")
+    if ingest_days is not None:
+        fresh = ingest_days < INGEST_MAX_DAYS
+        signal = "ingest"
+        paused_reason = (None if fresh else
+                         f"financial data hasn't been imported for {ingest_days} days")
+    else:
+        fresh = activity_days is not None and activity_days < ACTIVITY_FALLBACK_MAX
+        signal = "activity_fallback"
+        paused_reason = (None if fresh else
+                         ("no ingestion signal and the newest transaction is "
+                          f"{activity_days} days old" if activity_days is not None
+                          else "ledger freshness unknown"))
 
     cat_lookup = {_norm(k): (k, v) for k, v in (categories or {}).items()}
     txns = txns or []
@@ -133,11 +158,17 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
     return {
         "month": {"label": month.get("label"), "days_total": D,
                   "days_elapsed": d, "days_left": r},
-        "freshness": {"days_stale": days_stale, "current_ok": fresh},
+        "freshness": {"ingest_days": ingest_days, "activity_days": activity_days,
+                      "signal": signal, "current_ok": fresh,
+                      "paused_reason": paused_reason},
         "budgets": budgets_out,
         "warnings": warnings,
-        "safe_to_spend": round(safe_total, 2) if (fresh and budgets_out) else None,
-        "safe_scope": "across active budgets" if budgets_out else None,
+        # "Budget Room": remaining capacity across configured budgets. The
+        # label SAFE TO SPEND is reserved for a future engine that also
+        # accounts for bills, obligations and liquidity — this number is one
+        # future component of it, and is always scoped in the UI.
+        "budget_room": round(safe_total, 2) if (fresh and budgets_out) else None,
+        "budget_room_scope": "across active budgets" if budgets_out else None,
         "unbudgeted": {"total": round(sum(unbudgeted.values()), 2), "categories": unbudgeted},
         "uncategorized": {
             "amount": uncat_net,

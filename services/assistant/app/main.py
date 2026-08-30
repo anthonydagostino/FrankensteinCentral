@@ -638,7 +638,11 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
     # Zero vs unknown: a ledger that hasn't been updated can't tell you what
     # you spent today. Suppress current-period figures instead of implying $0.
-    days_stale = sp.get("days_stale")
+    # Suppression keys off INGESTION recency (when data last entered the
+    # ledger), not spending recency — a synced ledger with a quiet few days
+    # legitimately shows $0 today. Falls back to activity if no ingest signal.
+    ingest_days = sp.get("ingest_days")
+    days_stale = ingest_days if ingest_days is not None else sp.get("days_stale")
     stale = days_stale is not None and days_stale >= 2
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
@@ -648,8 +652,8 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
     obs = []
     if stale:
-        obs.append(f"Ledger last updated {days_stale} days ago — today's spending is "
-                   "unknown, not zero. Import newer transactions in Firefly.")
+        obs.append(f"Financial data hasn't been imported for {days_stale} days — "
+                   "today's spending is unknown, not zero.")
     pace = sp.get("pace_pct")
     baseline = sp.get("baseline")
     if pace is not None:
@@ -692,19 +696,21 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
 
 def _budget_brief(status) -> dict:
-    """The homepage's budget signal: safe-to-spend, the single worst warning,
+    """The homepage's budget signal: budget room, the single worst warning,
     and whether everything is on track — never the whole budget database."""
     if not status or not status.get("available"):
         return {"available": False, "configured": bool(status and status.get("configured"))}
     warns = status.get("warnings", [])
     counts = status.get("state_counts", {})
-    fresh = (status.get("freshness") or {}).get("current_ok", False)
+    freshness = status.get("freshness") or {}
+    fresh = freshness.get("current_ok", False)
     return {
         "available": True,
         "configured": status.get("configured", False),
         "fresh": fresh,
-        "safe_to_spend": status.get("safe_to_spend"),
-        "safe_scope": status.get("safe_scope"),
+        "paused_reason": freshness.get("paused_reason"),
+        "budget_room": status.get("budget_room"),
+        "budget_room_scope": status.get("budget_room_scope"),
         "worst": warns[0] if warns else None,
         "on_track": fresh and not warns and bool(status.get("budgets")),
         "budget_count": len(status.get("budgets", [])),

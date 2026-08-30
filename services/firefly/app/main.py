@@ -183,7 +183,12 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
         if not data:
             break
         for g in data:
-            for t in g.get("attributes", {}).get("transactions", []):
+            gat = g.get("attributes", {})
+            # created_at/updated_at are Firefly-server ingestion timestamps —
+            # when the record entered/changed in the ledger, independent of the
+            # transaction's own date. This is the honest "last import" signal.
+            ingested = (gat.get("updated_at") or gat.get("created_at") or "")[:10]
+            for t in gat.get("transactions", []):
                 try:
                     amt = abs(float(t.get("amount") or 0))
                 except (TypeError, ValueError):
@@ -191,6 +196,7 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
                 out.append({"desc": t.get("description", ""), "amount": round(amt, 2),
                             "date": (t.get("date") or "")[:10],
                             "type": t.get("type", txn_type),
+                            "ingested": ingested,
                             "category": t.get("category_name") or "Uncategorized"})
         if len(data) < 50:
             break
@@ -200,6 +206,34 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
 
 async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
     return await _fetch_txns(client, "withdrawal", start, end)
+
+
+async def _ingest_latest(client, txns: list[dict]) -> date | None:
+    """When data last ENTERED the ledger (synchronization recency) — distinct
+    from the newest transaction date (spending recency). Sources: the
+    created/updated timestamps on fetched transactions, plus asset accounts'
+    updated_at (bumped whenever an import touches balances, so imports of
+    old-dated transactions are caught too). Reading Firefly never changes
+    these, so a mere query can't fake freshness."""
+    best = None
+    for t in txns:
+        i = t.get("ingested")
+        if i and (best is None or i > best):
+            best = i
+    try:
+        r = await client.get(f"{FIREFLY_URL}/api/v1/accounts",
+                             params={"type": "asset"}, headers=_headers(), timeout=15)
+        r.raise_for_status()
+        for a in r.json().get("data", []):
+            u = (a.get("attributes", {}).get("updated_at") or "")[:10]
+            if u and (best is None or u > best):
+                best = u
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return date.fromisoformat(best) if best else None
+    except ValueError:
+        return None
 
 
 async def _ledger_latest(client) -> date | None:
@@ -230,6 +264,7 @@ async def _spending() -> dict:
     async with httpx.AsyncClient() as client:
         wd = await _fetch_withdrawals(client, last_month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
+        ingest_latest = await _ingest_latest(client, wd)
 
     def d(s):
         try:
@@ -293,6 +328,8 @@ async def _spending() -> dict:
         "latest_txn": latest_wd.isoformat() if latest_wd else None,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "days_stale": days_stale,
+        "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
+        "ingest_days": (max(0, (today - ingest_latest).days) if ingest_latest else None),
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
     }
 
@@ -320,7 +357,9 @@ async def _month_payload() -> dict:
         wd = await _fetch_txns(client, "withdrawal", month_start.isoformat(), today.isoformat())
         dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
+        ingest_latest = await _ingest_latest(client, wd + dep)
     days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
+    ingest_days = max(0, (today - ingest_latest).days) if ingest_latest else None
 
     categories: dict[str, dict] = {}
     for t in wd:
@@ -354,6 +393,8 @@ async def _month_payload() -> dict:
                   "days_left": days_total - today.day},
         "days_stale": days_stale,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
+        "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
+        "ingest_days": ingest_days,
         "categories": categories,
         "income_month": round(income, 2),
         "transactions": txns[:400],
@@ -430,6 +471,7 @@ async def audit():
                                   headers=_headers(), timeout=15)
             bill_count = (len(bl.json().get("data", []))
                           if bl.status_code == 200 else 0)
+            ingest_latest = await _ingest_latest(client, wd + dep)
 
         dates = sorted(t["date"] for t in wd if t["date"])
         categorized = [t for t in wd if t["category"] != "Uncategorized"]
@@ -454,6 +496,8 @@ async def audit():
             "firefly_budgets": firefly_budgets,
             "firefly_bill_count": bill_count,
             "days_stale": max(0, (today - ledger_latest).days) if ledger_latest else None,
+            "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
+            "ingest_days": max(0, (today - ingest_latest).days) if ingest_latest else None,
         }
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)

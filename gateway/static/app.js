@@ -408,9 +408,14 @@ const RENDERERS = {
     const mo = d.month || {};
     const fmt = (n, dec = 0) => n == null ? "—" : "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
-    // ---- paused banner (stale ledger) ----
+    // ---- freshness: paused banner (stale ingestion) or active sync line ----
+    const fr = d.freshness || {};
     const paused = !fresh
-      ? `<p class="bud-paused">⏸ <b>Budget tracking paused</b> — financial data was last updated ${esc((d.freshness || {}).days_stale ?? "?")} days ago. Totals below are as of the ledger; pace, projections and safe-to-spend are hidden rather than guessed.</p>`
+      ? `<p class="bud-paused">⏸ <b>Budget tracking paused</b> — ${esc(fr.paused_reason || "ledger freshness unknown")}. Totals below are as of the ledger; pace, projections and budget room are hidden rather than guessed.</p>`
+      : "";
+    const agoTxt = (n) => n === 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`;
+    const syncLine = fresh && fr.ingest_days != null
+      ? `<p class="bud-sync">Data synced ${esc(agoTxt(fr.ingest_days))}${fr.activity_days != null ? ` · last transaction ${esc(agoTxt(fr.activity_days))}` : ""}</p>`
       : "";
 
     // ---- setup empty state ----
@@ -434,7 +439,7 @@ const RENDERERS = {
         <div class="bstat"><div class="l">Income</div><div class="v">${d.income_month ? fmt(d.income_month) : "—"}</div></div>
         <div class="bstat"><div class="l">Spent</div><div class="v">${fmt((d.totals || {}).spent_month)}</div></div>
         <div class="bstat"><div class="l">Bills remaining</div><div class="v">${billsRemaining != null ? fmt(billsRemaining) : "—"}</div></div>
-        <div class="bstat safe"><div class="l">Safe to spend<span class="u"> · ${esc(d.safe_scope || "")}</span></div><div class="v">${fmt(d.safe_to_spend)}</div></div>
+        <div class="bstat safe"><div class="l">Budget room<span class="u"> · ${esc(d.budget_room_scope || "")}</span></div><div class="v">${fmt(d.budget_room)}</div></div>
       </div>`;
 
     // ---- warnings ----
@@ -494,7 +499,7 @@ const RENDERERS = {
         <span class="mono">${b.amount != null ? fmt(b.amount) : "—"}</span></div>`).join("") : "";
 
     body.innerHTML = `
-      ${paused}${stats}
+      ${paused}${syncLine}${stats}
       ${warns ? `<div class="bwarns">${warns}</div>` : (fresh && (d.budgets || []).length ? '<p class="empty" style="margin:4px 0 10px">✓ All budgets compatible with the time remaining.</p>' : "")}
       <div class="vgrid">${vessels}</div>
       ${uncat}${unbudgeted}

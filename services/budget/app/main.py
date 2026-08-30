@@ -3,7 +3,7 @@
 Firefly stays the financial system of record; this service turns its
 transaction history into forward-looking guidance: per-budget spend vs limit,
 pace, safe-per-day, month-end projection, calm rule-based warnings, and a
-clearly-scoped "safe to spend" number. Stateless — budget definitions live in
+clearly-scoped "budget room" number. Stateless — budget definitions live in
 core settings (budgets: [{id, name, limit, categories}]), transactions come
 from the firefly service each request (with a short cache).
 
@@ -55,7 +55,7 @@ async def _build(fresh: bool = False) -> dict:
             "connected": bool(month and month.get("connected")),
             "configured": bool(budgets_cfg),
             "reason": "firefly not connected" if month else "firefly unreachable",
-            "budgets": [], "warnings": [], "safe_to_spend": None,
+            "budgets": [], "warnings": [], "budget_room": None,
         }
         _CACHE.update(at=now, data=data)
         return data
@@ -65,7 +65,8 @@ async def _build(fresh: bool = False) -> dict:
         month=month.get("month", {}),
         categories=month.get("categories", {}),
         txns=month.get("transactions", []),
-        days_stale=month.get("days_stale"),
+        freshness={"ingest_days": month.get("ingest_days"),
+                   "activity_days": month.get("days_stale")},
     )
     status.update({
         "available": True,
@@ -95,7 +96,7 @@ async def summary():
     """Compat shim for older consumers (legacy lounge overview/briefing)."""
     s = await _build()
     over = [b["name"] for b in s.get("budgets", []) if b.get("state") == "over"]
-    return {"remaining": s.get("safe_to_spend") or 0,
+    return {"remaining": s.get("budget_room") or 0,
             "over_budget": over, "count": len(s.get("budgets", []))}
 
 

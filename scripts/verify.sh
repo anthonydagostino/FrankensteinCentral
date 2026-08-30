@@ -126,17 +126,23 @@ if st == 200 and fh:
                 add("WARN", "firefly build", "OLD build (no txn_count/tz) — redeploy needed")
             add("PASS", "firefly txns", f"{sp.get('txn_count','?')} withdrawals fetched "
                 f"(last month start → today), tz={sp.get('tz','?')}")
-            # Freshness root-cause: any-type newest vs withdrawal newest.
+            # Freshness: INGESTION (data entering Firefly — created/updated
+            # timestamps + account updates) vs ACTIVITY (newest txn date).
             ds = sp.get("days_stale"); ll = sp.get("ledger_latest_txn"); lw = sp.get("latest_txn")
-            if ll is None and lw is None:
+            ing = sp.get("ingest_days"); ingl = sp.get("ingest_latest")
+            if ing is None and ll is None and lw is None:
                 add("WARN", "firefly fresh", "couldn't determine ledger freshness")
             else:
-                verdict = ("FRESH" if (ds is not None and ds < 2) else f"STALE ({ds}d)")
-                src = ("source-data staleness — Firefly itself has nothing newer (import needed)"
-                       if ll == lw or ll is None else
-                       "newer non-withdrawal activity exists — ledger is fresher than the withdrawal window")
-                add("PASS", "firefly fresh", f"{verdict}: newest ANY-type txn {ll}, "
-                    f"newest withdrawal {lw} → {src}")
+                if ing is not None:
+                    verdict = ("SYNCED" if ing < 3 else f"NOT IMPORTED for {ing}d")
+                    add("PASS" if ing < 3 else "WARN", "firefly ingest",
+                        f"{verdict}: data last entered Firefly {ingl} "
+                        f"(txn created/updated + account updates)")
+                else:
+                    add("WARN", "firefly ingest", "no ingestion signal (OLD build?) — "
+                        "budget freshness falls back to activity")
+                add("PASS", "firefly activity", f"newest ANY-type txn {ll} ({ds}d ago), "
+                    f"newest withdrawal {lw} — spending recency, not sync recency")
             add("PASS", "firefly calc", f"today=${sp.get('today')}, week=${sp.get('week')}, "
                 f"month=${sp.get('month')}, daily_avg=${sp.get('daily_avg')}")
             pace = sp.get("pace_pct"); lm = sp.get("last_month_to_date")
@@ -232,12 +238,15 @@ if st == 200 and bs is not None:
         fr = bs.get("freshness", {})
         mo = bs.get("month", {})
         add("PASS", "budget", f"{len(bs.get('budgets', []))} budget(s), "
-            f"{mo.get('days_left')}d left, fresh={fr.get('current_ok')} "
-            f"(ledger stale {fr.get('days_stale')}d)")
+            f"{mo.get('days_left')}d left, {'ACTIVE' if fr.get('current_ok') else 'PAUSED'}")
+        add("PASS" if fr.get("current_ok") else "WARN", "budget fresh",
+            f"ingest={fr.get('ingest_days')}d activity={fr.get('activity_days')}d "
+            f"signal={fr.get('signal')}"
+            + (f" — {fr.get('paused_reason')}" if fr.get("paused_reason") else ""))
         for b in bs.get("budgets", [])[:8]:
             add("PASS", f"  {b['name'][:12]}", f"{b['state']:<12} ${b['spent']} / ${b['limit']} "
                 f"(safe/day {b.get('safe_per_day')}, proj {b.get('projected')})")
-        add("PASS", "budget safe", f"safe-to-spend={bs.get('safe_to_spend')} ({bs.get('safe_scope')})")
+        add("PASS", "budget room", f"budget-room={bs.get('budget_room')} ({bs.get('budget_room_scope')})")
         un = bs.get("uncategorized", {})
         if un.get("amount"):
             add("WARN" if un.get("low_confidence") else "PASS", "budget uncat",

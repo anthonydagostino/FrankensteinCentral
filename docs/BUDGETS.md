@@ -64,24 +64,44 @@ Severity for the attention feed: over/approaching → important, watch → fyi.
 Warning copy is calm and states the numbers ("about $7.45/day keeps you on
 plan"), never guilt.
 
-## Freshness (zero ≠ unknown)
+## Freshness (zero ≠ unknown; synced ≠ spent)
 
-`days_stale` = days since the newest transaction of ANY type in Firefly.
+Two distinct signals, never conflated:
 
-- `days_stale < 2` → current guidance allowed.
-- otherwise → every budget's state is **PAUSED**: spent/limit/remaining still
-  display (they are true as-of-the-ledger), but daily rate, safe/day,
-  projections, warnings and safe-to-spend are **null** — never 0, never
-  "on track". The UI shows "Budget tracking paused — data last updated N
-  days ago."
+- **`ingest_days`** — days since data last **entered** Firefly. Derived from
+  transaction `created_at`/`updated_at` timestamps plus asset-account
+  `updated_at` (server-side timestamps: querying Firefly never refreshes
+  them). This is *synchronization recency* — did an import/sync happen?
+- **`activity_days`** — days since the newest transaction **date** of any
+  type. This is *spending recency* — supporting info only, never a pause
+  trigger on its own when an ingestion signal exists.
 
-## Safe to spend
+Rules (engine constants `INGEST_MAX_DAYS=3`, `ACTIVITY_FALLBACK_MAX=2`):
 
-`safe_to_spend = Σ max(limit − spent, 0)` across active budgets — over-budget
-categories contribute 0, they do not offset others. It is **always labeled
-"across active budgets"**: it is budget capacity, not a bank balance, and it
-excludes unbudgeted categories, uncategorized spending, and future bills.
-Suppressed entirely when the ledger is stale or no budgets exist.
+- `ingest_days < 3` → **ACTIVE**. A user who synced today but hasn't spent
+  in 3 days stays active — the UI shows "Data synced today · last
+  transaction 3 days ago". Not spending is not staleness.
+- `ingest_days ≥ 3` → **PAUSED** with reason "financial data hasn't been
+  imported for N days": spent/limit/remaining still display (true
+  as-of-the-ledger), but daily rate, safe/day, projections, warnings and
+  budget room are **null** — never 0, never "on track".
+- No ingestion signal at all (old firefly build) → conservative fallback:
+  active only if `activity_days < 2`, and the payload says
+  `signal: "activity_fallback"` so the degradation is visible.
+
+## Budget Room
+
+`budget_room = Σ max(limit − spent, 0)` across active budgets — over-budget
+categories contribute 0, they do not offset others. Presented as
+"$X remaining across active budgets": it is **remaining budget capacity**,
+not a bank balance — it excludes unbudgeted categories, uncategorized
+spending, and future bills. Suppressed entirely when ingestion is stale or
+no budgets exist.
+
+The label **"Safe to Spend" is reserved** for a future engine that also
+accounts for upcoming bills, obligations and liquidity; Budget Room is one
+component of that calculation and keeps its honest, narrower name until the
+fuller engine exists.
 
 ## Uncategorized & unbudgeted spending
 
