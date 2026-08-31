@@ -103,6 +103,21 @@ it can't mislead), and what to do (an **Import transactions ↗** action
 deep-linking to the existing Firefly Data Importer — the importer is never
 recreated or automated here).
 
+### Two tolerances, on purpose
+
+Day-level and month-level claims need different amounts of freshness, so
+they use different thresholds:
+
+| claim | threshold | why |
+|---|---|---|
+| "you spent $X today" (Money card) | ingest ≥ 2 days → suppressed | a same-day figure is unknowable if nothing was imported today; $0 would be a lie |
+| month-to-date budget position + pace | ingest ≥ 3 days → PAUSED | a month-scale position survives a short lag, and the sync date is stated on screen |
+
+So at `ingest_days = 2` the Money card correctly shows today as "—" with
+"Financial data hasn't been imported for 2 days", while budgets stay ACTIVE
+and disclose "Data synced 2 days ago". Both statements are true and the
+user can see the lag; neither implies data we don't have.
+
 ## Budget Room
 
 `budget_room = Σ max(limit − spent, 0)` across active budgets — over-budget

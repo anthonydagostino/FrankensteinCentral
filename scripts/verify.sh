@@ -232,17 +232,25 @@ st, bs, err = get(8088, "/status?fresh=1", timeout=60)
 if st == 200 and bs is not None:
     if not bs.get("available"):
         add("WARN", "budget", f"unavailable — {bs.get('reason','?')}")
-    elif not bs.get("configured"):
-        add("WARN", "budget", "no budgets configured yet (⚙ Settings → Monthly budgets)")
     else:
+        # Freshness is evidence in its own right — print it even when no
+        # budgets exist yet, so a config gap never hides the sync state.
         fr = bs.get("freshness", {})
         mo = bs.get("month", {})
-        add("PASS", "budget", f"{len(bs.get('budgets', []))} budget(s), "
-            f"{mo.get('days_left')}d left, {'ACTIVE' if fr.get('current_ok') else 'PAUSED'}")
         add("PASS" if fr.get("current_ok") else "WARN", "budget fresh",
+            f"{'ACTIVE' if fr.get('current_ok') else 'PAUSED'}: "
             f"ingest={fr.get('ingest_days')}d activity={fr.get('activity_days')}d "
             f"signal={fr.get('signal')}"
             + (f" — {fr.get('paused_reason')}" if fr.get("paused_reason") else ""))
+        if not fr.get("current_ok"):
+            add("PASS", "budget recovery",
+                f"import action offered → {bs.get('importer_url') or 'NOT CONFIGURED'}")
+    if bs.get("available") and not bs.get("configured"):
+        add("WARN", "budget", "no budgets configured yet (⚙ Settings → Monthly budgets) — "
+            "guidance/Budget Room cannot compute until limits exist")
+    elif bs.get("available"):
+        add("PASS", "budget", f"{len(bs.get('budgets', []))} budget(s), "
+            f"{mo.get('days_left')}d left")
         for b in bs.get("budgets", [])[:8]:
             add("PASS", f"  {b['name'][:12]}", f"{b['state']:<12} ${b['spent']} / ${b['limit']} "
                 f"(safe/day {b.get('safe_per_day')}, proj {b.get('projected')})")
@@ -334,6 +342,15 @@ if st == 200 and home:
         f"connected={money.get('connected')}, today=${money.get('today')}, "
         f"month=${money.get('month')}, pace={money.get('pace_pct')}%, "
         f"obs={len(money.get('observations', []))}")
+    # Exact user-facing freshness copy (auditable, not paraphrased).
+    if money.get("stale_days") is not None:
+        add("WARN", "home money copy",
+            f"\"Financial data hasn't been imported for {money['stale_days']} days\" "
+            f"— day-level figures suppressed (today=None, not $0)")
+    else:
+        add("PASS", "home money copy", "no staleness notice — day-level figures shown as-is")
+    for o in money.get("observations", [])[:3]:
+        add("PASS", "  money obs", trunc(o, 88))
     inbox = home.get("inbox", {})
     add("PASS" if inbox.get("mode") == "live" else "WARN", "home inbox",
         f"mode={inbox.get('mode')}, {len(inbox.get('items', []))} surfaced, "
