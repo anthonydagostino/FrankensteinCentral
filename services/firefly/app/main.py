@@ -12,6 +12,7 @@ Config:
   FIREFLY_IMPORTER_URL  browser-facing URL for the data importer (e.g. http://<box-ip>:8096)
 """
 import os
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,23 @@ def _connected() -> bool:
 
 def _headers() -> dict:
     return {"Authorization": f"Bearer {FIREFLY_TOKEN}", "Accept": "application/json"}
+
+
+# Firefly III is a PHP app on a home box: every call here is real work for it,
+# and the homepage aggregator gives this service an 8-second budget before it
+# gives up and reports "not connected". A short TTL keeps repeated page loads
+# and the budget service's 60s poll from re-querying the same window.
+_TTL_CACHE: dict = {}
+
+
+async def _cached(key: str, ttl: float, fn):
+    hit = _TTL_CACHE.get(key)
+    now = time.monotonic()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    val = await fn()
+    _TTL_CACHE[key] = (now, val)
+    return val
 
 
 def _pick(summary: dict, prefix: str) -> dict | None:
@@ -127,7 +145,7 @@ async def _live() -> dict:
 async def _data() -> dict:
     if not _connected():
         return dict(EMPTY)
-    return await _live()
+    return await _cached("live", 45, _live)
 
 
 @app.get("/health")
@@ -237,7 +255,7 @@ async def _ingest_latest(client, txns: list[dict]) -> date | None:
             best = i
     try:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
-                             params={"limit": 50}, headers=_headers(), timeout=15)
+                             params={"limit": 10}, headers=_headers(), timeout=15)
         r.raise_for_status()
         for g in r.json().get("data", []):
             c = (g.get("attributes", {}).get("created_at") or "")[:10]
@@ -355,7 +373,7 @@ async def spending():
         return {"connected": False, "today": None, "week": None, "month": None,
                 "pace_pct": None, "recent": [], "biggest_today": None}
     try:
-        return await _spending()
+        return await _cached("spending", 45, _spending)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 
@@ -422,7 +440,7 @@ async def month():
     if not _connected():
         return {"connected": False}
     try:
-        return await _month_payload()
+        return await _cached("month", 45, _month_payload)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 
