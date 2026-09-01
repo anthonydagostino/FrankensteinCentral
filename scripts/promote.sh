@@ -24,8 +24,12 @@ TARGET=""
 
 for arg in "$@"; do
   case "$arg" in
-    --dry-run) DRY=1 ;;
-    --force)   FORCE=1 ;;
+    --dry-run)   DRY=1 ;;
+    # One-time protocol-infrastructure migration, or an explicitly approved
+    # override. Skips the acceptance/authorization gates. It does NOT skip the
+    # fast-forward check — history is never rewritten by this script.
+    --bootstrap) FORCE=1 ;;
+    --force)     FORCE=1 ;;
     -*)        echo "unknown flag: $arg"; exit 2 ;;
     *)         TARGET="$arg" ;;
   esac
@@ -54,6 +58,14 @@ fail() { echo "REFUSED: $1"; exit 1; }
 
 [ -n "$TARGET" ] || fail "no commit to promote (STATE.json implementation_commit is null and none given)"
 git rev-parse --verify --quiet "$TARGET^{commit}" >/dev/null || fail "$TARGET is not a commit in this repository"
+
+if [ "$FORCE" = "1" ]; then
+  echo "!! PROTOCOL GATES SKIPPED (--bootstrap/--force): acceptance and"
+  echo "!! deployment authorization were not checked. Fast-forward is still"
+  echo "!! enforced. Use this only for the one-time bootstrap migration or an"
+  echo "!! explicitly approved override."
+  echo
+fi
 
 if [ "$FORCE" != "1" ]; then
   [ "$status" = "accepted" ] || fail "protocol status is '${status:-unset}', not 'accepted' — the Product Owner has not accepted this work"

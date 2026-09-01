@@ -380,6 +380,31 @@ Deployment state deliberately does **not** live in `STATE.json`: only the box
 knows what actually ran. `implementation_commit` means "this was pushed for
 review", never "this is running".
 
+## Rollback: production moves forward
+
+Production history is **append-only**. Rolling back means adding a new commit
+whose tree is the known-good one — not rewinding the branch:
+
+```
+production:  A --- B --- C(bad) --- D(tree of B, "rollback")
+```
+
+```
+bash scripts/rollback.sh --dry-run <good-sha>
+bash scripts/rollback.sh <good-sha>
+```
+
+A plain `git revert` is equally acceptable for a single bad commit.
+`scripts/rollback.sh` exists for multi-commit rollbacks, where "restore this
+exact known-good tree" is clearer and safer than a chain of reverts. Either
+way production moves forward, the box deploys the rollback like any other
+change, and the bad deploy remains in the audit trail.
+
+Rewriting the production branch (`--force-with-lease`) is **emergency recovery
+only** and a high-risk action under this protocol: it requires explicit
+approval, because it erases the record that the bad deploy happened. It is
+never the default operational rollback.
+
 ## What is actually running
 
 `scripts/deploy.sh` writes a record outside the repo (`~/.frankenstein/
@@ -413,6 +438,8 @@ user approval before:
 - account mutations of any kind
 - destructive infrastructure changes
 - reimaging machines
+- rewriting the production branch (`--force-with-lease`) instead of rolling
+  forward with `scripts/rollback.sh` or a revert
 - any irreversible operation
 
 When in doubt, treat the action as high-risk and ask.

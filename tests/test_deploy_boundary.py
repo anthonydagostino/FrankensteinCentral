@@ -203,3 +203,59 @@ def test_promote_treats_missing_authorization_as_none():
 
 def test_directive_carries_the_authorization_field():
     assert "Deployment Authorization:" in DIRECTIVE.read_text()
+
+
+# ---- rollback policy: production is append-only -------------------------
+
+ROLLBACK = ROOT / "scripts" / "rollback.sh"
+DEPLOY_DOC = ROOT / "docs" / "SETUP-DEPLOY.md"
+
+
+def test_rollback_helper_exists_and_moves_forward():
+    src = ROLLBACK.read_text()
+    # builds a NEW commit carrying the good tree, on top of production
+    assert "read-tree -u --reset" in src
+    assert "refs/heads/$PROD_BRANCH" in src
+    # assert on code, not prose — the header explains why force-pushing is wrong
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert "--force" not in code, "rollback must never rewrite the branch"
+
+
+def test_rollback_refuses_on_a_dirty_tree():
+    assert "working tree is dirty" in ROLLBACK.read_text()
+
+
+def test_force_with_lease_is_documented_as_emergency_only():
+    """It may be documented, but never as the normal path."""
+    for doc in (DEPLOY_DOC, PROTOCOL):
+        text = doc.read_text().lower()
+        if "force-with-lease" not in text:
+            continue
+        idx = text.index("force-with-lease")
+        window = text[max(0, idx - 600):idx + 600]
+        assert "emergency" in window, f"{doc.name}: force-with-lease lacks an emergency-only qualifier"
+        assert ("high-risk" in window or "approval" in window), \
+            f"{doc.name}: force-with-lease not marked as requiring approval"
+
+
+def test_protocol_lists_branch_rewriting_as_high_risk():
+    text = PROTOCOL.read_text().lower()
+    assert "rewriting the production branch" in text
+
+
+def test_normal_rollback_is_documented_before_the_emergency_one():
+    text = DEPLOY_DOC.read_text().lower()
+    assert "production moves forward" in text
+    assert text.index("rollback.sh") < text.index("force-with-lease"), \
+        "the emergency path must not be presented first"
+
+
+def test_promote_bootstrap_flag_keeps_fast_forward_safety():
+    src = PROMOTE.read_text()
+    assert "--bootstrap" in src
+    assert "PROTOCOL GATES SKIPPED" in src
+    # the fast-forward guard must sit OUTSIDE the gate-skipping branch
+    ff = src.index("merge-base --is-ancestor")
+    gate = src.index('if [ "$FORCE" != "1" ]; then')
+    gate_end = src.index("git fetch --prune origin")
+    assert not (gate < ff < gate_end), "fast-forward check must apply even with --bootstrap"

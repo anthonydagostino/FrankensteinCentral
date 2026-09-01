@@ -182,32 +182,53 @@ bash scripts/frankenstein-status.sh
 
 Use a harmless throwaway branch for this — never a product change.
 
-## Rollback
+## Rollback — production moves FORWARD
 
-The change is two files and one branch; nothing destructive was done. No
-containers, volumes or data were touched, and no git history was rewritten.
+Production history is append-only. The normal rollback does **not** rewind the
+branch; it adds a new commit whose tree is the known-good one, so the box
+deploys it like any other change and the bad deploy stays in the audit trail:
+
+```
+production:  A --- B --- C(bad) --- D(tree of B, "rollback")
+```
 
 ```bash
-# restore the previous poller behavior (tracks the checked-out branch)
-cd ~/FrankensteinCentral
+bash scripts/rollback.sh --dry-run <known-good-sha>   # show what would change
+bash scripts/rollback.sh <known-good-sha>             # commit + push it
+```
+
+For a single bad commit a plain `git revert` is equally fine and reads more
+clearly in history:
+
+```bash
+git revert --no-edit <bad-sha>
+git push origin HEAD:refs/heads/production
+```
+
+Use `rollback.sh` when several commits need undoing at once, or when the
+"restore this exact known-good tree" intent is clearer than a chain of reverts.
+
+Other non-destructive options:
+
+```bash
+# restore the previous poller behavior
 git checkout <commit-before-this-change> -- scripts/autopull.sh
 
-# or force a specific commit onto the box immediately, bypassing the boundary
+# deploy a specific commit by hand on the box (bypasses the poller, changes
+# nothing about branches)
 bash scripts/deploy.sh <branch>
-
-# if the unit was edited, drop the override
-sudo systemctl edit --full frankenstein-deploy.service   # remove the Environment line
-sudo systemctl daemon-reload
 ```
 
-The production branch can also simply be moved back:
+### Emergency only — rewriting production
 
 ```bash
-git push origin <older-good-sha>:refs/heads/production --force-with-lease
+git push origin <older-sha>:refs/heads/production --force-with-lease
 ```
 
-That is a deliberate rollback of what is running, and the box picks it up on
-the next poll.
+This is **not** the operational rollback path. It erases the record that the
+bad deploy ever happened and can desynchronize any other clone. It is a
+high-risk action under the protocol and requires explicit approval; prefer
+`rollback.sh` or `git revert` in every ordinary case.
 
 ## What is actually running
 
