@@ -210,8 +210,15 @@ services:
       # Override which slice of the inbox to triage (default: primary tab, last 7d).
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_TOKEN_FILE: /data/token.json
+      # Background inbox poll: every 6 hours, independent of anyone opening
+      # the dashboard. Endpoints serve the last sync, so page loads cost no
+      # Gmail API calls.
+      GMAIL_REFRESH_SECONDS: ${GMAIL_REFRESH_SECONDS:-21600}
+      GMAIL_STATE_FILE: /data/gmail_state.json
     volumes:
-      # Persists the Gmail refresh token so the one-time "Allow" survives restarts.
+      # Persists the Gmail refresh token so the one-time "Allow" survives
+      # restarts, plus the last-known-good inbox so a restart doesn't blank
+      # the card until the next poll.
       - gmail_token:/data
     ports:
       - "8083:8000"

@@ -1,9 +1,11 @@
+import asyncio
 import base64
 import json
 import os
 import re
 import time
 import urllib.parse
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI
@@ -35,6 +37,17 @@ INBOX_QUERY = os.environ.get("GMAIL_QUERY") or "category:primary newer_than:7d -
 # so it never shows up in INBOX_QUERY (which explicitly excludes -from:me).
 SENT_QUERY = os.environ.get("GMAIL_SENT_QUERY") or "in:sent newer_than:21d"
 
+# Background refresh cadence. Gmail is polled on this schedule regardless of
+# whether anyone opens the dashboard, and endpoints serve the last sync's
+# result rather than fetching per request (one homepage load used to cost a
+# list call plus one GET per message). 6 hours by default.
+REFRESH_SECONDS = int(os.environ.get("GMAIL_REFRESH_SECONDS", "21600"))
+# Floor between manual refreshes so repeated clicks can't hammer the API.
+MANUAL_MIN_SECONDS = int(os.environ.get("GMAIL_MANUAL_MIN_SECONDS", "60"))
+# Last-known-good inbox + sync bookkeeping, persisted so a container restart
+# doesn't blank the Inbox card until the next scheduled poll.
+STATE_FILE = os.environ.get("GMAIL_STATE_FILE", "/data/gmail_state.json")
+
 # Token store. Priority: env override -> saved file -> filled by the OAuth flow.
 TOKENS: dict[str, str] = {}
 if os.environ.get("GOOGLE_REFRESH_TOKEN"):
@@ -65,6 +78,52 @@ def _save_token(refresh_token: str) -> None:
 
 
 _load_saved_token()
+
+
+# Message age and sync age are different facts, tracked separately: a message
+# can be 72h old while the inbox was checked 4 minutes ago.
+SYNC: dict = {
+    "items": [],                   # last-known-good triaged messages
+    "mode": "never",               # live | error | disconnected | never
+    "last_successful_sync": None,  # ISO8601 — when mail was last actually got
+    "last_attempt": None,          # ISO8601 — when a fetch was last tried
+    "sync_status": "never",        # healthy | failed | never
+    "last_error": None,
+    "message_count": 0,
+    "last_manual": 0.0,            # monotonic-ish epoch for debouncing
+}
+
+
+def _iso(ts: float | None = None) -> str:
+    return datetime.fromtimestamp(ts if ts is not None else time.time(),
+                                  tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_state() -> None:
+    """Restore last-known-good inbox so a restart doesn't blank the card."""
+    try:
+        with open(STATE_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return
+    for k in ("items", "mode", "last_successful_sync", "last_attempt",
+              "sync_status", "message_count"):
+        if k in saved:
+            SYNC[k] = saved[k]
+
+
+def _save_state() -> None:
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
+        with open(STATE_FILE, "w") as f:
+            json.dump({k: SYNC[k] for k in
+                       ("items", "mode", "last_successful_sync", "last_attempt",
+                        "sync_status", "message_count")}, f)
+    except OSError:
+        pass  # non-fatal; in-memory state still serves this process
+
+
+_load_state()
 
 # Local-parts machines send from — never a human awaiting your reply. This is
 # one of several automation signals; headers and Gmail's own category labels
@@ -407,15 +466,82 @@ async def _fetch_inbox() -> list[dict] | None:
         return out
 
 
+async def _refresh(trigger: str = "scheduled") -> dict:
+    """Fetch Gmail, re-run classification, and record the outcome.
+
+    A failed refresh NEVER destroys last-known-good mail: the previous items
+    stay served and sync_status flips to "failed" so the UI can say the data
+    is old rather than pretending the inbox is empty. Read-only — this never
+    modifies, sends, labels or archives anything.
+    """
+    SYNC["last_attempt"] = _iso()
+    if not _connected():
+        SYNC.update(mode="disconnected", sync_status="never",
+                    last_error="no Gmail credentials")
+        _save_state()
+        return _sync_meta()
+
+    real = await _fetch_inbox()
+    if real is None:
+        # Keep items/last_successful_sync exactly as they were.
+        SYNC.update(sync_status="failed", last_error="Gmail fetch failed")
+        if SYNC["items"]:
+            SYNC["mode"] = "live"      # serving last-known-good
+        else:
+            SYNC["mode"] = "error"     # nothing good was ever stored
+        _save_state()
+        return _sync_meta()
+
+    SYNC.update(items=triage_all(real), mode="live", sync_status="healthy",
+                last_successful_sync=_iso(), last_error=None,
+                message_count=len(real))
+    _save_state()
+    return _sync_meta()
+
+
+def _sync_meta() -> dict:
+    """Sync bookkeeping for consumers. Never includes mail content."""
+    last = SYNC.get("last_successful_sync")
+    next_at = None
+    if last:
+        try:
+            next_at = _iso(datetime.fromisoformat(last).timestamp() + REFRESH_SECONDS)
+        except ValueError:
+            next_at = None
+    return {
+        "last_successful_sync": last,
+        "last_attempt": SYNC.get("last_attempt"),
+        "sync_status": SYNC.get("sync_status"),
+        "refresh_interval_seconds": REFRESH_SECONDS,
+        "next_refresh_at": next_at,
+        "message_count": SYNC.get("message_count", 0),
+        "error": SYNC.get("last_error"),
+    }
+
+
+async def _refresh_loop() -> None:
+    """Poll Gmail every REFRESH_SECONDS, independent of anyone opening the
+    dashboard. One refresh at startup so a restart doesn't wait 6 hours."""
+    await asyncio.sleep(10)  # let the container settle before the first call
+    while True:
+        try:
+            await _refresh("scheduled")
+        except Exception:  # noqa: BLE001 - the loop must never die
+            SYNC.update(sync_status="failed", last_error="refresh loop error")
+        await asyncio.sleep(REFRESH_SECONDS)
+
+
+@app.on_event("startup")
+async def _start_refresh_loop() -> None:
+    asyncio.create_task(_refresh_loop())
+
+
 async def _current_inbox() -> tuple[list[dict], str]:
-    if _connected():
-        real = await _fetch_inbox()
-        if real is not None:
-            return triage_all(real), "live"
-        # Connected but the fetch failed (expired/invalid token). Surface an
-        # honest error state — never fabricate emails.
-        return [], "error"
-    return [], "disconnected"
+    """Serve the last sync. Endpoints deliberately do NOT fetch: refreshes are
+    scheduled (or manual), so opening the homepage costs zero Gmail calls."""
+    if not _connected():
+        return [], "disconnected"
+    return SYNC.get("items", []), SYNC.get("mode", "never")
 
 
 _PROFILE: dict[str, str] = {}  # cached {"email": "you@gmail.com"}
@@ -591,11 +717,37 @@ async def thread_availability():
     return {"threads": [], "mode": "disconnected"}
 
 
+@app.get("/sync-status")
+async def sync_status():
+    """Sync bookkeeping only — no mail content, no credentials."""
+    return {"connected": _connected(), "mode": SYNC.get("mode"), **_sync_meta()}
+
+
+@app.post("/refresh")
+async def refresh_now():
+    """Manual 'check now'. Debounced so repeated clicks can't hammer Gmail.
+
+    Read-only, like every other path here: it re-fetches and re-classifies,
+    and never mutates mail.
+    """
+    now = time.time()
+    since = now - (SYNC.get("last_manual") or 0)
+    if since < MANUAL_MIN_SECONDS:
+        return {"refreshed": False,
+                "reason": f"just refreshed {int(since)}s ago",
+                "retry_after_seconds": int(MANUAL_MIN_SECONDS - since),
+                **_sync_meta()}
+    SYNC["last_manual"] = now
+    meta = await _refresh("manual")
+    return {"refreshed": meta["sync_status"] == "healthy", **meta}
+
+
 @app.get("/needs-reply")
 async def needs_reply():
     """Triaged emails that actually want a response, most important first."""
     items, mode = await _current_inbox()
-    return {"emails": [m for m in items if m["needs_reply"]], "mode": mode}
+    return {"emails": [m for m in items if m["needs_reply"]], "mode": mode,
+            "sync": _sync_meta()}
 
 
 @app.get("/sample")
@@ -625,7 +777,7 @@ async def sample():
         })
     return {"mode": mode, "total": len(out), "counts": counts,
             "needs_reply_count": sum(1 for m in items if m["needs_reply"]),
-            "items": out}
+            "sync": _sync_meta(), "items": out}
 
 
 @app.get("/deals")
@@ -647,6 +799,7 @@ async def summary():
         "needs_reply": sum(1 for m in items if m["needs_reply"]),
         "by_category": by_cat,
         "mode": mode,
+        "sync": _sync_meta(),
     }
 
 
@@ -655,5 +808,6 @@ async def root():
     return {
         "app": "Gmail Checker",
         "endpoints": ["/needs-reply", "/thread-availability", "/deals", "/summary",
-                      "/auth/login", "/health"],
+                      "/sync-status", "/refresh", "/auth/login", "/health"],
+        "refresh_interval_seconds": REFRESH_SECONDS,
     }

@@ -378,78 +378,6 @@ def _event_minutes_until(events, now) -> tuple | None:
     return None
 
 
-def _attention(core, availability, finance, budget, firefly, spending,
-               stocks, vault, settings, down) -> list[dict]:
-    """Cross-domain items that need you — email lives in its own Inbox card now,
-    so this is money / stocks / habits / infra only."""
-    items: list[dict] = []
-
-    for b in (finance.get("upcoming", []) if finance else [])[:4]:
-        du = b.get("days_until")
-        sev = "important" if (du is not None and du <= 3) else "fyi"
-        when = f"in {du}d" if du is not None else "soon"
-        items.append({
-            "id": f"bill:{b.get('name')}", "severity": sev, "icon": "💳",
-            "title": f"{b.get('name')} due {when}", "detail": f"${b.get('amount')}",
-            "action": {"type": "open", "app": "finance"},
-        })
-
-    for w in (budget.get("warnings", []) if budget else [])[:2]:
-        items.append({
-            "id": f"budget:{w.get('budget')}", "severity": w.get("severity", "fyi"),
-            "icon": "🫙", "title": f"{w.get('budget')} budget: {w.get('state')}",
-            "detail": _short(w.get("text", ""), 90),
-            "action": {"type": "open", "app": "budget"},
-        })
-
-    thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
-    big = (spending or {}).get("biggest_today")
-    if big and big.get("amount", 0) >= thr:
-        items.append({
-            "id": f"txn:{big.get('desc')}", "severity": "fyi", "icon": "💸",
-            "title": f"Large charge: {_short(big.get('desc',''), 30)}",
-            "detail": f"${big['amount']:,.0f} today",
-            "action": {"type": "open", "app": "firefly"},
-        })
-
-    move_thr = (settings.get("market", {}) or {}).get("move_threshold_pct", 3)
-    for p in (stocks.get("positions", []) if stocks else []):
-        pct = p.get("change_pct")
-        if pct is not None and abs(pct) >= move_thr:
-            arrow = "▲" if pct > 0 else "▼"
-            items.append({
-                "id": f"stock:{p['symbol']}", "severity": "fyi", "icon": "📈",
-                "title": f"{p['symbol']} {arrow} {abs(pct):.1f}% today",
-                "detail": f"${p.get('day_change',0):+,.0f} to your portfolio",
-                "action": {"type": "open", "app": "stocks"},
-            })
-
-    for n in (core.get("nudges", []) if core else []):
-        items.append({
-            "id": f"nudge:{n['key']}", "severity": n.get("severity", "fyi"),
-            "icon": n.get("icon", "•"), "title": n.get("title", ""),
-            "detail": n.get("detail", ""), "action": n.get("action"),
-        })
-
-    if vault and vault.get("reused"):
-        items.append({
-            "id": "vault:reused", "severity": "fyi", "icon": "🔐",
-            "title": f"{vault['reused']} reused password(s)", "detail": "rotate them",
-            "action": {"type": "open", "app": "vault"},
-        })
-
-    for name in down:
-        items.append({
-            "id": f"sys:{name}", "severity": "important", "icon": "⚠️",
-            "title": f"{name} is unavailable", "detail": "check the homelab",
-            "action": {"type": "open", "app": "assistant"},
-        })
-
-    order = {"important": 0, "fyi": 1}
-    items.sort(key=lambda x: order.get(x["severity"], 2))
-    return items
-
-
 def _study_pace_behind(study, hour) -> int:
     """Minutes behind a linear 8am→10pm pace toward today's goal (0 if ahead)."""
     goal = study.get("goal_min", 0)
@@ -573,7 +501,7 @@ def _is_important_sender(addr: str, important: list) -> bool:
     return any(s and s.lower() in a for s in (important or []))
 
 
-def _inbox(gmail_emails, availability, settings, gmail_mode) -> dict:
+def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) -> dict:
     """The email signal: which messages actually matter, with sender/subject/
     age — not a count of 40 unread."""
     important = settings.get("important_senders", [])
@@ -623,8 +551,11 @@ def _inbox(gmail_emails, availability, settings, gmail_mode) -> dict:
         empty = "Inbox looks clear. 🎉"
     else:
         empty = None
+    # sync freshness is about the CHECK, not the messages: a 72h-old message
+    # can sit in an inbox that was checked 4 minutes ago. Both are exposed.
     return {"items": items, "replies": replies, "need_reply": need,
-            "total": len(gmail_emails), "empty": empty, "mode": gmail_mode}
+            "total": len(gmail_emails), "empty": empty, "mode": gmail_mode,
+            "sync": gmail_sync or {}}
 
 
 def _money(firefly, spending, finance, budget, networth, settings) -> dict:
@@ -649,6 +580,11 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     month_spend = None if month_ingested is False else sp.get("month")
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
+    # Homepage headline: a trailing 30-day window, NOT the calendar month the
+    # budgets use. It survives a stale ledger (it is a 30-day history, not a
+    # same-day claim) but the UI states how far the data actually reaches.
+    last_30 = sp.get("last_30")
+    last_30_trend = sp.get("last_30_trend_pct")
 
     big = sp.get("biggest_today")
     unusual = big if (not stale and big and big.get("amount", 0) >= thr) else None
@@ -685,6 +621,11 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
         "month_ingested": month_ingested,
+        "last_30": last_30,
+        "last_30_trend_pct": last_30_trend,
+        "last_30_note": sp.get("last_30_note"),
+        "last_30_through": sp.get("last_30_through"),
+        "last_30_window": sp.get("last_30_window"),
         "stale_days": days_stale if stale else None,
         "pace_pct": pace, "baseline": baseline, "daily_avg": sp.get("daily_avg"),
         "net_worth": (_m("net_worth").get("display")) or (
@@ -757,7 +698,8 @@ async def build_home(fresh: bool = False) -> dict:
     settings = settings or {}
 
     t = _home_time(settings)
-    inbox = _inbox(gmail_emails, avail, settings, gmail_mode)
+    inbox = _inbox(gmail_emails, avail, settings, gmail_mode,
+                   (emails_r or {}).get("sync"))
     money = _money(firefly, spending, finance, budget, networth, settings)
 
     data = {
@@ -766,8 +708,6 @@ async def build_home(fresh: bool = False) -> dict:
         "big3": (core or {}).get("big3", []),
         "do_next": _do_next(core, inbox, money, events, settings, t),
         "inbox": inbox,
-        "attention": _attention(core, avail, finance, budget, firefly, spending,
-                                stocks, vault, settings, down),
         "money": money,
         "budget": _budget_brief(budget),
         "portfolio": stocks or {"configured": False},

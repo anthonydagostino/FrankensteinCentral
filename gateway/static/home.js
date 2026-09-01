@@ -59,7 +59,6 @@
     renderInbox(d.inbox);
     renderMoney(d.money, d.budget);
     renderPortfolio(d.portfolio);
-    renderAttention(d.attention);
     renderToday(d);
     renderHealth(d);
     renderCapture(d.captures);
@@ -80,7 +79,6 @@
       port: d.portfolio && d.portfolio.day_change_pct,
       portVal: d.portfolio && d.portfolio.value,
       score: d.score && d.score.score,
-      attn: (d.attention || []).length,
     };
   }
   function saveSnapshot(d) {
@@ -154,12 +152,42 @@
         </div>${catTag(e.category)}</div>`).join("");
     const need = inbox.need_reply || 0;
     const header = `<h3>Inbox${need ? ` · ${need} need a reply` : ""}</h3>`;
+    // Sync age, not message age — these are different facts. A 72h-old
+    // message can sit in an inbox checked 4 minutes ago.
+    const sync = inbox.sync || {};
+    const agoStr = (iso) => {
+      const t = new Date(iso); if (isNaN(t)) return null;
+      const mins = Math.floor((Date.now() - t.getTime()) / 60000);
+      if (mins < 1) return "just now";
+      if (mins < 60) return mins + "m ago";
+      const h = Math.floor(mins / 60);
+      return h < 24 ? h + "h ago" : Math.floor(h / 24) + "d ago";
+    };
+    const checked = agoStr(sync.last_successful_sync);
+    const syncLine = sync.sync_status === "failed"
+      ? `<div class="inbox-sync failed">Last updated ${esch(checked || "never")} · refresh failed</div>`
+      : checked
+        ? `<div class="inbox-sync">Checked ${esch(checked)}</div>`
+        : (sync.sync_status ? `<div class="inbox-sync">Not checked yet</div>` : "");
     const replies = (inbox.replies || []).length
       ? `<div class="att-empty" style="margin-top:8px">↩ ${inbox.replies.length} interview thread(s) countered your time.</div>` : "";
-    q("#cc-inbox").innerHTML = header +
+    q("#cc-inbox").innerHTML = header + syncLine +
       `<div class="inbox">${rows || `<div class="att-empty">${esch(inbox.empty || "Inbox looks clear. 🎉")}</div>`}</div>` +
       replies +
-      `<div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="inbox-open">Open Gmail ↗</button></div>`;
+      `<div class="hx-btns" style="margin-top:10px">
+         <button class="hx-btn" id="inbox-open">Open Gmail ↗</button>
+         <button class="hx-btn" id="inbox-refresh" title="Check Gmail now">↻ Refresh</button>
+       </div>`;
+    const rf = q("#inbox-refresh");
+    if (rf) rf.onclick = async () => {
+      rf.disabled = true; rf.textContent = "Checking…";
+      const r = await post("/gmail/refresh");
+      if (r && r.refreshed === false && r.retry_after_seconds)
+        toast(`Just checked — try again in ${r.retry_after_seconds}s`);
+      else if (r && r.sync_status === "failed") toast("Gmail refresh failed — inbox shows last known good");
+      else toast("Inbox updated");
+      await refresh(true);   // re-pull the homepage so counts/cards agree
+    };
     q("#cc-inbox").querySelectorAll(".inbox-item").forEach((el) => (el.onclick = () => openGmail()));
     q("#inbox-open").onclick = () => openGmail();
   }
@@ -193,23 +221,6 @@
     }
   }
 
-  function renderAttention(items) {
-    items = items || [];
-    const rows = items.map((it) => {
-      const act = it.action ? `<button class="att-act" data-id="${esch(it.id)}">${esch(actionLabel(it.action))}</button>` : "";
-      return `<div class="att-item ${it.severity}">
-        <span class="att-dot"></span><span class="att-ic">${it.icon || "•"}</span>
-        <div class="att-main"><div class="t">${esch(it.title)}</div><div class="d">${esch(it.detail || "")}</div></div>
-        ${act}</div>`;
-    }).join("");
-    q("#cc-attention").innerHTML = `<h3>Needs attention</h3>
-      <div class="att">${rows || '<div class="att-empty">Nothing needs you right now. 🎉</div>'}</div>`;
-    q("#cc-attention").querySelectorAll(".att-act").forEach((b) => {
-      const it = items.find((x) => x.id === b.dataset.id);
-      b.onclick = () => handleAction(it.action);
-    });
-  }
-
   function renderMoney(m, bud) {
     m = m || {}; bud = bud || {};
     if (!m.connected) {
@@ -222,6 +233,15 @@
       ? `<p class="mny-stale">📅 ${m.stale_days ? `Nothing imported for <b>${m.stale_days} days</b>` : "Nothing imported yet"} — <b>this month's spending is unknown, not $0</b></p>`
       : (m.stale_days
         ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — current-period figures unavailable</p>` : "");
+
+    // Trailing 30 days is a rolling window; the budgets below are calendar
+    // months. The labels say so explicitly so the two can't be conflated.
+    const trend30 = (m.last_30_trend_pct != null)
+      ? `<br><span class="mny-trend ${m.last_30_trend_pct <= 0 ? "up" : "down"}">${m.last_30_trend_pct <= 0 ? "↓" : "↑"} ${Math.abs(m.last_30_trend_pct)}% vs previous 30 days</span>`
+      : "";
+    // Never present a partial window as complete.
+    const through30 = (m.last_30 != null && m.last_30_through && m.stale_days)
+      ? `<br><span style="font-size:10px">through ${esch(m.last_30_through)} only</span>` : "";
 
     // The single most important budget signal — never the whole database.
     let budLine = "";
@@ -249,8 +269,8 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
-        <div class="mny-stat"><div class="v mono">${m.week != null ? money(m.week) : "—"}</div><div class="l">This week</div></div>
+        <div class="mny-stat"><div class="v">${m.last_30 != null ? money(m.last_30) : "—"}</div><div class="l">Past 30 days${trend30}${through30}</div></div>
+        <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
         ${safe}
       </div>
       ${budLine}

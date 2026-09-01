@@ -335,8 +335,15 @@ async def _spending() -> dict:
     last_month_start = last_month_end.replace(day=1)
     # last-month "to date" cutoff = same day-of-month as today (for pace)
     lm_cutoff = last_month_start + timedelta(days=(today.day - 1))
+    # Rolling windows for the homepage's general spending signal. These are
+    # deliberately SEPARATE from the calendar-month figures above: budgets are
+    # monthly and stay monthly; "past 30 days" is a trailing window.
+    w30_start = today - timedelta(days=29)          # inclusive, 30 days
+    prev30_start = today - timedelta(days=59)
+    prev30_end = today - timedelta(days=30)
+    fetch_start = min(last_month_start, prev30_start)
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_withdrawals(client, last_month_start.isoformat(), today.isoformat())
+        wd = await _fetch_withdrawals(client, fetch_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd)
 
@@ -346,11 +353,16 @@ async def _spending() -> dict:
         except ValueError:
             return None
     today_sum = week_sum = month_sum = lm_to_date = 0.0
+    w30_sum = prev30_sum = 0.0
     biggest_today = None
     for t in wd:
         dt = d(t["date"])
         if dt is None:
             continue
+        if w30_start <= dt <= today:
+            w30_sum += t["amount"]
+        elif prev30_start <= dt <= prev30_end:
+            prev30_sum += t["amount"]
         if dt >= month_start:
             month_sum += t["amount"]
             if dt >= week_start:
@@ -389,6 +401,27 @@ async def _spending() -> dict:
     pace_pct = (round(((month_sum - lm_to_date) / lm_to_date) * 100)
                 if baseline == "ok" else None)
 
+    # ---- trailing-30-day signal (homepage) -------------------------------
+    # Coverage rule, same standard as the month-over-month pace: only offer the
+    # vs-previous comparison when the ledger actually spans the earlier window.
+    # A ledger that starts mid-window would make spending look like it fell.
+    prev30_covered = bool(earliest and earliest <= prev30_start)
+    if not prev30_covered:
+        w30_trend = None
+        w30_note = ("ledger history starts "
+                    f"{earliest.isoformat() if earliest else 'unknown'}, so the "
+                    "previous 30 days aren't fully covered")
+    elif prev30_sum <= 0:
+        w30_trend = None
+        w30_note = "no spending in the previous 30 days to compare against"
+    elif days_stale is not None and days_stale >= 7:
+        w30_trend = None
+        w30_note = (f"ledger hasn't been updated in {days_stale} days, so the "
+                    "current 30 days are incomplete")
+    else:
+        w30_trend = round(((w30_sum - prev30_sum) / prev30_sum) * 100)
+        w30_note = None
+
     recent = sorted([t for t in wd], key=lambda t: t["date"], reverse=True)[:12]
     return {
         "connected": True,
@@ -406,6 +439,16 @@ async def _spending() -> dict:
         "ingest_days": (max(0, (today - ingest_latest).days) if ingest_latest else None),
         "month_ingested": bool(ingest_latest and ingest_latest >= month_start),
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
+        # Rolling window for the homepage. Calendar-month values above are what
+        # the monthly budgets use; these two must never be mixed.
+        "last_30": round(w30_sum, 2),
+        "prev_30": round(prev30_sum, 2) if prev30_covered else None,
+        "last_30_trend_pct": w30_trend,
+        "last_30_note": w30_note,
+        "last_30_window": {"start": w30_start.isoformat(), "end": today.isoformat()},
+        # The window is only as current as the ledger; the UI qualifies rather
+        # than presenting a partial window as a complete one.
+        "last_30_through": (ledger_latest.isoformat() if ledger_latest else None),
     }
 
 

@@ -157,20 +157,8 @@ body.cc[data-mode="evening"] {
 }
 .cc-input:focus { outline: none; border-color: var(--accent-2); }
 
-/* ---- Attention feed ---- */
-.att { display: grid; gap: 2px; }
-.att-item { display: flex; align-items: center; gap: 12px; padding: 11px 8px; border-radius: 10px; }
-.att-item:hover { background: var(--panel-2); }
-.att-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.att-item.important .att-dot { background: var(--imp); box-shadow: 0 0 0 4px rgba(255,122,122,.14); }
-.att-item.fyi .att-dot { background: var(--fyi); }
-.att-ic { font-size: 17px; width: 22px; text-align: center; }
-.att-main { flex: 1; min-width: 0; }
-.att-main .t { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.att-main .d { font-size: 12.5px; color: var(--muted); }
-.att-act { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.att-act:hover { border-color: var(--accent-2); }
+/* .att-empty is the shared "nothing here" line used by the Inbox and
+   Portfolio cards. The Needs Attention feed it was named for is gone. */
 .att-empty { color: var(--muted); padding: 8px; }
 
 /* ---- Money / Portfolio ---- */
@@ -293,3 +281,8 @@ body.cc[data-mode="evening"] {
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
   padding: 10px 16px; border-radius: 10px; font-size: 13px; z-index: 90; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+
+/* Gmail sync freshness — deliberately subtle, and about the CHECK, not the
+   messages (a 72h-old message can sit in an inbox checked 4 minutes ago). */
+.inbox-sync { font-size: 11.5px; color: var(--muted); margin: -2px 0 8px; }
+.inbox-sync.failed { color: #ffcc66; }

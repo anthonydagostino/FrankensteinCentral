@@ -144,7 +144,19 @@ if st == 200 and fh:
                 add("PASS", "firefly activity", f"newest ANY-type txn {ll} ({ds}d ago), "
                     f"newest withdrawal {lw} — spending recency, not sync recency")
             add("PASS", "firefly calc", f"today=${sp.get('today')}, week=${sp.get('week')}, "
-                f"month=${sp.get('month')}, daily_avg=${sp.get('daily_avg')}")
+                f"month=${sp.get('month')} (calendar month — what budgets use), "
+                f"daily_avg=${sp.get('daily_avg')}")
+            # Homepage headline: a ROLLING window, deliberately not the month.
+            w = sp.get("last_30_window") or {}
+            if sp.get("last_30") is not None:
+                trend = sp.get("last_30_trend_pct")
+                add("PASS", "firefly 30d", f"past 30 days=${sp.get('last_30')} "
+                    f"({w.get('start')} → {w.get('end')}, rolling), prev30="
+                    f"${sp.get('prev_30')}, trend="
+                    + (f"{trend:+}%" if trend is not None else
+                       f"SUPPRESSED — {sp.get('last_30_note')}"))
+            else:
+                add("WARN", "firefly 30d", "OLD build (no trailing-30 window) — redeploy needed")
             pace = sp.get("pace_pct"); lm = sp.get("last_month_to_date")
             base = sp.get("baseline"); note = sp.get("pace_note")
             if base is None:
@@ -223,6 +235,36 @@ if st == 200 and gh:
                   f"{(str(age) + 'h') if age is not None else '?':>7}  \"{i.get('subject')}\"")
     else:
         add("WARN", "gmail sample", f"{err3 or 'no sample available'}")
+
+    # --- background sync cadence (must not depend on opening the homepage) ---
+    st4, sy, err4 = get(8083, "/sync-status", timeout=20)
+    if st4 == 200 and sy is not None:
+        iv = sy.get("refresh_interval_seconds")
+        add("PASS" if iv == 21600 else "WARN", "gmail interval",
+            f"refresh_interval={iv}s"
+            + ("" if iv == 21600 else " (expected 21600 = 6h)"))
+        status = sy.get("sync_status")
+        add("PASS" if status == "healthy" else "WARN", "gmail sync",
+            f"sync_status={status}, last_successful_sync={sy.get('last_successful_sync')}, "
+            f"last_attempt={sy.get('last_attempt')}")
+        if sy.get("next_refresh_at"):
+            add("PASS", "gmail next", f"next_refresh_at={sy.get('next_refresh_at')}")
+        # Sync age is about the CHECK; message age is about the mail.
+        last = sy.get("last_successful_sync")
+        if last:
+            try:
+                from datetime import datetime, timezone
+                age_m = (datetime.now(timezone.utc)
+                         - datetime.fromisoformat(last)).total_seconds() / 60
+                add("PASS" if age_m <= (21600 / 60) + 30 else "WARN", "gmail age",
+                    f"inbox checked {int(age_m)}m ago "
+                    f"(distinct from message age)")
+            except ValueError:
+                pass
+        if sy.get("error"):
+            add("WARN", "gmail error", str(sy.get("error"))[:70])
+    else:
+        add("WARN", "gmail sync", f"no /sync-status ({err4 or 'old build?'})")
 else:
     add("FAIL", "gmail svc", f"{err}")
 print()
