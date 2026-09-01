@@ -66,7 +66,8 @@ async def _build(fresh: bool = False) -> dict:
         categories=month.get("categories", {}),
         txns=month.get("transactions", []),
         freshness={"ingest_days": month.get("ingest_days"),
-                   "activity_days": month.get("days_stale")},
+                   "activity_days": month.get("days_stale"),
+                   "month_ingested": month.get("month_ingested")},
     )
     status.update({
         "available": True,

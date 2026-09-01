@@ -417,6 +417,9 @@ const RENDERERS = {
       ? `<div class="bud-paused"><p style="margin:0"><b>⏸ Financial data isn't current</b> — ${esc(fr.paused_reason || "ledger freshness unknown")}${d.ingest_latest ? ` (last import evidence: ${esc(d.ingest_latest)})` : ""}.</p>
          <p style="margin:6px 0 0">Budget guidance is paused so it can't mislead you — totals below are as of the ledger. To make it current, import your latest bank transactions.${importBtn}</p></div>`
       : "";
+    const noMonthData = fr.month_ingested === false
+      ? `<p class="bud-paused">📅 <b>No ${esc((mo.label || "this month").split(" ")[0])} transactions imported yet</b> — this month's spending is unknown, not $0. The figures below cover only what's in the ledger.</p>`
+      : "";
     const agoTxt = (n) => n === 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`;
     const syncLine = fresh && fr.ingest_days != null
       ? `<p class="bud-sync">Data synced ${esc(agoTxt(fr.ingest_days))}${fr.activity_days != null ? ` · last transaction ${esc(agoTxt(fr.activity_days))}` : ""}</p>`
@@ -503,7 +506,7 @@ const RENDERERS = {
         <span class="mono">${b.amount != null ? fmt(b.amount) : "—"}</span></div>`).join("") : "";
 
     body.innerHTML = `
-      ${paused}${syncLine}${stats}
+      ${paused}${noMonthData}${syncLine}${stats}
       ${warns ? `<div class="bwarns">${warns}</div>` : (fresh && (d.budgets || []).length ? '<p class="empty" style="margin:4px 0 10px">✓ All budgets compatible with the time remaining.</p>' : "")}
       <div class="vgrid">${vessels}</div>
       ${uncat}${unbudgeted}

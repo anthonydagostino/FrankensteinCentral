@@ -644,6 +644,9 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     ingest_days = sp.get("ingest_days")
     days_stale = ingest_days if ingest_days is not None else sp.get("days_stale")
     stale = days_stale is not None and days_stale >= 2
+    # A brand-new month with nothing imported yet is unknown, not $0.
+    month_ingested = sp.get("month_ingested")
+    month_spend = None if month_ingested is False else sp.get("month")
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
 
@@ -680,7 +683,8 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
 
     return {
         "connected": connected,
-        "today": today_spend, "week": week_spend, "month": sp.get("month"),
+        "today": today_spend, "week": week_spend, "month": month_spend,
+        "month_ingested": month_ingested,
         "stale_days": days_stale if stale else None,
         "pace_pct": pace, "baseline": baseline, "daily_avg": sp.get("daily_avg"),
         "net_worth": (_m("net_worth").get("display")) or (

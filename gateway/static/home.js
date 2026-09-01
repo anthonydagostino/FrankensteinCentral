@@ -216,8 +216,12 @@
       q("#cc-money").innerHTML = `<h3>Money</h3><p class="att-empty">Firefly not connected — set FIREFLY_URL/FIREFLY_TOKEN to see live spending.</p>`;
       return;
     }
-    const staleLine = m.stale_days
-      ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — current-period figures unavailable</p>` : "";
+    // One statement, not two stacked banners: an empty month is the stronger
+    // fact and absorbs the day count when both are true.
+    const staleLine = m.month_ingested === false
+      ? `<p class="mny-stale">📅 ${m.stale_days ? `Nothing imported for <b>${m.stale_days} days</b>` : "Nothing imported yet"} — <b>this month's spending is unknown, not $0</b></p>`
+      : (m.stale_days
+        ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — current-period figures unavailable</p>` : "");
 
     // The single most important budget signal — never the whole database.
     let budLine = "";

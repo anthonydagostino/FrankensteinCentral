@@ -385,6 +385,7 @@ async def _spending() -> dict:
         "days_stale": days_stale,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
         "ingest_days": (max(0, (today - ingest_latest).days) if ingest_latest else None),
+        "month_ingested": bool(ingest_latest and ingest_latest >= month_start),
         "daily_avg": daily_avg, "biggest_today": biggest_today, "recent": recent,
     }
 
@@ -450,6 +451,10 @@ async def _month_payload() -> dict:
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
         "ingest_days": ingest_days,
+        # Nothing imported since the month began => we have NO evidence about
+        # this month's spending. A fresh month with a stale ledger computes to
+        # $0, which is arithmetic, not knowledge: consumers must show unknown.
+        "month_ingested": bool(ingest_latest and ingest_latest >= month_start),
         "importer_url": FIREFLY_IMPORTER_URL or None,
         "categories": categories,
         "income_month": round(income, 2),

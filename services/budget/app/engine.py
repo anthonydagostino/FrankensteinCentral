@@ -45,6 +45,10 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
                                                         "activity_days": freshness}
     ingest_days = fr.get("ingest_days")
     activity_days = fr.get("activity_days")
+    # Has ANYTHING entered the ledger since this month began? If not, the
+    # month-to-date total computes to $0 purely because the month is empty —
+    # that is arithmetic, not evidence, and must render as unknown.
+    month_ingested = fr.get("month_ingested")
     if ingest_days is not None:
         fresh = ingest_days < INGEST_MAX_DAYS
         signal = "ingest"
@@ -160,6 +164,7 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
                   "days_elapsed": d, "days_left": r},
         "freshness": {"ingest_days": ingest_days, "activity_days": activity_days,
                       "signal": signal, "current_ok": fresh,
+                      "month_ingested": month_ingested,
                       "paused_reason": paused_reason},
         "budgets": budgets_out,
         "warnings": warnings,
@@ -178,7 +183,8 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
             "txns": [t for t in txns if _norm(t.get("category")) == "uncategorized"][:10],
         },
         "totals": {
-            "spent_month": total_spend,
+            # None, not 0: no data for this month means we do not know.
+            "spent_month": None if month_ingested is False else total_spend,
             "budgeted_limit": round(sum(b["limit"] for b in budgets_out), 2),
             "budgeted_spent": round(sum(b["spent"] for b in budgets_out), 2),
         },

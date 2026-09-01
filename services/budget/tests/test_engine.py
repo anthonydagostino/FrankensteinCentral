@@ -221,3 +221,27 @@ def test_state_counts_and_totals():
     assert s["state_counts"]["over"] == 1
     assert s["totals"]["budgeted_limit"] == 400.0
     assert s["totals"]["budgeted_spent"] == 270.0
+
+
+# ---------------- empty month (zero != unknown) ----------------
+
+def test_month_with_no_ingestion_reports_unknown_not_zero():
+    """A month that just began with nothing imported computes to $0 by
+    arithmetic. That is not knowledge, so the headline total is None."""
+    s = run(cats={}, freshness={"ingest_days": 4, "activity_days": 4,
+                                "month_ingested": False})
+    assert s["totals"]["spent_month"] is None
+    assert s["freshness"]["month_ingested"] is False
+
+
+def test_month_with_ingestion_reports_real_zero():
+    """Imported today and genuinely nothing spent => a truthful $0."""
+    s = run(cats={}, freshness={"ingest_days": 0, "activity_days": 0,
+                                "month_ingested": True})
+    assert s["totals"]["spent_month"] == 0
+    assert s["freshness"]["current_ok"] is True
+
+
+def test_month_ingested_absent_keeps_totals():
+    s = run(cats=_cats(Dining=(100, 0, 3)))
+    assert s["totals"]["spent_month"] == 100
