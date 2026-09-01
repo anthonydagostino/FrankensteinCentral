@@ -88,32 +88,53 @@ def _accts(payload: dict, kind: str) -> list[dict]:
     return out
 
 
-async def _live() -> dict:
-    today = date.today()
-    start = today.replace(day=1).isoformat()
-    end = today.isoformat()
-    cat_start = (today - timedelta(days=30)).isoformat()  # pie = trailing 30 days
-    async with httpx.AsyncClient() as client:
-        s = await client.get(f"{FIREFLY_URL}/api/v1/summary/basic",
-                             params={"start": start, "end": end},
+async def _read(client, path: str, params: dict, failures: list) -> dict | list | None:
+    """One upstream read. Returns None instead of raising, and records what
+    failed: a single bad Firefly endpoint must degrade its own section, never
+    take the whole dashboard down (which the homepage then renders as the
+    flatly wrong "Firefly not connected")."""
+    try:
+        r = await client.get(f"{FIREFLY_URL}{path}", params=params,
                              headers=_headers(), timeout=20)
-        s.raise_for_status()
-        summary = s.json()
-        asset = await client.get(f"{FIREFLY_URL}/api/v1/accounts",
-                                 params={"type": "asset"}, headers=_headers(), timeout=20)
-        liab = await client.get(f"{FIREFLY_URL}/api/v1/accounts",
-                                params={"type": "liability"}, headers=_headers(), timeout=20)
-        tx = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
-                              params={"limit": 10}, headers=_headers(), timeout=20)
-        cat = await client.get(f"{FIREFLY_URL}/api/v1/insight/expense/category",
-                               params={"start": cat_start, "end": end},
-                               headers=_headers(), timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"{path.rsplit('/', 1)[-1]}: {type(exc).__name__}")
+        return None
 
+
+async def _live() -> dict:
+    # LOCAL_TZ, not the container's UTC clock: for the first hours of each day
+    # UTC is already tomorrow, which pointed this at the wrong month entirely.
+    today = datetime.now(LOCAL_TZ).date()
+    month_start = today.replace(day=1)
+    start = month_start.isoformat()
+    # Firefly rejects a zero-length range with 422, which is exactly what
+    # start==end gives on the 1st of the month. Ask for at least one full day;
+    # month-to-date totals are unaffected (there is no future spending).
+    end = max(today, month_start + timedelta(days=1)).isoformat()
+    cat_start = (today - timedelta(days=30)).isoformat()  # pie = trailing 30 days
+    failures: list[str] = []
+    async with httpx.AsyncClient() as client:
+        summary = await _read(client, "/api/v1/summary/basic",
+                              {"start": start, "end": end}, failures)
+        asset = await _read(client, "/api/v1/accounts", {"type": "asset"}, failures)
+        liab = await _read(client, "/api/v1/accounts", {"type": "liability"}, failures)
+        tx = await _read(client, "/api/v1/transactions", {"limit": 10}, failures)
+        cat = await _read(client, "/api/v1/insight/expense/category",
+                          {"start": cat_start, "end": end}, failures)
+
+    # Everything failed => Firefly really is unreachable. Say so loudly rather
+    # than returning an empty payload that would read as "you have nothing".
+    if len(failures) == 5:
+        raise RuntimeError("; ".join(failures))
+
+    summary = summary or {}
     net = _pick(summary, "net-worth-in-") or {}
-    accounts = _accts(asset.json(), "asset")
-    liabilities = _accts(liab.json(), "liability")
+    accounts = _accts(asset or {}, "asset")
+    liabilities = _accts(liab or {}, "liability")
     recent = []
-    for g in tx.json().get("data", []):
+    for g in (tx or {}).get("data", []):
         splits = g.get("attributes", {}).get("transactions", [])
         if not splits:
             continue
@@ -122,7 +143,7 @@ async def _live() -> dict:
                        "type": t.get("type", ""), "date": (t.get("date") or "")[:10],
                        "currency": t.get("currency_code", "")})
     categories = []
-    for c in (cat.json() if isinstance(cat.json(), list) else []):
+    for c in (cat if isinstance(cat, list) else []):
         amt = abs(float(c.get("difference_float") or 0))
         if amt <= 0:
             continue
@@ -139,6 +160,7 @@ async def _live() -> dict:
         "liabilities": liabilities,
         "categories": categories,
         "recent": recent,
+        "degraded": failures or None,
     }
 
 
