@@ -15,8 +15,8 @@ if ! python3 -c "import pytest, fastapi, httpx" 2>/dev/null; then
   pip install --quiet --break-system-packages pytest fastapi httpx uvicorn
 fi
 
-echo "== python: engine + service tests =="
-python3 -m pytest services/ -q "$@"
+echo "== python: engine, service + protocol tests =="
+python3 -m pytest services/ tests/ -q "$@"
 
 echo
 echo "== javascript: syntax =="
