@@ -121,3 +121,104 @@ Check it: `journalctl -u frankenstein-deploy.service -f`
 
 You can even run both; they both just call `deploy.sh`, and the `concurrency`
 guard + git checks keep them from stepping on each other.
+
+---
+
+# The review/production boundary (current design)
+
+**Pushing code to GitHub does not deploy it.** The poller watches one branch —
+`production` — and nothing else. Task branches can be pushed freely so the
+Product Owner can review a real diff before anything reaches the box.
+
+```
+claude/FC-###-<slug>   pushed freely, deploys nothing, reviewable on GitHub
+        │
+        │  Product Owner accepts + directive says deploy-approved
+        ▼
+scripts/promote.sh     fast-forward only
+        │
+        ▼
+production             the ONLY branch the OptiPlex deploys (~60s later)
+```
+
+## What changed, and why
+
+`autopull.sh` used to default to `git rev-parse --abbrev-ref HEAD` — whatever
+branch happened to be checked out on the box. The systemd unit never set
+`FRANKENSTEIN_BRANCH`, so in practice the poller tracked the same branch
+implementation was pushed to: **every review push went straight to
+production.** It now defaults to `production` and, if that branch is missing,
+deploys nothing and says so in the journal rather than falling back.
+
+`production` was created at `bf6192e` — the exact commit already running — so
+introducing the boundary deployed nothing and changed nothing about the live
+stack. `main` was not used: it holds only the initial commit, 83 behind.
+
+## Recommended: make the branch explicit on the box
+
+The default already gives the correct behavior, but pinning it in the unit
+removes any doubt:
+
+```bash
+sudo systemctl edit --full frankenstein-deploy.service
+# add under [Service]:
+#   Environment=FRANKENSTEIN_BRANCH=production
+sudo systemctl daemon-reload
+```
+
+## Verifying the boundary on the box
+
+```bash
+# 1. a task-branch push must NOT deploy
+git push origin HEAD:refs/heads/throwaway-boundary-test
+sleep 90
+journalctl -u frankenstein-deploy.service --since '-2 min' | grep -i redeploy   # expect nothing
+git push origin --delete throwaway-boundary-test
+
+# 2. what is running right now
+cat ~/.frankenstein/deployed.json
+bash scripts/frankenstein-status.sh
+```
+
+Use a harmless throwaway branch for this — never a product change.
+
+## Rollback
+
+The change is two files and one branch; nothing destructive was done. No
+containers, volumes or data were touched, and no git history was rewritten.
+
+```bash
+# restore the previous poller behavior (tracks the checked-out branch)
+cd ~/FrankensteinCentral
+git checkout <commit-before-this-change> -- scripts/autopull.sh
+
+# or force a specific commit onto the box immediately, bypassing the boundary
+bash scripts/deploy.sh <branch>
+
+# if the unit was edited, drop the override
+sudo systemctl edit --full frankenstein-deploy.service   # remove the Environment line
+sudo systemctl daemon-reload
+```
+
+The production branch can also simply be moved back:
+
+```bash
+git push origin <older-good-sha>:refs/heads/production --force-with-lease
+```
+
+That is a deliberate rollback of what is running, and the box picks it up on
+the next poll.
+
+## What is actually running
+
+`deploy.sh` writes `~/.frankenstein/deployed.json` (outside the repo, because
+`git reset --hard` would erase anything tracked):
+
+```json
+{"production_branch": "production", "running_commit": "…",
+ "last_attempt_commit": "…", "last_attempt_at": "…",
+ "last_result": "success", "last_success_at": "…"}
+```
+
+A failed deploy records `tests_failed` and leaves `running_commit` pointing at
+the last good build — the test gate runs before containers are touched.

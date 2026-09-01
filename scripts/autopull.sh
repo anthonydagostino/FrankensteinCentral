@@ -1,27 +1,46 @@
 #!/usr/bin/env bash
-# Dead-simple auto-deploy WITHOUT GitHub Actions.
+# Auto-deploy poller. Runs on the OptiPlex every minute via
+# frankenstein-deploy.timer (see docs/SETUP-DEPLOY.md).
 #
-# Checks the remote branch every run; if there's new code, redeploys. Pair it
-# with the systemd timer in docs/SETUP-DEPLOY.md to run it every minute. Use
-# this if you don't want to register a GitHub runner — no tokens, no inbound
-# connections, works fully behind your home network.
+# IT WATCHES ONE BRANCH: the production branch, and nothing else.
 #
-#   FRANKENSTEIN_DIR   repo clone (default: $HOME/FrankensteinCentral)
-#   FRANKENSTEIN_BRANCH branch to track (default: whatever is checked out)
+# This is the boundary between "code exists on GitHub" and "code is running in
+# production". Task branches (claude/FC-###-*) can be pushed freely for Product
+# Owner review without touching the running stack; only a change to the
+# production branch deploys. Promotion onto that branch is an explicit,
+# separate act (scripts/promote.sh).
+#
+# It used to default to `git rev-parse --abbrev-ref HEAD` — whatever happened
+# to be checked out — which meant the branch Claude pushed work to WAS the
+# deploy trigger, so nothing could be reviewed before it went live.
+#
+#   FRANKENSTEIN_DIR           repo clone (default: $HOME/FrankensteinCentral)
+#   FRANKENSTEIN_BRANCH        production branch to track (default: production)
 set -euo pipefail
 
 DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
 cd "$DIR"
 
-BRANCH="${FRANKENSTEIN_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+BRANCH="${FRANKENSTEIN_BRANCH:-production}"
 
-git fetch --prune origin "$BRANCH" >/dev/null 2>&1
+git fetch --prune origin "$BRANCH" >/dev/null 2>&1 || true
+
+# Fail SAFE: if the production branch is missing or unfetchable, deploy
+# nothing. Never fall back to the checked-out branch — that fallback is the
+# bug this file exists to fix. Exit 0 so the timer doesn't spin on a failing
+# unit, but say so unmistakably in the journal.
+if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
+  echo "$(date -Is)  production branch 'origin/$BRANCH' not found — NOT deploying."
+  echo "$(date -Is)  create it, or set FRANKENSTEIN_BRANCH in frankenstein-deploy.service."
+  exit 0
+fi
+
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [ "$LOCAL" = "$REMOTE" ]; then
-  exit 0  # already up to date, nothing to do
+  exit 0  # running commit already matches production — nothing to do
 fi
 
-echo "$(date -Is)  new code on $BRANCH: $LOCAL -> $REMOTE, redeploying"
+echo "$(date -Is)  production moved on $BRANCH: $LOCAL -> $REMOTE, redeploying"
 exec bash "$DIR/scripts/deploy.sh" "$BRANCH"

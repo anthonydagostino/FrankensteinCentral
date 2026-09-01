@@ -166,8 +166,11 @@ When the approved scope is complete:
    updated_at = <current UTC>
    ```
 7. Commit the handoff + state update.
-8. Push.
-9. **Stop.** Do not start another feature.
+8. **Push the task branch.** This is always allowed, at every Deployment
+   Authorization level, because a task-branch push deploys nothing. The
+   Product Owner cannot review what was never pushed.
+9. **Stop.** Do not start another feature, and do not promote to production —
+   promotion happens only after acceptance, and only when authorized.
 
 ---
 
@@ -222,6 +225,18 @@ with an explanation in the directive or review notes.
 
 Commit names are a convenience for scanning history. **`STATE.json` remains
 authoritative** — never infer protocol state from commit messages alone.
+
+## Branch naming
+
+| purpose | pattern | example |
+|---|---|---|
+| task / review branch | `claude/FC-###-<slug>` | `claude/FC-002-paycheck-money` |
+| production | `production` | — |
+
+`main` is **not** the production branch: it holds only the initial commit and
+is 83 commits behind the working history, so pointing the box at it would
+deploy an empty repo. `production` was created at the exact commit already
+running, so introducing the boundary changed nothing about what was live.
 
 ## Task IDs
 
@@ -299,6 +314,35 @@ task. That is fine, but:
 
 ---
 
+## Code review vs production deployment
+
+**Pushing code to GitHub is not deploying it.** These are two separate events
+with two separate gates, and the whole review loop depends on the distinction:
+
+```
+Claude implements
+  → pushes a TASK BRANCH            (always allowed; deploys nothing)
+    → Product Owner reviews the real diff, tests, and handoff
+      → Product Owner accepts
+        → if deployment is authorized, the commit is PROMOTED
+          → production branch moves
+            → the OptiPlex deploys it
+```
+
+| | branch | who moves it | effect |
+|---|---|---|---|
+| review | `claude/FC-###-<slug>` | Claude, freely | nothing runs; code is visible on GitHub |
+| production | `production` | `scripts/promote.sh` only | the OptiPlex deploys within ~60s |
+
+The poller (`scripts/autopull.sh`) watches **only** the production branch. It
+never falls back to whatever branch happens to be checked out — that fallback
+is exactly what made every review push a production deploy. If the production
+branch is missing it deploys **nothing** and says so.
+
+`scripts/promote.sh` is the only promotion path. It is fast-forward only, and
+refuses unless protocol status is `accepted` **and** Deployment Authorization
+is `deploy-approved`.
+
 ## Deployment authorization
 
 `PRODUCT_DIRECTIVE.md` carries an explicit field:
@@ -307,18 +351,51 @@ task. That is fine, but:
 Deployment Authorization: none | test-only | deploy-approved
 ```
 
-| value | Claude's behavior |
-|---|---|
-| `none` | Do not deploy. Do not push to a branch that auto-deploys as part of the task. |
-| `test-only` | Implement and test; no production deployment. |
-| `deploy-approved` | Deployment is permitted, within the directive's scope only. |
+| | implement | run tests | **push task branch** | non-prod verification | promote to production |
+|---|---|---|---|---|---|
+| `none` | yes (if turn permits) | yes | **yes** | no | **no** |
+| `test-only` | yes | yes | **yes** | yes | **no** |
+| `deploy-approved` | yes | yes | **yes** | yes | yes, within directive scope |
 
-If the field is missing or unrecognized, treat it as `none` and say so in the
-handoff. Never assume a directive permits deployment.
+**Pushing a task branch is allowed under all three**, because a task-branch
+push cannot deploy. GitHub review is therefore always possible, which is the
+point of the whole arrangement.
 
-Note for this repo: pushing `claude/personal-app-hub-vvpy4h` triggers the
-auto-deploy timer on the OptiPlex. Under `none` or `test-only`, work must stay
-unpushed on that branch (or be pushed elsewhere) until authorized.
+A missing or unrecognized value is treated as `none`, and the handoff must say
+so. Never assume a directive permits deployment.
+
+## Acceptance is not deployment
+
+`status: accepted` means **the work is good**. It does not mean "ship it now."
+Deployment Authorization is a separate decision the Product Owner makes
+independently, and either can come first:
+
+- accepted + `none` → the work is approved and sits on its branch, unpromoted.
+- accepted + `deploy-approved` → promotion may proceed.
+- not accepted + `deploy-approved` → **no promotion.** Authorization does not
+  excuse failing the acceptance criteria, and Claude may not promote work the
+  Product Owner has not accepted.
+
+Deployment state deliberately does **not** live in `STATE.json`: only the box
+knows what actually ran. `implementation_commit` means "this was pushed for
+review", never "this is running".
+
+## What is actually running
+
+`scripts/deploy.sh` writes a record outside the repo (`~/.frankenstein/
+deployed.json`, since `git reset --hard` would erase anything tracked):
+
+```json
+{"production_branch": "production", "running_commit": "<sha>",
+ "last_attempt_commit": "<sha>", "last_attempt_at": "<utc>",
+ "last_result": "success|tests_failed", "last_success_at": "<utc>"}
+```
+
+`bash scripts/frankenstein-status.sh` prints the production commit and, on the
+box, the running commit and last deploy result — including when the last
+attempt failed and the box is therefore still on an older commit. A failed
+deploy leaves the previous build running: the test gate runs before containers
+are touched.
 
 ## High-risk actions
 
@@ -348,6 +425,8 @@ When in doubt, treat the action as high-risk and ask.
 bash scripts/frankenstein-status.sh            # current turn/status/commits
 bash scripts/frankenstein-status.sh --check    # validate STATE.json + consistency
 bash scripts/frankenstein-status.sh --next-id  # propose the next FC-### id
+bash scripts/promote.sh --dry-run              # what promotion would do
+bash scripts/promote.sh                        # promote accepted+authorized work
 ```
 
 `--check` exits non-zero on an invalid or inconsistent state, so it can gate

@@ -11,7 +11,40 @@ set -euo pipefail
 DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
 cd "$DIR"
 
-BRANCH="${1:-$(git rev-parse --abbrev-ref HEAD)}"
+BRANCH="${1:-${FRANKENSTEIN_BRANCH:-production}}"
+
+# Deployment record lives OUTSIDE the repo: `git reset --hard` below would
+# erase anything tracked, and the whole point is to be able to answer "what
+# commit is actually running?" even after a failed deploy.
+STATE_DIR="${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}"
+mkdir -p "$STATE_DIR"
+RECORD="$STATE_DIR/deployed.json"
+
+record() {  # record <result> <sha>
+  local result="$1" sha="$2" prev=""
+  [ -f "$RECORD" ] && prev="$(python3 -c "
+import json,sys
+try: print(json.load(open('$RECORD')).get('running_commit') or '')
+except Exception: print('')
+" 2>/dev/null)"
+  local running="$prev"
+  [ "$result" = "success" ] && running="$sha"
+  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" <<'PY'
+import json, sys, datetime
+path, result, sha, running, branch = sys.argv[1:6]
+try:
+    doc = json.load(open(path))
+except Exception:
+    doc = {}
+now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+doc.update({"production_branch": branch, "last_attempt_commit": sha,
+            "last_attempt_at": now, "last_result": result,
+            "running_commit": running or None})
+if result == "success":
+    doc["last_success_at"] = now
+json.dump(doc, open(path, "w"), indent=2)
+PY
+}
 
 # Support both Docker Compose v2 ("docker compose") and the older v1
 # ("docker-compose"), so the pipeline works whatever the box has installed.
@@ -49,6 +82,7 @@ if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
     echo "!! Commit under test: $(git rev-parse --short HEAD)"
     tail -30 /tmp/fc-test.log
     echo "!! Full output: /tmp/fc-test.log"
+    record "tests_failed" "$(git rev-parse HEAD)"
     exit 1
   fi
   echo "==> Tests passed ($(grep -oE '[0-9]+ passed' /tmp/fc-test.log | tail -1))"
@@ -61,5 +95,6 @@ $DC up -d --build --remove-orphans
 # Keep disk tidy — drop dangling images from old builds.
 docker image prune -f >/dev/null 2>&1 || true
 
+record "success" "$(git rev-parse HEAD)"
 echo "==> Deployed $(git rev-parse --short HEAD) on '$BRANCH'"
 docker compose ps

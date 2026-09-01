@@ -36,5 +36,8 @@ always allowed. The restriction is on changing the product.
   complete. See `docs/BUDGETS.md`.
 - `scripts/verify.sh` is the live diagnostic. It never prints secrets, email
   bodies, or tokens — keep it that way.
-- Deployment: pushing the working branch triggers the auto-deploy timer on the
-  OptiPlex. Respect the directive's `Deployment Authorization` field.
+- Deployment: **pushing is not deploying.** Task branches
+  (`claude/FC-###-<slug>`) are always safe to push for review; only the
+  `production` branch is deployed by the OptiPlex, and only
+  `scripts/promote.sh` moves it — after acceptance, when the directive says
+  `deploy-approved`. See the protocol's deployment sections.

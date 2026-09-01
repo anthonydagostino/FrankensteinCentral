@@ -158,6 +158,31 @@ print(f"  Updated:               {state.get('updated_at')}")
 print(f"  Deployment auth:       {field(DIRECTIVE, 'Deployment Authorization') or '(unset -> treat as none)'}")
 print()
 
+# --- the review/production boundary -------------------------------------
+prod_branch = os.environ.get("FRANKENSTEIN_BRANCH", "production")
+prod_sha = git("rev-parse", "--short", f"origin/{prod_branch}") or \
+           git("rev-parse", "--short", prod_branch)
+print(f"  Production branch:     {prod_branch}")
+print(f"  Production commit:     {prod_sha or '— (branch not found)'}")
+
+# What is actually RUNNING, recorded by deploy.sh outside the repo.
+rec_path = os.path.join(os.environ.get("FRANKENSTEIN_STATE_DIR",
+                                       os.path.expanduser("~/.frankenstein")),
+                        "deployed.json")
+try:
+    with open(rec_path) as f:
+        rec = json.load(f)
+    running = rec.get("running_commit")
+    print(f"  Running on the box:    {(running or '—')[:7]}"
+          f"  ({rec.get('last_result','?')} at {rec.get('last_attempt_at','?')})")
+    if rec.get("last_result") != "success":
+        print(f"  ! last deploy attempt {rec.get('last_attempt_commit','?')[:7]} "
+              f"did NOT succeed — the box is still on {(running or 'unknown')[:7]}")
+except (OSError, ValueError):
+    print("  Running on the box:    — (no deploy record here; this file is "
+          "written on the OptiPlex)")
+print()
+
 may_work = state.get("turn") == "claude" and state.get("status") in CLAUDE_GO
 if may_work:
     print("  => Claude MAY implement the authorized scope in PRODUCT_DIRECTIVE.md.")
