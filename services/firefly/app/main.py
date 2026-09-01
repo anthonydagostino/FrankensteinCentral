@@ -45,6 +45,17 @@ EMPTY = {
 }
 
 
+def _today() -> date:
+    """Today in the user's timezone — the one clock this service uses.
+
+    Every date window here goes through this function so tests can pin the
+    date and exercise month boundaries. The bugs that motivated it were only
+    reachable on specific days (the 1st of a month, and the UTC-vs-local
+    window in the small hours), so "it worked yesterday" is not evidence.
+    """
+    return datetime.now(LOCAL_TZ).date()
+
+
 def _connected() -> bool:
     return bool(FIREFLY_URL and FIREFLY_TOKEN)
 
@@ -103,16 +114,24 @@ async def _read(client, path: str, params: dict, failures: list) -> dict | list 
         return None
 
 
+def _month_window(today: date) -> tuple[str, str]:
+    """The month-to-date range to ask Firefly for, as (start, end).
+
+    Firefly rejects a zero-length range with 422, and start==end is exactly
+    what "first of month -> today" produces on the 1st. So the end is always
+    at least one day past the start. Month-to-date totals are unaffected:
+    there is no future spending to include. Pure and unit-tested across a
+    two-year calendar (services/firefly/tests/test_date_windows.py).
+    """
+    month_start = today.replace(day=1)
+    return month_start.isoformat(), max(today, month_start + timedelta(days=1)).isoformat()
+
+
 async def _live() -> dict:
     # LOCAL_TZ, not the container's UTC clock: for the first hours of each day
     # UTC is already tomorrow, which pointed this at the wrong month entirely.
-    today = datetime.now(LOCAL_TZ).date()
-    month_start = today.replace(day=1)
-    start = month_start.isoformat()
-    # Firefly rejects a zero-length range with 422, which is exactly what
-    # start==end gives on the 1st of the month. Ask for at least one full day;
-    # month-to-date totals are unaffected (there is no future spending).
-    end = max(today, month_start + timedelta(days=1)).isoformat()
+    today = _today()
+    start, end = _month_window(today)
     cat_start = (today - timedelta(days=30)).isoformat()  # pie = trailing 30 days
     failures: list[str] = []
     async with httpx.AsyncClient() as client:
@@ -309,7 +328,7 @@ async def _ledger_latest(client) -> date | None:
 
 
 async def _spending() -> dict:
-    today = datetime.now(LOCAL_TZ).date()
+    today = _today()
     week_start = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
     last_month_end = month_start - timedelta(days=1)
@@ -406,7 +425,7 @@ async def _month_payload() -> dict:
     categorized deposits (refunds/credits), per-category nets, income, and
     ledger freshness. Transfers are excluded entirely."""
     import calendar
-    today = datetime.now(LOCAL_TZ).date()
+    today = _today()
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
@@ -479,7 +498,7 @@ async def bills():
     if not _connected():
         return {"connected": False, "supported": False, "items": []}
     try:
-        today = datetime.now(LOCAL_TZ).date()
+        today = _today()
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{FIREFLY_URL}/api/v1/bills",
                                  headers=_headers(), timeout=20)
@@ -515,7 +534,7 @@ async def audit():
     if not _connected():
         return {"connected": False}
     try:
-        today = datetime.now(LOCAL_TZ).date()
+        today = _today()
         year_ago = today - timedelta(days=365)
         async with httpx.AsyncClient() as client:
             wd = await _fetch_txns(client, "withdrawal", year_ago.isoformat(),

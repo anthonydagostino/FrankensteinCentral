@@ -6,9 +6,12 @@ Run: python3 -m pytest services/budget/tests/test_engine.py -q
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from app.engine import budget_status  # noqa: E402
+from conftest import load_service_module  # noqa: E402
+
+budget_status = load_service_module(
+    "budget_engine", "services/budget/app/engine.py").budget_status
 
 MONTH = {"label": "August", "days_total": 31, "days_elapsed": 20, "days_left": 11}
 FRESH = {"ingest_days": 0, "activity_days": 0}

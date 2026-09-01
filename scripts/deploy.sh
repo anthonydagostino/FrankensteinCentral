@@ -38,6 +38,22 @@ if [ ! -f .env ]; then
   echo "!! Bringing the stack up anyway with built-in defaults / sample data."
 fi
 
+# Gate the deploy on the test suite. The running stack is only touched after
+# the freshly-pulled code passes, so a bad push leaves the box on the last
+# good build instead of taking the dashboard down. Set DEPLOY_SKIP_TESTS=1
+# to force a deploy past this (emergencies only).
+if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
+  echo "==> Running tests before touching the running stack"
+  if ! bash scripts/test.sh >/tmp/fc-test.log 2>&1; then
+    echo "!! TESTS FAILED — deploy aborted, containers left running as-is."
+    echo "!! Commit under test: $(git rev-parse --short HEAD)"
+    tail -30 /tmp/fc-test.log
+    echo "!! Full output: /tmp/fc-test.log"
+    exit 1
+  fi
+  echo "==> Tests passed ($(grep -oE '[0-9]+ passed' /tmp/fc-test.log | tail -1))"
+fi
+
 # Build changed images and (re)start everything. --remove-orphans cleans up
 # any services that were removed from the compose file.
 $DC up -d --build --remove-orphans
