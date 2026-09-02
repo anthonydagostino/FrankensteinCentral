@@ -416,7 +416,16 @@ deployed.json`, since `git reset --hard` would erase anything tracked):
  "last_result": "success|tests_failed", "last_success_at": "<utc>"}
 ```
 
-`bash scripts/frankenstein-status.sh` prints the production commit and, on the
+**Deployment state model.** The poller compares
+`DESIRED = origin/production` against `RUNNING = deployed.json.running_commit`
+(the last *successful* deploy) and deploys when they differ. Local git HEAD is
+never consulted: `deploy.sh` resets the repo to production *before* the test
+gate, so a commit whose tests failed leaves HEAD at production while the
+containers still run the previous build. A missing, unparseable or null record
+means **unknown**, which is treated as "deploy required" — a running commit is
+never inferred.
+
+`bash scripts/frankenstein-status.sh` prints the desired commit and, on the
 box, the running commit and last deploy result — including when the last
 attempt failed and the box is therefore still on an older commit. A failed
 deploy leaves the previous build running: the test gate runs before containers

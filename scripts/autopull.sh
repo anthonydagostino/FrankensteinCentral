@@ -10,18 +10,33 @@
 # production branch deploys. Promotion onto that branch is an explicit,
 # separate act (scripts/promote.sh).
 #
-# It used to default to `git rev-parse --abbrev-ref HEAD` — whatever happened
-# to be checked out — which meant the branch Claude pushed work to WAS the
-# deploy trigger, so nothing could be reviewed before it went live.
+# ── DEPLOYMENT STATE MODEL ───────────────────────────────────────────────
+#   DESIRED = origin/<production branch>
+#   RUNNING = deployed.json .running_commit  (last SUCCESSFUL deployment)
+#   deploy when DESIRED != RUNNING
+#
+# Local git HEAD is NOT consulted. It is a working-copy detail, not proof that
+# anything is running: deploy.sh checks out and resets the repo to production
+# BEFORE running the test gate, so a commit whose tests failed still leaves
+# HEAD == origin/production while the containers run the previous build.
+# Comparing HEAD (the earlier behavior) made that state look converged and
+# permanently suppressed the retry. That wedge happened live during the
+# protocol bootstrap.
+#
+# Fail safe: if the deployment record is missing, unparseable, or has no
+# running_commit, the running state is UNKNOWN and a normal test-gated deploy
+# is attempted. A running SHA is never inferred or manufactured.
 #
 #   FRANKENSTEIN_DIR           repo clone (default: $HOME/FrankensteinCentral)
 #   FRANKENSTEIN_BRANCH        production branch to track (default: production)
-set -euo pipefail
+#   FRANKENSTEIN_STATE_DIR     where deployed.json lives (default: ~/.frankenstein)
+set -uo pipefail
 
 DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
 cd "$DIR"
 
 BRANCH="${FRANKENSTEIN_BRANCH:-production}"
+RECORD="${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}/deployed.json"
 
 git fetch --prune origin "$BRANCH" >/dev/null 2>&1 || true
 
@@ -35,12 +50,28 @@ if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
   exit 0
 fi
 
-LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse "origin/$BRANCH")"
+DESIRED="$(git rev-parse "origin/$BRANCH")"
 
-if [ "$LOCAL" = "$REMOTE" ]; then
-  exit 0  # running commit already matches production — nothing to do
+# What is actually RUNNING — the last successful deployment, recorded by
+# deploy.sh. Any failure to read it yields an empty string, which means
+# "unknown" and therefore "attempt a deploy".
+RUNNING=""
+if [ -f "$RECORD" ] && command -v python3 >/dev/null 2>&1; then
+  RUNNING="$(python3 -c "
+import json
+try:
+    print(json.load(open('$RECORD')).get('running_commit') or '')
+except Exception:
+    print('')" 2>/dev/null)"
 fi
 
-echo "$(date -Is)  production moved on $BRANCH: $LOCAL -> $REMOTE, redeploying"
+if [ -n "$RUNNING" ] && [ "$RUNNING" = "$DESIRED" ]; then
+  exit 0  # the desired commit is the one actually running — nothing to do
+fi
+
+if [ -z "$RUNNING" ]; then
+  echo "$(date -Is)  no confirmed running commit (record missing/unreadable) — deploying ${DESIRED:0:7} on $BRANCH"
+else
+  echo "$(date -Is)  desired ${DESIRED:0:7} != running ${RUNNING:0:7} on $BRANCH — deploying"
+fi
 exec bash "$DIR/scripts/deploy.sh" "$BRANCH"

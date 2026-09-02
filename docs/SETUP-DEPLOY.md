@@ -243,3 +243,16 @@ high-risk action under the protocol and requires explicit approval; prefer
 
 A failed deploy records `tests_failed` and leaves `running_commit` pointing at
 the last good build — the test gate runs before containers are touched.
+
+**What "already deployed" means.** The poller compares `origin/production`
+(desired) against `running_commit` (last successful deploy), never local HEAD.
+`deploy.sh` checks out and resets to production *before* running tests, so
+after a failed gate HEAD equals production while the containers still run the
+older build. The previous HEAD-based check read that as converged and stopped
+retrying — it wedged the box live during the protocol bootstrap. A missing or
+unreadable record counts as unknown and triggers a normal test-gated deploy.
+
+Consequence worth knowing: a commit that fails the gate is retried on every
+poll (~60s). The gate is cheap and containers are never touched on failure, so
+the box keeps serving the last good build while the retries continue. Fix the
+commit or roll production forward with `scripts/rollback.sh` to stop them.

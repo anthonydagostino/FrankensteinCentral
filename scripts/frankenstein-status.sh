@@ -163,7 +163,7 @@ prod_branch = os.environ.get("FRANKENSTEIN_BRANCH", "production")
 prod_sha = git("rev-parse", "--short", f"origin/{prod_branch}") or \
            git("rev-parse", "--short", prod_branch)
 print(f"  Production branch:     {prod_branch}")
-print(f"  Production commit:     {prod_sha or '— (branch not found)'}")
+print(f"  Desired commit:        {prod_sha or '— (branch not found)'}   (origin/{prod_branch})")
 
 # What is actually RUNNING, recorded by deploy.sh outside the repo.
 rec_path = os.path.join(os.environ.get("FRANKENSTEIN_STATE_DIR",
@@ -172,15 +172,28 @@ rec_path = os.path.join(os.environ.get("FRANKENSTEIN_STATE_DIR",
 try:
     with open(rec_path) as f:
         rec = json.load(f)
+    # Desired, running and attempted are three different facts. A failed
+    # attempt must never read as success: the box keeps running the last good
+    # commit while last_attempt_commit moves on.
     running = rec.get("running_commit")
-    print(f"  Running on the box:    {(running or '—')[:7]}"
-          f"  ({rec.get('last_result','?')} at {rec.get('last_attempt_at','?')})")
-    if rec.get("last_result") != "success":
-        print(f"  ! last deploy attempt {rec.get('last_attempt_commit','?')[:7]} "
-              f"did NOT succeed — the box is still on {(running or 'unknown')[:7]}")
+    attempt = rec.get("last_attempt_commit")
+    result = rec.get("last_result", "?")
+    print(f"  Running commit:        {(running or '— (none confirmed)')[:7]}"
+          f"   (last SUCCESSFUL deploy)")
+    print(f"  Last attempted:        {(attempt or '—')[:7]}   at {rec.get('last_attempt_at','?')}")
+    print(f"  Last deploy result:    {result}")
+    if running and prod_sha and not running.startswith(prod_sha):
+        print(f"  ! DEPLOYMENT PENDING — desired {prod_sha} is not the running "
+              f"commit {running[:7]}")
+    if result != "success":
+        print(f"  ! last attempt did NOT succeed; the box is still on "
+              f"{(running or 'an unconfirmed commit')[:7]}")
 except (OSError, ValueError):
-    print("  Running on the box:    — (no deploy record here; this file is "
+    print("  Running commit:        — (no deploy record here; this file is "
           "written on the OptiPlex)")
+    print("  Last attempted:        —")
+    print("  Last deploy result:    — (unknown; a poll would treat this as "
+          "'deploy required')")
 print()
 
 may_work = state.get("turn") == "claude" and state.get("status") in CLAUDE_GO

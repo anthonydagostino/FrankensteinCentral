@@ -11,6 +11,7 @@ They test the decision, not a description of it.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,12 +68,32 @@ def box(tmp_path):
         f'#!/usr/bin/env bash\necho "$1" > "{marker}"\n')
     shutil.copy(AUTOPULL, clone / "scripts" / "autopull.sh")
 
-    return {"remote": remote, "clone": clone, "seed": seed, "marker": marker}
+    state = tmp_path / "state"
+    state.mkdir()
+    return {"remote": remote, "clone": clone, "seed": seed, "marker": marker,
+            "state": state, "record": state / "deployed.json"}
+
+
+def set_running(box, sha, result="success"):
+    """Write deployed.json as deploy.sh would: running_commit is the last
+    SUCCESSFUL deploy, which is the poller's notion of 'what is running'."""
+    box["record"].write_text(json.dumps({
+        "production_branch": "production", "running_commit": sha,
+        "last_attempt_commit": sha, "last_result": result,
+        "last_attempt_at": "2026-09-01T00:00:00+00:00"}))
+
+
+def converge(box):
+    """Mark the box as having successfully deployed the current production tip."""
+    sha = git("rev-parse", "origin/production", cwd=box["clone"])
+    set_running(box, sha)
+    return sha
 
 
 def poll(box, branch=None):
     """Run one poller cycle exactly as the systemd unit does."""
-    env = dict(os.environ, FRANKENSTEIN_DIR=str(box["clone"]))
+    env = dict(os.environ, FRANKENSTEIN_DIR=str(box["clone"]),
+               FRANKENSTEIN_STATE_DIR=str(box["state"]))
     env.pop("FRANKENSTEIN_BRANCH", None)
     if branch:
         env["FRANKENSTEIN_BRANCH"] = branch
@@ -95,6 +116,7 @@ def push_commit(box, branch, text):
 
 def test_pushing_a_task_branch_does_not_deploy(box):
     """Claude pushes FC work for review; production must not move."""
+    converge(box)          # box has successfully deployed production
     push_commit(box, "claude/FC-002-some-task", "task work\n")
     r, deployed = poll(box)
     assert not deployed, (
@@ -107,6 +129,7 @@ def test_pushing_a_task_branch_does_not_deploy(box):
     "experiment", "throwaway-test",
 ])
 def test_no_non_production_branch_deploys(box, branch):
+    converge(box)
     push_commit(box, branch, f"work on {branch}\n")
     _, deployed = poll(box)
     assert not deployed, f"{branch} triggered a deploy"
@@ -114,6 +137,7 @@ def test_no_non_production_branch_deploys(box, branch):
 
 def test_changing_the_production_branch_does_deploy(box):
     """The other half: promotion MUST reach the box."""
+    converge(box)
     sha = push_commit(box, "production", "promoted\n")
     r, deployed = poll(box)
     assert deployed, f"production moved but no deploy ran\n{r.stdout}{r.stderr}"
@@ -123,6 +147,7 @@ def test_changing_the_production_branch_does_deploy(box):
 
 def test_task_branch_then_promotion(box):
     """The full loop: push for review (no deploy), then promote (deploy)."""
+    converge(box)
     sha = push_commit(box, "claude/FC-004-thing", "reviewable\n")
     _, deployed = poll(box)
     assert not deployed, "review push deployed"
@@ -137,6 +162,7 @@ def test_task_branch_then_promotion(box):
 def test_missing_production_branch_fails_safe(box):
     """No production branch must mean NO deploy — never fall back to whatever
     is checked out (that fallback was the original bug)."""
+    converge(box)
     push_commit(box, "claude/FC-005-x", "work\n")
     r, deployed = poll(box, branch="does-not-exist")
     assert not deployed
@@ -259,3 +285,182 @@ def test_promote_bootstrap_flag_keeps_fast_forward_safety():
     gate = src.index('if [ "$FORCE" != "1" ]; then')
     gate_end = src.index("git fetch --prune origin")
     assert not (gate < ff < gate_end), "fast-forward check must apply even with --bootstrap"
+
+
+# ══ deployment STATE MODEL: desired vs running, not local HEAD ══════════
+#
+# The live bootstrap wedged the poller. deploy.sh checks out and resets the
+# repo to production BEFORE the test gate, so a commit whose tests fail leaves
+# local HEAD == origin/production while the containers still run the previous
+# build. The old poller compared HEAD and concluded "converged", permanently
+# suppressing the retry.
+
+def head_equals_production(box):
+    """Reproduce deploy.sh's checkout: local HEAD moved to production."""
+    sh("git", "fetch", "-q", "origin", "production", cwd=box["clone"])
+    sh("git", "checkout", "-q", "-B", "production", "origin/production",
+       cwd=box["clone"])
+    return git("rev-parse", "HEAD", cwd=box["clone"])
+
+
+def test_failed_test_gate_still_retries_deployment(box):
+    """THE EXACT LIVE FAILURE.
+
+    origin/production = NEW, local HEAD = NEW (deploy.sh reset it),
+    last_result = tests_failed, running_commit = OLD.
+    The poller MUST attempt to deploy NEW.
+    """
+    old = converge(box)
+    new = push_commit(box, "production", "new code\n")
+    head = head_equals_production(box)
+    assert head == new, "precondition: HEAD was moved to production by the checkout"
+    set_running(box, old, result="tests_failed")   # containers still on OLD
+
+    r, deployed = poll(box)
+    assert deployed, (
+        "poller treated a failed deploy as converged because local HEAD "
+        f"matched production — the live wedge.\n{r.stdout}{r.stderr}")
+    assert "!= running" in r.stdout
+
+
+def test_failed_deploy_retries_on_every_subsequent_cycle(box):
+    """Retries must not be suppressed by local checkout state."""
+    old = converge(box)
+    push_commit(box, "production", "new code\n")
+    head_equals_production(box)
+    set_running(box, old, result="tests_failed")
+    for cycle in range(3):
+        box["marker"].unlink(missing_ok=True)
+        _, deployed = poll(box)
+        assert deployed, f"retry suppressed on cycle {cycle + 1}"
+
+
+def test_null_running_commit_attempts_deployment(box):
+    """origin/production = NEW, HEAD = NEW, running_commit = null.
+    Never infer success from HEAD; attempt the normal test-gated deploy."""
+    push_commit(box, "production", "new code\n")
+    head_equals_production(box)
+    box["record"].write_text(json.dumps({
+        "production_branch": "production", "running_commit": None,
+        "last_attempt_commit": None, "last_result": "unknown"}))
+    r, deployed = poll(box)
+    assert deployed, "null running_commit must be treated as unknown, not converged"
+    assert "no confirmed running commit" in r.stdout
+
+
+@pytest.mark.parametrize("content,label", [
+    ("", "empty file"),
+    ("{ not json", "unparseable"),
+    ('{"production_branch": "production"}', "key absent"),
+    ('{"running_commit": ""}', "empty string"),
+])
+def test_unreadable_record_fails_safe_by_deploying(box, content, label):
+    push_commit(box, "production", "new code\n")
+    head_equals_production(box)
+    box["record"].write_text(content)
+    _, deployed = poll(box)
+    assert deployed, f"{label}: unknown running state must attempt a deploy"
+
+
+def test_missing_record_fails_safe_by_deploying(box):
+    push_commit(box, "production", "new code\n")
+    head_equals_production(box)
+    assert not box["record"].exists()
+    _, deployed = poll(box)
+    assert deployed, "a missing record must be treated as unknown, not converged"
+
+
+def test_running_equals_desired_does_not_deploy_whatever_head_is(box):
+    """The converse: running_commit == desired means no deploy, even with
+    local HEAD pointing somewhere else entirely."""
+    sha = converge(box)
+    sh("git", "checkout", "-q", "-B", "some-other-branch", cwd=box["clone"])
+    (box["clone"] / "scratch.txt").write_text("local mess\n")
+    sh("git", "add", "-A", cwd=box["clone"])
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "local divergence", cwd=box["clone"])
+    assert git("rev-parse", "HEAD", cwd=box["clone"]) != sha
+    _, deployed = poll(box)
+    assert not deployed, "local HEAD must not trigger a deploy; running == desired"
+
+
+def test_poller_never_reads_local_head_for_convergence():
+    src = "\n".join(l for l in AUTOPULL.read_text().splitlines()
+                    if not l.lstrip().startswith("#"))
+    assert "rev-parse HEAD" not in src, (
+        "local HEAD is not proof that a commit is running — it is moved by "
+        "deploy.sh before the test gate")
+    assert "running_commit" in src, "the poller must consult the deployment record"
+
+
+# ---- deploy.sh record invariant ----------------------------------------
+
+DEPLOY = ROOT / "scripts" / "deploy.sh"
+
+
+def test_failed_deploy_never_advances_running_commit():
+    """Invariant: running_commit = last SUCCESSFULLY deployed commit."""
+    src = DEPLOY.read_text()
+    record_fn = src[src.index("record() {"):src.index("echo \"==> Deploying")]
+    assert 'local running="$prev"' in record_fn
+    assert '[ "$result" = "success" ] && running="$sha"' in record_fn, \
+        "running_commit may only advance on success"
+
+
+def test_failed_deploy_records_the_attempt():
+    src = DEPLOY.read_text()
+    assert 'record "tests_failed"' in src, "a failed gate must be recorded"
+    assert "last_attempt_commit" in src
+
+
+def test_running_commit_survives_a_failed_deploy(tmp_path):
+    """Behavioral: run deploy.sh's record() twice — success then failure —
+    and confirm running_commit stays on the successful SHA."""
+    src = DEPLOY.read_text()
+    fn = src[src.index("record() {"):src.index('echo "==> Deploying')]
+    record_json = tmp_path / "deployed.json"
+    harness = tmp_path / "h.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\n"
+        f'RECORD="{record_json}"\nBRANCH="production"\n' + fn +
+        '\nrecord "success" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+        'record "tests_failed" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"\n')
+    subprocess.run(["bash", str(harness)], capture_output=True, timeout=60)
+    doc = json.loads(record_json.read_text())
+    assert doc["running_commit"] == "a" * 40, "a failed deploy advanced running_commit"
+    assert doc["last_attempt_commit"] == "b" * 40, "the attempt should be recorded"
+    assert doc["last_result"] == "tests_failed"
+
+
+# ---- test-host tooling --------------------------------------------------
+
+TEST_SH = ROOT / "scripts" / "test.sh"
+
+
+def test_test_sh_never_invokes_a_bare_pip():
+    """The OptiPlex had python3 with no `pip` in PATH; that failed a deploy."""
+    for line in TEST_SH.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped.startswith("echo"):
+            continue
+        # remove the legitimate module form first, then look for a bare binary
+        without_module = stripped.replace("python3 -m pip", "")
+        assert not re.search(r'(^|[;&|(\s])pip\s+install', without_module), \
+            f"bare pip invocation: {stripped}"
+
+
+def test_test_sh_uses_python3_pip_module():
+    assert "python3 -m pip install" in TEST_SH.read_text()
+
+
+def test_test_sh_names_the_host_prerequisite():
+    text = TEST_SH.read_text()
+    assert "python3-pip" in text, "must name the exact host package"
+    assert "does not run apt or sudo itself" in text
+
+
+def test_test_sh_does_not_run_apt_or_sudo():
+    code_lines = [l for l in TEST_SH.read_text().splitlines()
+                  if not l.strip().startswith("#") and not l.strip().startswith("echo")]
+    joined = "\n".join(code_lines)
+    assert "apt-get install" not in joined and "sudo " not in joined

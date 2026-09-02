@@ -11,8 +11,22 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! python3 -c "import pytest, fastapi, httpx" 2>/dev/null; then
-  echo "installing test deps..."
-  pip install --quiet --break-system-packages pytest fastapi httpx uvicorn
+  # Never invoke a bare `pip`: the OptiPlex had python3 with no `pip` in PATH,
+  # which failed a live deploy. Use the interpreter's own pip module, and if
+  # that is missing say exactly which host package installs it rather than
+  # running apt/sudo from a test script.
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "!! Test dependencies are missing and python3 has no working pip module."
+    echo "!! Install the host prerequisite, then re-run:"
+    echo "!!     sudo apt-get install -y python3-pip"
+    echo "!! (this script deliberately does not run apt or sudo itself)"
+    exit 1
+  fi
+  echo "installing test deps via python3 -m pip..."
+  python3 -m pip install --quiet --break-system-packages \
+    pytest fastapi httpx uvicorn \
+    || python3 -m pip install --quiet pytest fastapi httpx uvicorn \
+    || { echo "!! could not install test dependencies"; exit 1; }
 fi
 
 echo "== python: engine, service + protocol tests =="
