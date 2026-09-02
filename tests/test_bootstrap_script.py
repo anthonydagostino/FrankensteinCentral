@@ -120,7 +120,8 @@ def test_throwaway_pre_existence_is_checked():
 
 def test_trap_covers_interruption_and_failure():
     c = code()
-    assert "trap cleanup EXIT INT TERM" in c, "cleanup must run on Ctrl-C and TERM too"
+    assert "trap cleanup EXIT" in c
+    assert "'exit 130' INT" in c and "'exit 143' TERM" in c
 
 
 def test_cleanup_deletes_the_throwaway_branch_and_restores_the_timer():
@@ -255,3 +256,112 @@ def test_no_destructive_docker_or_data_commands():
     for danger in ("docker compose down", "docker volume rm", "docker rm",
                    "rm -rf", "git reset --hard", "git clean"):
         assert danger not in joined, f"destructive command present: {danger}"
+
+
+# ══ Product Owner second review — four implementation-level fixes ═══════
+
+# ---- issue 1: recovery flag cleared only after PROVEN active -----------
+
+def test_timer_stopped_flag_is_cleared_only_after_proving_active():
+    """TIMER_STOPPED means "cleanup must still restore this timer". Clearing it
+    on the start command's exit status would disarm recovery while the timer
+    was actually down."""
+    c = code()
+    resume = c[c.index("RESUME THE TIMER"):c.index("running_commit()")]
+    start = resume.index('systemctl start "$TIMER"')
+    verify = resume.index("is-active --quiet")
+    clear = resume.index("TIMER_STOPPED=0")
+    assert start < verify < clear, (
+        "TIMER_STOPPED must be cleared AFTER is-active verification, not before")
+
+
+def test_timer_verification_failure_still_has_recovery_armed():
+    c = code()
+    resume = c[c.index("RESUME THE TIMER"):c.index("running_commit()")]
+    die_line = resume.index("did not come back active")
+    clear = resume.index("TIMER_STOPPED=0")
+    assert die_line < clear, "the die() on inactive timer must fire while recovery is armed"
+
+
+# ---- issue 2: cleanup is not reentrant --------------------------------
+
+def test_signals_funnel_through_a_single_exit_trap():
+    c = code()
+    assert "trap cleanup EXIT\n" in c, "cleanup must be trapped on EXIT only"
+    assert "trap 'exit 130' INT" in c, "INT must set status, not invoke cleanup directly"
+    assert "trap 'exit 143' TERM" in c, "TERM must set status, not invoke cleanup directly"
+    assert "trap cleanup EXIT INT TERM" not in c, "reentrant trap pattern returned"
+
+
+def test_cleanup_has_an_idempotency_guard():
+    c = code()
+    body = c[c.index("cleanup() {"):c.index("trap cleanup EXIT")]
+    assert 'CLEANUP_RAN' in body and "return" in body
+
+
+def test_cleanup_runs_exactly_once_when_invoked_twice(tmp_path):
+    """Behavioral: extract the guard + a side effect and call it twice."""
+    marker = tmp_path / "ran"
+    harness = tmp_path / "h.sh"
+    src = SCRIPT.read_text()
+    guard = src[src.index("CLEANUP_RAN=0"):src.index("trap cleanup EXIT")]
+    # replace the privileged body with a countable side effect
+    guard = re.sub(r'(?s)(CLEANUP_RAN=1).*', r'\1\n  echo x >> "' + str(marker) + '"\n}\n', guard)
+    harness.write_text("#!/usr/bin/env bash\n" + guard + "\ncleanup\ncleanup\ncleanup\n")
+    subprocess.run(["bash", str(harness)], capture_output=True, timeout=30)
+    assert marker.read_text().count("x") == 1, "cleanup body ran more than once"
+
+
+# ---- issue 3: already-at-target stops before TEST A --------------------
+
+def test_already_at_target_exits_before_test_a():
+    c = code()
+    early = c.index('if [ "$ALREADY_AT_TARGET" = "1" ]; then')
+    test_a = c.index("6. TEST A")
+    assert early < test_a
+    block = c[early:test_a]
+    assert "exit 3" in block, "the N/A path must exit 3 before TEST A"
+    assert "print_summary" in block, "it must still print a result block"
+    assert "not run" in block, "TEST A must be reported as not run, not as passed"
+
+
+def test_already_at_target_creates_no_throwaway_branch():
+    c = code()
+    # locate the EARLY-EXIT block specifically; the promote stage's else-branch
+    # legitimately contains the promotion push
+    early = c.index('TEST_A="not run')
+    block = c[early:c.index("6. TEST A")]
+    assert "CANDIDATE" not in block, "no throwaway branch may be created on the N/A path"
+    assert "git push" not in block
+
+
+def test_na_path_states_acceptance_was_not_obtained():
+    c = code()
+    assert "two-direction proof required for protocol acceptance was NOT obtained" in c
+
+
+def test_summary_function_is_defined_before_it_is_used():
+    """The N/A path calls print_summary earlier than the normal path; bash
+    needs the definition first."""
+    src = SCRIPT.read_text()
+    definition = src.index("print_summary() {")
+    first_call = min(i for i in range(len(src))
+                     if src.startswith("print_summary", i)
+                     and not src.startswith("print_summary() {", i))
+    assert definition < first_call
+
+
+# ---- issue 4: remote confirmation is mandatory ------------------------
+
+def test_throwaway_remote_confirmation_is_mandatory():
+    c = code()
+    confirm = c[c.index('THROWAWAY="$CANDIDATE"'):c.index("waiting 150s")]
+    assert "|| die" in confirm, (
+        "remote confirmation must stop the script; without set -e a bare "
+        "&& echo silently continues into an invalid isolation test")
+    assert "cannot be observed on the remote" in confirm
+
+
+def test_confirmation_failure_message_explains_the_risk():
+    c = code()
+    assert "proves nothing" in c[c.index('THROWAWAY="$CANDIDATE"'):]

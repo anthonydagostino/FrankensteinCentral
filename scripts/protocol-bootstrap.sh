@@ -40,8 +40,15 @@ TIMER_STOPPED=0       # set once we have quiesced the timer
 die() { echo; echo "STOPPED: $*"; exit 1; }
 hr()  { echo; echo "════════ $* ════════"; }
 
+CLEANUP_RAN=0
+
 cleanup() {
   local rc=$?
+  # Issue 2: this routine runs privileged commands; it must never be
+  # reentrant. All termination paths funnel through the EXIT trap (INT/TERM
+  # just set an exit status), and this guard makes a second entry a no-op.
+  [ "$CLEANUP_RAN" = "1" ] && return
+  CLEANUP_RAN=1
   if [ -n "$THROWAWAY" ]; then
     echo
     echo "cleanup: deleting throwaway branch '$THROWAWAY'"
@@ -61,7 +68,12 @@ cleanup() {
   fi
   exit "$rc"
 }
-trap cleanup EXIT INT TERM
+# One cleanup, one funnel: INT/TERM only set an exit status, and the EXIT
+# trap does the work. Trapping cleanup on all three could invoke it directly
+# from a signal and then again via its own exit.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ─────────────────────────────────────────────────────────────────────────
 # Item 8: the target commit must be explicit. A stale default silently
@@ -213,9 +225,12 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────
 hr "5. RESUME THE TIMER AND WAIT FOR CONVERGENCE"
+# Issue 1: the recovery flag means "cleanup must still restore this timer".
+# It is cleared only after the timer is PROVEN active — clearing it on the
+# start command's exit status would disarm recovery while the timer was down.
 sudo systemctl start "$TIMER" || die "could not restart $TIMER"
-TIMER_STOPPED=0
 systemctl is-active --quiet "$TIMER" || die "$TIMER did not come back active"
+TIMER_STOPPED=0
 echo "restarted            : $TIMER"
 
 running_commit() {
@@ -230,6 +245,48 @@ import json
 try: print(json.load(open('$RECORD')).get('last_success_at') or '')
 except Exception: print('')" 2>/dev/null
 }
+
+print_summary() {
+  local final_result
+  final_result="$(python3 -c "
+import json
+try: print(json.load(open('$RECORD')).get('last_result') or 'unknown')
+except Exception: print('unknown')" 2>/dev/null)"
+  hr "PROTOCOL BOOTSTRAP RESULT"
+  cat <<SUMMARY
+Protocol Bootstrap Result
+
+  Production branch:            $PROD_BRANCH
+  Production SHA:               $(git rev-parse --short "origin/$PROD_BRANCH")   (was ${PROD_BEFORE:-none})
+  Running SHA:                  $(running_commit | cut -c1-7)
+  Systemd deploy branch:        $(systemctl show "$UNIT" -p Environment | grep -o 'FRANKENSTEIN_BRANCH=[^ "]*' || echo 'NOT PINNED')
+  Deploy timer:                 $(systemctl is-active "$TIMER")
+  Last deploy result:           $final_result
+  Last successful deploy:       $(last_success)
+  Task-branch isolation test:   $TEST_A
+  Production deploy test:       $TEST_B
+SUMMARY
+  echo
+  echo "Paste this whole output back for Product Owner review."
+}
+
+
+# Issue 3: if production was already at the target, the two-direction proof
+# is impossible from this run. Configuration is complete and verified (pin +
+# active timer), so stop here: creating a throwaway branch and running the
+# isolation test would perform unnecessary boundary operations on production
+# when final acceptance is already known to be unobtainable.
+if [ "$ALREADY_AT_TARGET" = "1" ]; then
+  TEST_A="not run (TEST B unprovable — stopped before it)"
+  echo
+  echo "Configuration is complete: production pin verified, timer active."
+  echo "TEST B is unprovable from this run and TEST A is therefore not run."
+  print_summary
+  echo
+  echo "EXIT: 3 — migration may be correctly configured, but the full"
+  echo "two-direction proof required for protocol acceptance was NOT obtained."
+  exit 3
+fi
 
 if [ "$ALREADY_AT_TARGET" = "0" ]; then
   echo "waiting up to 12 min for the poller to deploy $(git rev-parse --short "$TARGET_FULL")"
@@ -290,8 +347,12 @@ echo "before: production=${PROD_A:0:7} running=${RUN_A:0:7} last_success_at=${SU
 git push origin "$TARGET_FULL:refs/heads/$CANDIDATE" >/dev/null 2>&1 \
   || die "could not push throwaway branch"
 THROWAWAY="$CANDIDATE"          # from here the trap will clean it up
+# Issue 4: TEST A only means something if a real non-production remote branch
+# exists. Without set -e a failed confirmation would silently continue into an
+# invalid isolation test, so this is mandatory.
 git ls-remote --heads origin "$CANDIDATE" | grep -q . \
-  && echo "confirmed on GitHub  : yes"
+  || die "pushed '$CANDIDATE' but it cannot be observed on the remote. Refusing to run TEST A: an isolation test against a branch that may not exist proves nothing."
+echo "confirmed on GitHub  : yes"
 
 echo "waiting 150s (two full poll cycles)..."
 sleep 150
@@ -315,32 +376,11 @@ echo
 echo "TEST A: $TEST_A  (production SHA, running_commit, deployed.json and last_success_at all unchanged)"
 
 # ─────────────────────────────────────────────────────────────────────────
-hr "PROTOCOL BOOTSTRAP RESULT"
-FINAL_RESULT="$(python3 -c "
-import json
-try: print(json.load(open('$RECORD')).get('last_result') or 'unknown')
-except Exception: print('unknown')" 2>/dev/null)"
-
-cat <<SUMMARY
-Protocol Bootstrap Result
-
-  Production branch:            $PROD_BRANCH
-  Production SHA:               $(git rev-parse --short "origin/$PROD_BRANCH")   (was ${PROD_BEFORE:-none})
-  Running SHA:                  $(running_commit | cut -c1-7)
-  Systemd deploy branch:        $(systemctl show "$UNIT" -p Environment | grep -o 'FRANKENSTEIN_BRANCH=[^ "]*' || echo 'NOT PINNED')
-  Deploy timer:                 $(systemctl is-active "$TIMER")
-  Last deploy result:           $FINAL_RESULT
-  Last successful deploy:       $(last_success)
-  Task-branch isolation test:   $TEST_A
-  Production deploy test:       $TEST_B
-SUMMARY
-echo
-echo "Paste this whole output back for Product Owner review."
+print_summary
 
 # Item 5: the exit code must reflect whether the boundary was actually proven.
 [ "$TEST_A" = "PASS" ] || { echo; echo "EXIT: non-zero — TEST A did not pass."; exit 1; }
 case "$TEST_B" in
   PASS) exit 0 ;;
-  N/A*) echo; echo "EXIT: 3 — TEST B unproven (production was already at target)."; exit 3 ;;
   *)    echo; echo "EXIT: non-zero — TEST B did not pass."; exit 1 ;;
 esac
