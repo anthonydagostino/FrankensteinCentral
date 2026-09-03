@@ -14,28 +14,26 @@
 #   control             PO <-> Claude orchestration state. Never deploys.
 #   claude/FC-###-work  implementation work. Never deploys.
 #
-# ── THE CONTAINMENT MODEL ────────────────────────────────────────────────
-# Three separate trust zones, because a prompt is not containment:
+# ── THE ONE RULE THAT SHAPES EVERYTHING BELOW ────────────────────────────
+# ONCE THE CHILD HAS RUN, THE TRUSTED HOST NEVER EXECUTES A COMMAND AGAINST,
+# NOR WRITES THROUGH, THE CHILD'S WORKSPACE — INCLUDING ITS .git.
 #
-#   1. THE CHILD ZONE — everything Claude can influence. Runs in a user+mount
-#      namespace where the ONLY writable thing is the workspace (the agent
-#      clone, bind-mounted at a neutral path outside the home) and a scratch
-#      home. The real home directory is REPLACED by that scratch home, so
-#      ~/.config/gh, ~/.ssh, ~/.frankenstein and shell configuration simply do
-#      not exist for the child. Shared runtime/temp locations are masked with
-#      private tmpfs. The clone has no git remote for the duration of the run.
-#      Only narrowly configured Claude authentication paths are exposed, and
-#      only read-only.
+# The child may replace .git, .git/config or any descendant with a symlink
+# pointing anywhere on the host, so "sanitizing" that tree from the host is
+# itself the vulnerability. Instead the workspace is EXPORTED from inside the
+# sandbox as an inert artifact — a git bundle plus a small manifest, written
+# into a directory the child never saw — and the host consumes only that.
 #
-#   2. THE VERIFICATION ZONE — the independent test re-run. Claude can edit
-#      scripts/test.sh, so running it on the host would be a direct escape.
-#      It runs inside the SAME namespace, with the same masks.
+# The run is therefore four separate sandbox invocations, each in its own PID
+# namespace so nothing survives between them:
 #
-#   3. THE PUBLISHER ZONE — trusted, outside the sandbox. It NEVER executes
-#      anything originating in the child's workspace: not scripts/test.sh, not
-#      .git/hooks, not .git/config. The child's git control plane is restored
-#      from a trusted copy before any git command touches that clone, and
-#      publication happens from FRESH clones the child never had access to.
+#   A. the child (Claude, or a mock)
+#   B. structure check   — fixed git commands only
+#   C. verification      — scripts/test.sh, which the child may have edited
+#   D. export            — fixed git commands only, writing the bundle out
+#
+# Publication happens on the host from FRESH clones of origin, fed only by the
+# artifact from D.
 set -uo pipefail
 
 AGENT_DIR="${FRANKENSTEIN_AGENT_DIR:-$HOME/.frankenstein/agent}"
@@ -80,58 +78,70 @@ REAL_HOME="$(abspath "$HOME")"
 PROD_REAL="$(abspath "$PROD_DIR")"
 AGENT_CLONE="$CLONE_ROOT/agent-repo"
 CLONE_REAL="$(abspath "$AGENT_CLONE")"
+CHILD_HOME="$AGENT_DIR/child-home"
+EXPORT_DIR="$AGENT_DIR/export"
 
 # ── containment plumbing ─────────────────────────────────────────────────
-# `contains a` is true when $2 is $1 or lives inside it.
+# `contains $a $b` is true when $b is $a or lives inside it.
 contains() { [ "$1" = "$2" ] && return 0; case "$2/" in "$1"/*) return 0 ;; esac; return 1; }
 
-# Where the workspace is bind-mounted for the child. It must be OUTSIDE the
-# home directory, because the home is about to be replaced wholesale. Prefer an
-# empty conventional mountpoint so nothing real is shadowed.
-pick_workspace_mount() {
-  local c
-  if [ -n "${FRANKENSTEIN_WORKSPACE_MOUNT:-}" ]; then echo "$FRANKENSTEIN_WORKSPACE_MOUNT"; return; fi
-  for c in /mnt /media /srv; do
+# Two neutral mountpoints OUTSIDE the home: one for the workspace, one for the
+# export directory. They must be outside the home because the home is about to
+# be replaced wholesale. Prefer empty conventional mountpoints so nothing real
+# is shadowed.
+MOUNT_CANDIDATES="${FRANKENSTEIN_MOUNTPOINTS:-/mnt /media /srv}"
+pick_mountpoints() {
+  local c empty="" any=""
+  for c in $MOUNT_CANDIDATES; do
     [ -d "$c" ] || continue
     contains "$c" "$REAL_HOME" && continue
-    [ -z "$(ls -A "$c" 2>/dev/null)" ] && { echo "$c"; return; }
+    any="$any $c"
+    [ -z "$(ls -A "$c" 2>/dev/null)" ] && empty="$empty $c"
   done
-  for c in /mnt /media /srv; do
-    [ -d "$c" ] || continue
-    contains "$c" "$REAL_HOME" && continue
-    echo "$c"; return
-  done
-  echo ""
+  set -- $empty $any
+  WORKSPACE_MNT="${1:-}"; shift 2>/dev/null || true
+  for c in "$@"; do [ "$c" != "$WORKSPACE_MNT" ] && { EXPORT_MNT="$c"; return; }; done
+  EXPORT_MNT=""
 }
-WORKSPACE_MNT="$(pick_workspace_mount)"
+WORKSPACE_MNT=""; EXPORT_MNT=""
+pick_mountpoints
 
-# Shared runtime/temp locations get a private tmpfs — unless one of them is an
-# ancestor of something the child legitimately needs, in which case masking it
-# would remove the workspace or the scratch home along with it.
+# Shared runtime/temp locations get a private tmpfs. /run matters most: on this
+# host Docker is usable without sudo, so /run/docker.sock is host-control
+# capability. Masking /run as a whole beats enumerating sockets forever.
 build_mask_list() {
   local c out=""
-  for c in "/run/user/$(id -u)" /tmp /var/tmp; do
+  for c in /run /tmp /var/tmp; do
     [ -d "$c" ] || continue
-    contains "$c" "$REAL_HOME"     && continue
-    contains "$c" "$PROD_REAL"     && continue
-    contains "$c" "$CLONE_REAL"    && continue
-    contains "$c" "$AGENT_DIR"     && continue
+    contains "$c" "$REAL_HOME"  && continue
+    contains "$c" "$PROD_REAL"  && continue
+    contains "$c" "$CLONE_REAL" && continue
+    contains "$c" "$AGENT_DIR"  && continue
     [ -n "$WORKSPACE_MNT" ] && contains "$c" "$WORKSPACE_MNT" && continue
+    [ -n "$EXPORT_MNT" ]    && contains "$c" "$EXPORT_MNT"    && continue
     out="$out $c"
   done
   echo "${out# }"
 }
 MASK_PATHS="$(build_mask_list)"
 
-# The scratch home. It is bind-mounted OVER the real home inside the namespace,
-# so every absolute path under ~ resolves into this directory instead.
-CHILD_HOME="$AGENT_DIR/child-home"
+# The scratch home. Bind-mounted OVER the real home inside the namespace, so
+# every absolute path under ~ resolves into this directory instead.
 EXPOSE_LIST=""
+RESOLV_STAGE=""
 prepare_child_home() {
   local p rel
   rm -rf "$CHILD_HOME"
   mkdir -p "$CHILD_HOME/tmp" "$CHILD_HOME/.cache"
   chmod 700 "$CHILD_HOME"
+  # Masking /run can take DNS with it when /etc/resolv.conf points into it, so
+  # stage the resolved contents and bind them back over /etc/resolv.conf.
+  RESOLV_STAGE=""
+  if [ -e /etc/resolv.conf ]; then
+    if cp -L /etc/resolv.conf "$AGENT_DIR/resolv.conf.staged" 2>/dev/null; then
+      RESOLV_STAGE="$AGENT_DIR/resolv.conf.staged"
+    fi
+  fi
   EXPOSE_LIST=""
   IFS=':' read -r -a _expose <<<"$CLAUDE_EXPOSE"
   for p in "${_expose[@]:-}"; do
@@ -149,16 +159,25 @@ prepare_child_home() {
   EXPOSE_LIST="${EXPOSE_LIST# }"
 }
 
-sandbox_available() { unshare --user --map-root-user --mount true >/dev/null 2>&1; }
+# A PID namespace is part of the credential boundary, not a nicety: without it
+# the child can read /proc/<pid>/environ of the orchestrator and every other
+# process this user owns, and env -i buys nothing.
+sandbox_available() {
+  unshare --user --map-root-user --mount --pid --fork --mount-proc true >/dev/null 2>&1
+}
 
 # Run "$@" inside the containment boundary. WS_SRC is bind-mounted at
-# WORKSPACE_MNT and becomes the working directory.
+# WORKSPACE_MNT and becomes the working directory. EXPORT_SRC, when set, is
+# bind-mounted at EXPORT_MNT — it is set ONLY for the export invocation, so the
+# child never sees the directory its work will be exported into.
 WS_SRC=""
+EXPORT_SRC=""
 run_sandboxed() {
   FCS_PROD="$PROD_REAL" FCS_WS_SRC="$WS_SRC" FCS_WS_MNT="$WORKSPACE_MNT" \
+  FCS_EXPORT_SRC="$EXPORT_SRC" FCS_EXPORT_MNT="$EXPORT_MNT" \
   FCS_HOME_STAGE="$CHILD_HOME" FCS_REAL_HOME="$REAL_HOME" \
-  FCS_MASK="$MASK_PATHS" FCS_EXPOSE="$EXPOSE_LIST" \
-  unshare --user --map-root-user --mount -- /bin/bash -c '
+  FCS_MASK="$MASK_PATHS" FCS_EXPOSE="$EXPOSE_LIST" FCS_RESOLV="$RESOLV_STAGE" \
+  unshare --user --map-root-user --mount --pid --fork --mount-proc -- /bin/bash -c '
     set -u
     die() { echo "sandbox: $1" >&2; exit 97; }
     # the production checkout is read-only even where it is not hidden
@@ -170,16 +189,29 @@ run_sandboxed() {
     [ -n "$FCS_WS_MNT" ] || die "no usable workspace mountpoint"
     mount --bind "$FCS_WS_SRC" "$FCS_WS_MNT" 2>/dev/null \
       || die "cannot bind the workspace at $FCS_WS_MNT"
+    # the export directory, present only for the export invocation
+    if [ -n "$FCS_EXPORT_SRC" ]; then
+      [ -n "$FCS_EXPORT_MNT" ] || die "no usable export mountpoint"
+      mount --bind "$FCS_EXPORT_SRC" "$FCS_EXPORT_MNT" 2>/dev/null \
+        || die "cannot bind the export directory"
+    fi
     # narrow read-only exposures, staged before the home disappears
     for e in $FCS_EXPOSE; do
       src="${e%%|*}"; dst="${e#*|}"
       mount --bind "$src" "$dst" 2>/dev/null || die "cannot expose $src"
       mount -o remount,bind,ro "$dst" 2>/dev/null || die "cannot make $src read-only"
     done
+    # keep DNS working across the /run mask
+    if [ -n "$FCS_RESOLV" ] && [ -e /etc/resolv.conf ]; then
+      mount --bind "$FCS_RESOLV" /etc/resolv.conf 2>/dev/null
+      mount -o remount,bind,ro /etc/resolv.conf 2>/dev/null
+    fi
     # THE REAL HOME DISAPPEARS: gh credentials, ssh keys, ~/.frankenstein,
     # shell configuration, the production checkout, the agent directory.
     mount --rbind "$FCS_HOME_STAGE" "$FCS_REAL_HOME" 2>/dev/null \
       || die "cannot mask the home directory $FCS_REAL_HOME"
+    # /run carries the docker socket and other host-control sockets; /tmp and
+    # /var/tmp are shared scratch. Private tmpfs for each.
     for m in $FCS_MASK; do
       [ -d "$m" ] || continue
       mount -t tmpfs none "$m" 2>/dev/null || die "cannot mask $m"
@@ -217,9 +249,15 @@ build_child_env() {
 
 # ── --probe: prove containment and Claude auth BEFORE activation ─────────
 if [ "$MODE" = "probe" ]; then
+  PROBE_FAIL=0
+  check() {  # check <label> <ok?>
+    if [ "$2" = "0" ]; then printf '  PASS  %s\n' "$1"
+    else printf '  FAIL  %s\n' "$1"; PROBE_FAIL=1; fi
+  }
   echo "FrankensteinCentral autonomous-worker containment probe"
   echo "  home:               $REAL_HOME"
   echo "  workspace mount:    ${WORKSPACE_MNT:-<none found>}"
+  echo "  export mount:       ${EXPORT_MNT:-<none found>}"
   echo "  masked locations:   ${MASK_PATHS:-<none>}"
   echo "  claude binary:      $(command -v "$CLAUDE_BIN" 2>/dev/null || echo '<not found>')"
   echo "  exposure candidates:"
@@ -228,41 +266,84 @@ if [ "$MODE" = "probe" ]; then
     [ -n "$p" ] || continue
     echo "    $p  $([ -e "$p" ] && echo present || echo absent)"
   done
-  if ! sandbox_available; then
-    echo "RESULT: FAIL — this host cannot create user+mount namespaces."
+  echo
+  echo "-- namespace availability --"
+  unshare --user true >/dev/null 2>&1; check "user namespace" $?
+  unshare --user --map-root-user --mount true >/dev/null 2>&1; check "mount namespace" $?
+  unshare --user --map-root-user --mount --pid --fork --mount-proc true >/dev/null 2>&1
+  check "PID namespace / private proc" $?
+  [ -n "$WORKSPACE_MNT" ]; check "workspace mountpoint available" $?
+  [ -n "$EXPORT_MNT" ];    check "export mountpoint available" $?
+  if [ "$PROBE_FAIL" != "0" ]; then
+    echo
+    echo "RESULT: NOT READY — the host cannot provide the required namespaces."
     exit 1
   fi
-  echo "  sandbox:            available"
+
   prepare_child_home
-  PROBE_WS="$(mktemp -d "${TMPDIR:-/tmp}/fc-probe-XXXXXX")" || { echo "RESULT: FAIL — no temp dir"; exit 1; }
-  trap 'rm -rf "$PROBE_WS"' EXIT
+  PROBE_WS="$(mktemp -d "$AGENT_DIR/probe-XXXXXX")" || { echo "RESULT: NOT READY — no temp dir"; exit 1; }
+  PROBE_OUT="$(mktemp -d "$AGENT_DIR/probeout-XXXXXX")" || { echo "RESULT: NOT READY — no temp dir"; exit 1; }
+  trap 'rm -rf "$PROBE_WS" "$PROBE_OUT"' EXIT
+  # a decoy in the host's runtime area, and a secret in this process, so the
+  # containment checks are measured rather than asserted
+  PROBE_SOCK="$AGENT_DIR/probe-fake.sock"
+  python3 -c "
+import socket, sys, os
+p = sys.argv[1]
+try: os.unlink(p)
+except OSError: pass
+s = socket.socket(socket.AF_UNIX); s.bind(p)
+" "$PROBE_SOCK" 2>/dev/null || PROBE_SOCK=""
   WS_SRC="$PROBE_WS"
+  EXPORT_SRC="$PROBE_OUT"
   build_child_env "$REAL_HOME"
   echo
-  echo "-- containment checks (inside the sandbox) --"
-  run_sandboxed "${CHILD_ENV[@]}" /bin/bash -c '
-    fail=0
-    for p in "$HOME/.config/gh/hosts.yml" "$HOME/.gitconfig" "$HOME/.ssh/id_rsa" \
-             "$HOME/.ssh/id_ed25519" "$HOME/.frankenstein/deployed.json"; do
-      if [ -e "$p" ]; then echo "  LEAK: $p is visible"; fail=1; fi
-    done
-    [ -d "$HOME/.ssh" ] && { echo "  LEAK: ~/.ssh exists"; fail=1; }
-    if echo probe > "$HOME/.probe-write" 2>/dev/null; then
-      echo "  ok:   scratch home is writable (and is not the real home)"
-    else
-      echo "  FAIL: scratch home is not writable"; fail=1
-    fi
-    echo "  home now contains: $(ls -A "$HOME" | tr "\n" " ")"
-    echo "  GITHUB_TOKEN visible: ${GITHUB_TOKEN:-<unset>}"
-    echo "  GH_TOKEN visible:     ${GH_TOKEN:-<unset>}"
-    echo "  SSH_AUTH_SOCK:        ${SSH_AUTH_SOCK:-<unset>}"
-    exit $fail'
+  echo "-- containment, measured from inside the sandbox --"
+  FRANKENSTEIN_PROBE_SECRET="probe_secret_$$_do_not_leak" \
+  run_sandboxed "${CHILD_ENV[@]}" \
+    FRANKENSTEIN_PROBE_PROD="$PROD_REAL" \
+    FRANKENSTEIN_PROBE_EXPORT="$EXPORT_MNT" \
+    /bin/bash -c '
+      rc=0
+      say() { if [ "$2" = 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1"; rc=1; fi; }
+      grep -qs "probe_secret_" /proc/*/environ; [ $? -ne 0 ]
+      say "host process environment inaccessible via /proc" $?
+      [ "$(ls /proc | grep -c "^[0-9][0-9]*$")" -lt 12 ]
+      say "private /proc shows only sandbox processes" $?
+      [ ! -e /run/docker.sock ] && [ ! -e /var/run/docker.sock ]
+      say "docker socket unavailable" $?
+      # util-linux writes its own /run/mount bookkeeping into this fresh
+      # tmpfs, so emptiness is the wrong test. The right test is: /run is a
+      # private tmpfs carrying none of the host runtime state.
+      grep -q "^[^ ][^ ]* /run tmpfs " /proc/self/mounts
+      say "host /run replaced by a private tmpfs" $?
+      [ -z "$(find /run -xdev ! -path /run ! -path "/run/mount*" -print -quit 2>/dev/null)" ]
+      say "no host runtime state visible under /run" $?
+      [ -z "$(find /run /var/run -xdev -type s -print -quit 2>/dev/null)" ]
+      say "no host runtime sockets reachable" $?
+      [ ! -e "$HOME/.config/gh/hosts.yml" ] && [ ! -d "$HOME/.ssh" ] \
+        && [ ! -e "$HOME/.gitconfig" ] && [ ! -d "$HOME/.frankenstein" ]
+      say "real home hidden (gh, ssh, gitconfig, .frankenstein)" $?
+      [ -z "${GITHUB_TOKEN:-}${GH_TOKEN:-}${SSH_AUTH_SOCK:-}" ]
+      say "no GitHub or SSH credential in the environment" $?
+      ( echo ok > ./probe-write ) 2>/dev/null; say "workspace writable" $?
+      ( echo ok > "$HOME/probe-write" ) 2>/dev/null; say "scratch home writable" $?
+      # hidden entirely is stronger than read-only; either satisfies this
+      ! ( echo x > "$FRANKENSTEIN_PROBE_PROD/.probe" ) 2>/dev/null
+      say "production checkout not writable" $?
+      ( echo ok > "$FRANKENSTEIN_PROBE_EXPORT/probe-export" ) 2>/dev/null
+      say "export directory writable" $?
+      exit $rc'
   CONTAIN_RC=$?
+  [ "$CONTAIN_RC" = 0 ] || PROBE_FAIL=1
+  [ -n "$PROBE_SOCK" ] && rm -f "$PROBE_SOCK"
+  EXPORT_SRC=""
+
   echo
-  echo "-- Claude authentication check (inside the sandbox) --"
+  echo "-- Claude authentication, from inside the sandbox --"
   if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
-    echo "  Claude CLI '$CLAUDE_BIN' not found on PATH — cannot test authentication."
-    AUTH_RC=1
+    echo "  FAIL  Claude CLI '$CLAUDE_BIN' not found on PATH"
+    PROBE_FAIL=1
   else
     CLAUDE_PATH="$(command -v "$CLAUDE_BIN")"
     if contains "$REAL_HOME" "$CLAUDE_PATH"; then
@@ -272,18 +353,21 @@ if [ "$MODE" = "probe" ]; then
     OUT="$(run_sandboxed "${CHILD_ENV[@]}" timeout 120 "$CLAUDE_BIN" -p \
             'Reply with the single word READY and nothing else.' 2>&1)"
     AUTH_RC=$?
-    echo "  exit status: $AUTH_RC"
-    echo "  output:      ${OUT:0:400}"
+    if [ "$AUTH_RC" = 0 ]; then echo "  PASS  Claude authenticated from inside containment"
+    else echo "  FAIL  Claude exited $AUTH_RC"; PROBE_FAIL=1; fi
+    echo "  output: ${OUT:0:400}"
   fi
+
   echo
-  if [ "$CONTAIN_RC" -eq 0 ] && [ "${AUTH_RC:-1}" -eq 0 ]; then
+  if [ "$PROBE_FAIL" = "0" ]; then
     echo "RESULT: PASS — containment holds and Claude authenticated from inside it."
   else
-    echo "RESULT: NOT READY — containment=$CONTAIN_RC claude-auth=${AUTH_RC:-1}."
-    echo "Report both numbers and the output above; do not enable the worker yet."
+    echo "RESULT: NOT READY — see the FAIL lines above. Do not enable the worker."
   fi
-  echo "Nothing was fetched, pushed, deployed or changed by this probe."
-  exit 0
+  echo "This probe created and removed local temporary directories under"
+  echo "$AGENT_DIR. It made no GitHub ref changes, no deployment, and ran no"
+  echo "product task."
+  exit "$PROBE_FAIL"
 fi
 
 # ── kill switch (independent of the production deployer) ─────────────────
@@ -303,17 +387,17 @@ case "$CLONE_REAL/" in "$PROD_REAL"/*)
 esac
 [ "$CLONE_REAL" = "$PROD_REAL" ] && fail "isolation violation: agent clone is the production checkout"
 
-# Git in the agent clone, with the child's control plane defused: no hooks, no
-# fsmonitor, no pack-objects hook, whatever its .git/config was left saying.
+# The workspace is EPHEMERAL: discarded and recreated every run, so no state a
+# previous child left behind can influence this one. `rm -rf` removes symlinks
+# rather than following them, which is why this is safe to do from the host on
+# a tree a previous child controlled.
+rm -rf "$AGENT_CLONE"
+log "cloning a fresh agent workspace"
+git clone --quiet "$REPO_URL" "$AGENT_CLONE" || fail "clone failed"
+
+# Git against the workspace, used ONLY before the child runs, and never after.
 agit() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c uploadpack.packObjectsHook= \
              -C "$AGENT_CLONE" "$@"; }
-
-if [ ! -d "$AGENT_CLONE/.git" ]; then
-  log "cloning into isolated agent clone $AGENT_CLONE"
-  git clone --quiet "$REPO_URL" "$AGENT_CLONE" || fail "clone failed"
-fi
-agit remote add origin "$REPO_URL" 2>/dev/null || agit remote set-url origin "$REPO_URL" 2>/dev/null
-agit fetch --prune --quiet origin || fail "fetch failed — control state unknown"
 
 CONTROL_COMMIT="$(agit rev-parse --verify --quiet "origin/$CONTROL_BRANCH^{commit}")"
 [ -n "$CONTROL_COMMIT" ] || noop "control branch 'origin/$CONTROL_BRANCH' not found"
@@ -354,18 +438,18 @@ case "$VALIDATION" in
 esac
 IFS='|' read -r _ TURN STATUS TASK_ID PRIOR_IMPL <<<"$VALIDATION"
 
-# ── the directive must exist and name exactly this task ──────────────────
+# ── the directive must carry EXACTLY ONE Task ID naming this task ────────
 DIRECTIVE_TEXT="$(ctl_file PRODUCT_DIRECTIVE.md)"
 [ -n "$DIRECTIVE_TEXT" ] || noop "control carries no PRODUCT_DIRECTIVE.md — nothing authoritative to implement"
 DIRECTIVE_CHECK="$(printf '%s' "$DIRECTIVE_TEXT" | python3 -c "
 import re, sys
 text = sys.stdin.read()
 ids = re.findall(r'(?mi)^[ \t]*Task[ \t]*ID[ \t]*:[ \t]*(.*?)[ \t]*\$', text)
-if not ids:
+if len(ids) == 0:
     print('INVALID|PRODUCT_DIRECTIVE.md has no \"Task ID:\" line'); raise SystemExit
-if len(set(ids)) > 1:
-    print('INVALID|PRODUCT_DIRECTIVE.md names %d different task ids: %s'
-          % (len(set(ids)), ', '.join(sorted(set(ids))))); raise SystemExit
+if len(ids) != 1:
+    print('INVALID|PRODUCT_DIRECTIVE.md has %d \"Task ID:\" lines; exactly one is required'
+          % len(ids)); raise SystemExit
 tid = ids[0]
 if not re.fullmatch(r'FC-[0-9]{3,}', tid):
     print('INVALID|directive task id %r is not ^FC-[0-9]{3,}\$' % tid); raise SystemExit
@@ -450,6 +534,8 @@ fi
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUN_LOG="$AGENT_DIR/run-$TASK_ID-$RUN_ID.log"
 STARTED="$(date -Is)"
+# The immutable authorized baseline, recorded on the host BEFORE the child can
+# influence anything. Every later claim is checked against this.
 BASELINE="$(agit rev-parse HEAD)"
 
 record_run() {
@@ -466,22 +552,9 @@ open(path, "a").write(json.dumps({
 PY
 }
 
-# ── entering the child zone ──────────────────────────────────────────────
-# No remote for the duration of the run: the child has nothing to push to.
+# ══ INVOCATION A — the child ═════════════════════════════════════════════
+# From here to the end of the run, the workspace is HOSTILE.
 agit remote remove origin 2>/dev/null
-# A trusted copy of the git control plane, taken while it is still ours. It is
-# restored before ANY git command runs in this clone again.
-TRUSTED_CONFIG="$AGENT_DIR/agent-git-config.trusted"
-cp -f "$AGENT_CLONE/.git/config" "$TRUSTED_CONFIG" || fail "could not snapshot the clone's git config"
-rm -rf "$AGENT_CLONE/.git/hooks"; mkdir -p "$AGENT_CLONE/.git/hooks"
-
-# Restore the control plane the child was free to rewrite. Pure file
-# operations — no git command runs in that clone until this has happened.
-resanitize_clone() {
-  cp -f "$TRUSTED_CONFIG" "$AGENT_CLONE/.git/config" 2>/dev/null
-  rm -rf "$AGENT_CLONE/.git/hooks"; mkdir -p "$AGENT_CLONE/.git/hooks"
-  rm -f "$AGENT_CLONE/.git/config.worktree" 2>/dev/null
-}
 
 prepare_child_home
 if sandbox_available; then
@@ -490,10 +563,10 @@ elif [ "$ALLOW_UNSANDBOXED" = "1" ]; then
   SEEN_HOME="$CHILD_HOME"
 else
   record_run "no_sandbox" ""
-  fail "no user-namespace sandbox available on this host — refusing to run a child unconfined. Enable unprivileged user namespaces, or set FRANKENSTEIN_ALLOW_UNSANDBOXED=1 to accept the loss of the child boundary."
+  fail "this host cannot create the required user+mount+PID namespaces — refusing to run a child unconfined. Enable unprivileged user namespaces, or set FRANKENSTEIN_ALLOW_UNSANDBOXED=1 to accept the loss of the child boundary."
 fi
-[ -n "$WORKSPACE_MNT" ] || { record_run "no_workspace_mount" ""
-  fail "no usable workspace mountpoint (/mnt, /media, /srv) — refusing to run without one"; }
+[ -n "$WORKSPACE_MNT" ] && [ -n "$EXPORT_MNT" ] || { record_run "no_workspace_mount" ""
+  fail "need two neutral mountpoints outside the home (tried: $MOUNT_CANDIDATES) — refusing to run without them"; }
 build_child_env "$SEEN_HOME"
 WS_SRC="$AGENT_CLONE"
 
@@ -548,60 +621,94 @@ else
   fi
 fi
 
-# ── leaving the child zone ───────────────────────────────────────────────
-resanitize_clone
-
+# ══ THE TRUST TRANSITION ═════════════════════════════════════════════════
+# Nothing below reads, writes, or runs a command against the workspace from
+# the host. Only sandbox invocations touch it, and only the exported artifact
+# leaves.
 [ "$CLAUDE_RC" -eq 97 ] && { record_run "sandbox_failed" ""; fail "the sandbox could not be established — nothing ran"; }
 if [ "$CLAUDE_RC" -ne 0 ]; then
   record_run "claude_failed" ""
   fail "Claude exited $CLAUDE_RC — no handoff published, production untouched. Log: $RUN_LOG"
 fi
 
-# ── the run must have produced real work ─────────────────────────────────
-agit rev-parse --verify --quiet "$TASK_BRANCH" >/dev/null \
-  || { record_run "no_branch" ""; fail "task branch vanished"; }
-if [ -z "$(agit log "$BASELINE..$TASK_BRANCH" --oneline 2>/dev/null)" ]; then
-  record_run "no_commits" ""
-  fail "the run produced no commits — refusing to publish an empty handoff"
-fi
+sandboxed_or_local() {  # run fixed commands in the sandbox where available
+  if sandbox_available; then run_sandboxed "${CHILD_ENV[@]}" "$@"
+  else ( cd "$AGENT_CLONE" && "${CHILD_ENV[@]}" "$@" ); fi
+}
 
-# ── independent verification, INSIDE the same containment ────────────────
+# ══ INVOCATION B — structure check (fixed git commands only) ═════════════
+sandboxed_or_local /bin/bash -c '
+  g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= \
+            -c uploadpack.packObjectsHook= -c protocol.ext.allow=never "$@"; }
+  g rev-parse --verify --quiet "refs/heads/$1" >/dev/null || exit 91
+  [ -n "$(g log --oneline "$2..refs/heads/$1" 2>/dev/null)" ] || exit 92
+  exit 0' _ "$TASK_BRANCH" "$BASELINE" >>"$RUN_LOG" 2>&1
+STRUCT_RC=$?
+case "$STRUCT_RC" in
+  0) ;;
+  91) record_run "no_branch" ""; fail "the task branch is gone from the workspace — nothing to publish" ;;
+  92) record_run "no_commits" ""; fail "the run produced no commits — refusing to publish an empty handoff" ;;
+  *)  record_run "workspace_unreadable" ""; fail "the workspace could not be inspected (status $STRUCT_RC) — refusing to publish" ;;
+esac
+
+# ══ INVOCATION C — independent verification ══════════════════════════════
 # scripts/test.sh is a file Claude may edit. Running it on the host would hand
-# a compromised run arbitrary code execution as the deploying user, so it runs
-# behind the same masks the child had.
-log "re-running the test suite independently, inside the sandbox"
-if sandbox_available; then
-  run_sandboxed "${CHILD_ENV[@]}" /bin/bash -c 'bash scripts/test.sh' >>"$RUN_LOG" 2>&1 \
-    || { record_run "tests_failed" ""; fail "tests fail on the produced branch — no handoff published. Log: $RUN_LOG"; }
-else
-  ( cd "$AGENT_CLONE" && "${CHILD_ENV[@]}" /bin/bash -c 'bash scripts/test.sh' ) >>"$RUN_LOG" 2>&1 \
-    || { record_run "tests_failed" ""; fail "tests fail on the produced branch — no handoff published. Log: $RUN_LOG"; }
-fi
+# a compromised run arbitrary code execution as the deploying user. It runs
+# behind the same masks, in its own PID namespace, so nothing it starts in the
+# background can survive into the export.
+log "re-running the test suite independently, in its own sandbox"
+sandboxed_or_local /bin/bash -c 'bash scripts/test.sh' >>"$RUN_LOG" 2>&1 \
+  || { record_run "tests_failed" ""; fail "tests fail on the produced branch — no handoff published. Log: $RUN_LOG"; }
 
-IMPL_COMMIT="$(agit rev-parse "$TASK_BRANCH")"
+# ══ INVOCATION D — export an inert artifact ══════════════════════════════
+# A git bundle plus a tiny manifest, written into a directory the child never
+# saw. This is the ONLY thing that crosses back to the trusted host.
+rm -rf "$EXPORT_DIR"; mkdir -p "$EXPORT_DIR"
+EXPORT_SRC="$EXPORT_DIR"
+if sandbox_available; then EXPORT_OUT="$EXPORT_MNT"; else EXPORT_OUT="$EXPORT_DIR"; fi
+sandboxed_or_local /bin/bash -c '
+  set -e
+  out="$1"; branch="$2"
+  g() { git -c core.hooksPath=/dev/null -c core.fsmonitor= \
+            -c uploadpack.packObjectsHook= -c protocol.ext.allow=never "$@"; }
+  g rev-parse --verify "refs/heads/$branch" > "$out/implementation.sha"
+  g rev-parse --verify "refs/heads/$branch^{tree}" > "$out/tree.sha"
+  printf "%s\n" "$branch" > "$out/task_branch"
+  g bundle create "$out/implementation.bundle" "refs/heads/$branch" 2>/dev/null
+  ' _ "$EXPORT_OUT" "$TASK_BRANCH" >>"$RUN_LOG" 2>&1
+EXPORT_RC=$?
+EXPORT_SRC=""
+[ "$EXPORT_RC" -eq 0 ] || { record_run "export_failed" ""
+  fail "the workspace could not be exported (status $EXPORT_RC) — nothing published"; }
+for f in implementation.bundle implementation.sha task_branch tree.sha; do
+  [ -s "$EXPORT_DIR/$f" ] || { record_run "export_incomplete" ""
+    fail "the export is missing $f — nothing published"; }
+done
+EXPORTED_SHA="$(tr -d ' \n\r' < "$EXPORT_DIR/implementation.sha")"
+EXPORTED_BRANCH="$(tr -d ' \n\r' < "$EXPORT_DIR/task_branch")"
+[ "$EXPORTED_BRANCH" = "$TASK_BRANCH" ] || { record_run "export_branch_mismatch" ""
+  fail "the export names branch $EXPORTED_BRANCH, not $TASK_BRANCH — nothing published"; }
+log "exported ${EXPORTED_SHA:0:7} as an inert bundle"
 
 # ── concurrency token, stage 1 ───────────────────────────────────────────
 CONTROL_NOW="$(git ls-remote "$REPO_URL" "refs/heads/$CONTROL_BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
 [ -n "$CONTROL_NOW" ] || { record_run "fetch_failed" ""; fail "could not re-read control before publishing"; }
 [ "$CONTROL_NOW" = "$CONTROL_COMMIT" ] || {
   record_run "control_conflict" ""
-  fail "control moved ${CONTROL_COMMIT:0:7} -> ${CONTROL_NOW:0:7} during the run. NOT overwriting newer Product Owner state; the work stays on $TASK_BRANCH locally."; }
+  fail "control moved ${CONTROL_COMMIT:0:7} -> ${CONTROL_NOW:0:7} during the run. NOT overwriting newer Product Owner state; the work stays in the export locally."; }
 
 # ── dry run stops HERE: nothing is ever pushed ───────────────────────────
 if [ "$MODE" = "dry-run" ]; then
   record_run "dry_run" ""
   log "DRY RUN — nothing pushed. WOULD publish:"
-  log "  task branch:        $TASK_BRANCH at ${IMPL_COMMIT:0:7}"
-  log "  implementation SHA: $IMPL_COMMIT"
+  log "  task branch:        $TASK_BRANCH at ${EXPORTED_SHA:0:7}"
+  log "  implementation SHA: $EXPORTED_SHA"
   log "  control transition: $STATUS -> awaiting_review on ${CONTROL_COMMIT:0:7}"
   log "production, control and remote task branches are unchanged."
   exit 0
 fi
 
-# ── the publisher zone: clones the child never touched ───────────────────
-# The child could have planted a pre-push hook or rewritten .git/config in its
-# workspace. Nothing from there is executed here: this is a fresh clone from
-# origin, and the implementation commit is imported as data.
+# ══ THE PUBLISHER ZONE — fresh clones, fed only by the bundle ════════════
 install_hook() {
   local hook="$1/.git/hooks/pre-push"
   mkdir -p "$(dirname "$hook")"
@@ -637,20 +744,34 @@ git clone --quiet --no-checkout "$REPO_URL" "$PUB_DIR" \
   || { record_run "publisher_clone_failed" ""; fail "could not create the publisher clone"; }
 install_hook "$PUB_DIR"
 
-# Import the commit as data. -c uploadpack.packObjectsHook= disarms the one
-# config knob in the child's clone that the fetch side would otherwise honour.
-git -c uploadpack.packObjectsHook= -c core.hooksPath=/dev/null \
-    -C "$PUB_DIR" fetch --quiet --no-tags "$AGENT_CLONE" \
+git -C "$PUB_DIR" bundle verify "$EXPORT_DIR/implementation.bundle" >/dev/null 2>&1 \
+  || { record_run "bundle_invalid" ""; fail "the exported bundle did not verify — nothing published"; }
+git -C "$PUB_DIR" fetch --quiet --no-tags "$EXPORT_DIR/implementation.bundle" \
     "refs/heads/$TASK_BRANCH:refs/frankenstein/impl" \
-  || { record_run "impl_import_failed" ""; fail "could not import the implementation commit into the publisher"; }
+  || { record_run "impl_import_failed" ""; fail "could not import the exported bundle — nothing published"; }
 
-FETCHED="$(git -C "$PUB_DIR" rev-parse refs/frankenstein/impl)"
-[ "$FETCHED" = "$IMPL_COMMIT" ] || {
+IMPL_COMMIT="$(git -C "$PUB_DIR" rev-parse refs/frankenstein/impl)"
+[ "$IMPL_COMMIT" = "$EXPORTED_SHA" ] || {
   record_run "impl_mismatch" ""
-  fail "imported ${FETCHED:0:7} but verification ran on ${IMPL_COMMIT:0:7} — refusing to publish"; }
+  fail "the bundle carries ${IMPL_COMMIT:0:7} but the export claims ${EXPORTED_SHA:0:7} — refusing to publish"; }
+[ "$IMPL_COMMIT" != "$BASELINE" ] || {
+  record_run "no_commits" ""; fail "the export is identical to the baseline — nothing to publish"; }
 git -C "$PUB_DIR" merge-base --is-ancestor "$BASELINE" refs/frankenstein/impl \
   || { record_run "impl_not_descendant" ""
        fail "the implementation does not descend from the authorized baseline ${BASELINE:0:7}"; }
+
+# the authorizing snapshot and the task id must be the ones that were sent in
+SNAPSHOT="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/AUTHORIZING_CONTROL_COMMIT" 2>/dev/null | tr -d ' \n\r')"
+[ "$SNAPSHOT" = "$CONTROL_COMMIT" ] || {
+  record_run "authorizing_snapshot_missing" ""
+  fail "the exported work does not carry the authorizing control commit ${CONTROL_COMMIT:0:7} — refusing to publish"; }
+STATE_TASK="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/STATE.json" 2>/dev/null \
+              | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('task_id',''))
+except Exception: print('')" 2>/dev/null)"
+[ "$STATE_TASK" = "$TASK_ID" ] || {
+  record_run "task_id_mismatch" ""
+  fail "the exported STATE.json names task '$STATE_TASK', not $TASK_ID — refusing to publish"; }
 
 git -C "$PUB_DIR" push --quiet origin "refs/frankenstein/impl:refs/heads/$TASK_BRANCH" \
   || { record_run "push_failed" ""; fail "pushing $TASK_BRANCH failed — no handoff published"; }
@@ -677,7 +798,8 @@ CONTROL_AT_PUBLISH="$(git -C "$CONTROL_DIR" rev-parse --verify --quiet "origin/$
 git -C "$CONTROL_DIR" reset --hard --quiet "$CONTROL_COMMIT" \
   || { record_run "control_reset_failed" ""; fail "could not reset the control clone to the authorizing commit"; }
 
-# The handoff content is read from the PUBLISHER, not from the child's clone.
+# The handoff content is read from the PUBLISHER's object database, not from
+# the child's workspace.
 for f in STATE.json IMPLEMENTATION_HANDOFF.md; do
   git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/$f" \
     > "$CONTROL_DIR/.frankenstein/$f" 2>/dev/null

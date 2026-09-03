@@ -1228,7 +1228,7 @@ def test_verification_still_passes_honest_work(world):
                           task_id="FC-001", objective="work")
     r = run_worker(world, mock=WORK_AND_COMMIT)
     assert r.returncode == 0, r.stderr
-    assert "re-running the test suite independently, inside the sandbox" in r.stderr
+    assert "re-running the test suite independently, in its own sandbox" in r.stderr
 
 
 # ══ 9. the publisher never executes the child's git control plane ══════
@@ -1252,8 +1252,10 @@ def test_planted_pre_push_hook_never_runs(world):
         "the publisher executed a hook planted by the child"
     branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
     assert "claude/FC-001-work" in branches, "publication came from the child's clone"
-    hooks = agent_clone(world) / ".git" / "hooks"
-    assert not any(hooks.iterdir()), "the child's hooks survived into the publisher zone"
+    planted = agent_clone(world) / ".git" / "hooks" / "pre-push"
+    assert planted.exists(), \
+        "the host modified the child's .git — it must abandon that tree, not clean it"
+    assert "HOOK_RAN" in planted.read_text()
 
 
 @needs_sandbox
@@ -1273,8 +1275,9 @@ def test_planted_git_config_never_influences_the_publisher(world):
     assert not (home / "PACKHOOK_RAN").exists(), \
         "the publisher honoured git config written by the child"
     config = (agent_clone(world) / ".git" / "config").read_text()
-    assert "packObjectsHook" not in config, "the child's git config was not restored"
-    assert "hooksPath" not in config
+    assert "packObjectsHook" in config, \
+        "the host rewrote the child's .git/config — it must abandon that tree"
+    assert "hooksPath" in config
     branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
     assert "claude/FC-001-work" in branches
 
@@ -1295,24 +1298,86 @@ def test_publisher_is_a_separate_clone_from_the_child_workspace():
             f"push from an untrusted clone: {line}"
 
 
-def test_git_in_the_child_clone_is_defused():
+def test_host_never_touches_the_child_workspace_after_the_run():
+    """The strongest form of the rule: after the child has run, the trusted
+    host issues no command against, and writes nothing through, that tree.
+
+    Sanitizing it from the host was itself the vulnerability — the child can
+    replace .git or any descendant with a symlink pointing anywhere.
+    """
     c = code(WORKER)
-    assert "core.hooksPath=/dev/null" in c and "core.fsmonitor=" in c, \
-        "git in the child's clone must not honour hooks or fsmonitor"
-    assert "uploadpack.packObjectsHook=" in c, \
-        "the fetch out of the child's clone must not honour its pack hook"
-    assert 'cp -f "$TRUSTED_CONFIG" "$AGENT_CLONE/.git/config"' in c, \
-        "the child's git config must be restored before it is used again"
-    # the restore must happen before any verification or publication
-    assert c.index("resanitize_clone\n") < c.index("IMPL_COMMIT=")
+    after = c[c.index('[ "$CLAUDE_RC" -eq 97 ]'):]
+    refs = [l.strip() for l in after.splitlines() if "$AGENT_CLONE" in l]
+    assert len(refs) == 1, f"the host still reaches into the workspace: {refs}"
+    assert refs[0].startswith("else ( cd"), refs[0]
+    assert "CHILD_ENV" in refs[0], \
+        "the one remaining reference is the no-sandbox fallback, nothing else"
+    for banned in ("resanitize", "TRUSTED_CONFIG"):
+        assert banned not in c, f"{banned} sanitizes a hostile tree from the host"
+    # the fixed git commands that DO run against it run inside the sandbox,
+    # with every code-executing config knob disarmed
+    assert "core.hooksPath=/dev/null" in c and "core.fsmonitor=" in c
+    assert "uploadpack.packObjectsHook=" in c
+    assert "protocol.ext.allow=never" in c
+
+
+def test_only_an_inert_artifact_crosses_back():
+    c = code(WORKER)
+    assert "bundle create" in c, "the export must produce a git bundle"
+    assert 'bundle verify "$EXPORT_DIR/implementation.bundle"' in c
+    assert 'fetch --quiet --no-tags "$EXPORT_DIR/implementation.bundle"' in c, \
+        "the publisher must import the bundle, not fetch from the workspace"
+    assert '"$AGENT_CLONE"' not in c[c.index("PUB_DIR="):], \
+        "the publisher zone must not reference the child workspace at all"
+    # the export directory is mounted ONLY for the export invocation
+    assert 'EXPORT_SRC="$EXPORT_DIR"' in c and 'EXPORT_SRC=""' in c
+
+
+def test_the_baseline_is_recorded_before_the_child_runs():
+    c = code(WORKER)
+    assert c.index('BASELINE="$(agit rev-parse HEAD)"') \
+        < c.index('RUNNER="${MOCK_CLAUDE:-true}"'), \
+        "the authorized baseline must be captured before the child can act"
+    after = c[c.index('[ "$CLAUDE_RC" -eq 97 ]'):]
+    assert 'merge-base --is-ancestor "$BASELINE"' in after, \
+        "the imported work must be checked against the pre-child baseline"
 
 
 def test_verification_is_sandboxed_in_source():
     c = executable(WORKER)
-    idx = c.index("bash scripts/test.sh")
-    window = c[max(0, idx - 400):idx]
-    assert "run_sandboxed" in window, \
-        "the independent test run must be inside the sandbox"
+    idx = c.index("'bash scripts/test.sh'")
+    window = c[max(0, idx - 200):idx]
+    assert "sandboxed_or_local" in window, \
+        "the independent test run must go through the sandbox helper"
+
+
+def test_the_run_is_four_separate_sandbox_invocations():
+    """Structure check, verification and export are separate invocations, so a
+    background process started by scripts/test.sh dies with its PID namespace
+    instead of surviving into the export."""
+    c = code(WORKER)
+    after = c[c.index('[ "$CLAUDE_RC" -eq 97 ]'):]
+    calls = [l.strip() for l in after.splitlines()
+             if re.match(r"\s*sandboxed_or_local\s", l)]
+    assert len(calls) == 3, f"expected structure/verification/export, got {calls}"
+    before = c[:c.index("sandboxed_or_local() {")]
+    assert "run_sandboxed" in before, "the child itself must be sandboxed too"
+
+
+def test_the_sandbox_creates_a_pid_namespace_and_private_proc():
+    c = code(WORKER)
+    assert "--pid --fork --mount-proc" in c, \
+        "without a PID namespace the child reads /proc/<pid>/environ of every "\
+        "process this user owns, and env -i buys nothing"
+    # both the availability check and the runner must use it
+    assert c.count("--pid --fork --mount-proc") >= 2
+
+
+def test_the_runtime_socket_area_is_masked():
+    c = code(WORKER)
+    masked = c[c.index("build_mask_list()"):c.index("MASK_PATHS=\"$(build_mask_list)\"")]
+    assert "for c in /run /tmp /var/tmp" in masked, \
+        "/run carries the docker socket and must be masked wholesale"
 
 
 # ══ 10. the directive must actually name the task ══════════════════════
@@ -1349,6 +1414,10 @@ AUTHORIZED_STATE = json.dumps({
     ("# Product Directive\n\nTask ID: FC-042\n", "different Task ID"),
     ("# Product Directive\n\nTask ID: FC-001\nTask ID: FC-042\n",
      "two conflicting Task IDs"),
+    ("# Product Directive\n\nTask ID: FC-001\nTask ID: FC-001\n",
+     "two identical Task ID lines"),
+    ("# Product Directive\n\nTask ID: FC-001\n\n## Notes\nTask ID: FC-001\n",
+     "the same id repeated later in the document"),
 ])
 def test_directive_must_name_exactly_this_task(world, directive, why):
     publish_control(world, state=AUTHORIZED_STATE, directive=directive)
@@ -1379,7 +1448,7 @@ def test_probe_touches_no_refs_and_needs_no_enable(world):
     r = run_worker(world, "--probe")
     assert before == remote_refs(world), "--probe changed remote refs"
     assert "containment probe" in r.stdout
-    assert "Nothing was fetched, pushed, deployed or changed" in r.stdout
+    assert "It made no GitHub ref changes, no deployment, and ran no" in r.stdout
     assert not (world["agent_dir"] / "runs.jsonl").exists(), \
         "--probe recorded a run"
 
@@ -1393,5 +1462,190 @@ def test_probe_reports_containment_and_does_not_leak(world):
     out = r.stdout + r.stderr
     assert "LEAK:" not in out, out
     assert "SECRET_SHOULD_NOT_LEAK" not in out, "the probe printed a credential"
-    assert "sandbox:            available" in out
-    assert "scratch home is writable" in out
+    for required in ("PASS  user namespace",
+                     "PASS  mount namespace",
+                     "PASS  PID namespace / private proc",
+                     "PASS  host process environment inaccessible via /proc",
+                     "PASS  private /proc shows only sandbox processes",
+                     "PASS  docker socket unavailable",
+                     "PASS  host /run replaced by a private tmpfs",
+                     "PASS  no host runtime state visible under /run",
+                     "PASS  no host runtime sockets reachable",
+                     "PASS  real home hidden",
+                     "PASS  no GitHub or SSH credential in the environment",
+                     "PASS  workspace writable",
+                     "PASS  scratch home writable",
+                     "PASS  production checkout not writable",
+                     "PASS  export directory writable"):
+        assert required in out, f"probe did not report: {required}\n{out}"
+    assert "  FAIL" not in out, out
+    # Whether the verdict is PASS or NOT READY depends on whether the Claude
+    # CLI is installed here; the exit status must agree with it either way.
+    if "RESULT: PASS" in out:
+        assert r.returncode == 0
+    else:
+        assert "RESULT: NOT READY" in out
+        assert r.returncode != 0, "NOT READY must not exit 0"
+
+
+def test_probe_exit_status_distinguishes_pass_from_not_ready(world):
+    """RESULT: NOT READY must never be mistakable for success."""
+    r = run_worker(world, "--probe")
+    out = r.stdout + r.stderr
+    if "RESULT: PASS" in out:
+        assert r.returncode == 0
+    else:
+        assert "RESULT: NOT READY" in out
+        assert r.returncode != 0
+
+
+@needs_sandbox
+def test_child_cannot_reach_the_host_runtime_socket_area(world):
+    """/run carries the docker socket, and Docker on this host is usable
+    without sudo — so /run is host-control capability, masked wholesale."""
+    host_entries = sorted(p.name for p in Path("/run").iterdir())
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        'ls -A /run > "$TMPDIR/run.txt" 2>&1; '
+        '{ [ -e /run/docker.sock ] || [ -e /var/run/docker.sock ]; } '
+        '&& echo DOCKER_REACHABLE > "$TMPDIR/docker.txt" '
+        '|| echo DOCKER_UNAVAILABLE > "$TMPDIR/docker.txt"; '
+        'find /run /var/run -xdev -type s > "$TMPDIR/socks.txt" 2>/dev/null; '
+        'grep " /run " /proc/self/mounts > "$TMPDIR/mounts.txt" 2>&1; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe)
+    assert r.returncode == 0, r.stderr
+    seen = child_tmp(world)
+    assert "DOCKER_UNAVAILABLE" in (seen / "docker.txt").read_text()
+    assert (seen / "socks.txt").read_text().strip() == "", \
+        "a host runtime socket was reachable from the child"
+    assert "tmpfs" in (seen / "mounts.txt").read_text(), "/run is not a private tmpfs"
+    # util-linux recreates its own /run/mount bookkeeping inside the fresh
+    # tmpfs, so that name is not evidence of the host's /run.
+    child_entries = [e for e in (seen / "run.txt").read_text().split()
+                     if e != "mount"]
+    leaked = [e for e in child_entries if e in host_entries]
+    assert not leaked, f"the child can see host /run entries: {leaked}"
+
+
+@needs_sandbox
+def test_child_cannot_read_host_process_environments(world):
+    """Without a PID namespace, env -i buys nothing: the child reads
+    /proc/<pid>/environ of every process this user owns."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        'grep -hs "PROCENV" /proc/*/environ > "$TMPDIR/procenv.txt" 2>&1; '
+        'ls /proc | grep -c "^[0-9][0-9]*$" > "$TMPDIR/proccount.txt"; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe,
+                   extra_env={"PROCENV_SECRET": "ghp_PROCENV_MUST_NOT_LEAK"})
+    assert r.returncode == 0, r.stderr
+    seen = child_tmp(world)
+    assert "PROCENV_MUST_NOT_LEAK" not in (seen / "procenv.txt").read_text(), \
+        "the child read a host process environment through /proc"
+    assert int((seen / "proccount.txt").read_text().strip()) < 12, \
+        "the child sees the host process table"
+
+
+# ══ 12. the child workspace is hostile even as a filesystem ════════════
+
+@needs_sandbox
+def test_symlinked_git_directory_does_not_lead_the_host_anywhere(world):
+    """The child replaces .git with a symlink to a host directory. Nothing on
+    the host may follow it — not to write, not to clean up, not to publish."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    target = world["tmp"] / "HOST_TARGET"
+    target.mkdir()
+    (target / "precious.txt").write_text("MUST SURVIVE\n")
+    attack = (
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work" && '
+        f'rm -rf .git && ln -s "{target}" .git')
+    r = run_worker(world, mock=attack)
+
+    assert target.is_dir() and not target.is_symlink(), "the host followed .git"
+    assert (target / "precious.txt").read_text() == "MUST SURVIVE\n", \
+        "a host-side operation wrote through the child's symlink"
+    assert r.returncode != 0, "published despite a destroyed workspace"
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-001-work" not in branches, \
+        "publication happened without a valid sandbox export"
+
+    # and the next run's cleanup must not follow it either
+    run_worker(world, mock=WORK_AND_COMMIT)
+    assert (target / "precious.txt").exists(), \
+        "the next run's workspace cleanup followed the symlink"
+
+
+@needs_sandbox
+def test_symlinked_git_config_is_never_written_through(world):
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    marker = world["tmp"] / "HOST_MARKER"
+    marker.write_text("ORIGINAL\n")
+    hookdir = world["tmp"] / "HOST_HOOKDIR"
+    hookdir.mkdir()
+    (hookdir / "keep").write_text("keep\n")
+    attack = (
+        WORK_AND_COMMIT + ' && '
+        f'ln -sf "{marker}" .git/config && '
+        f'rm -rf .git/hooks && ln -s "{hookdir}" .git/hooks')
+    run_worker(world, mock=attack)
+    assert marker.read_text() == "ORIGINAL\n", \
+        "a host operation wrote through .git/config"
+    assert (hookdir / "keep").exists(), \
+        "a host operation deleted through .git/hooks"
+
+    run_worker(world, mock=WORK_AND_COMMIT)
+    assert marker.read_text() == "ORIGINAL\n"
+    assert (hookdir / "keep").exists()
+
+
+@needs_sandbox
+def test_a_normal_run_still_exports_verifies_and_publishes(world):
+    """The trust transition must not break the honest path."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert r.returncode == 0, r.stderr
+    assert "exported" in r.stderr and "inert bundle" in r.stderr
+    export = world["agent_dir"] / "export"
+    assert (export / "implementation.bundle").exists()
+    assert (export / "implementation.sha").exists()
+    assert (export / "task_branch").read_text().strip() == "claude/FC-001-work"
+    assert (export / "tree.sha").exists()
+
+    verify = world["tmp"] / "verify-export"
+    sh("git", "clone", "-q", "--branch", "claude/FC-001-work",
+       str(world["remote"]), str(verify))
+    assert "work" in (verify / "app.txt").read_text()
+    published = git("rev-parse", "HEAD", cwd=verify)
+    assert published == (export / "implementation.sha").read_text().strip()
+
+    ctl = world["tmp"] / "verify-export-ctl"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    assert state["implementation_commit"] == published
+
+
+@needs_sandbox
+def test_a_forged_export_naming_another_branch_is_rejected(world):
+    """The manifest is adjacent to hostile territory; the host checks it
+    against what it authorized rather than trusting it."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    attack = (WORK_AND_COMMIT +
+              ' && git branch -f claude/FC-999-work HEAD')
+    r = run_worker(world, mock=attack)
+    # the export still names the authorized branch, so this succeeds; what must
+    # never happen is FC-999 reaching the remote
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-999-work" not in branches, "an unauthorized branch was published"
+    assert r.returncode == 0, r.stderr

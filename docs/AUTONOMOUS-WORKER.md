@@ -33,10 +33,10 @@ Every field is validated exactly. `FC-01`, `FC-001-extra`, `FC-001 `, `fc-001`
 and `XX-001` are all rejected, as is any `protocol_version` other than the
 supported one.
 
-The directive rule is strict in both directions: a directive with **no**
-`Task ID:` line, a **malformed** one, a **different** one, or **two conflicting**
-ones each block the run. A nonempty directive is not evidence of authorization;
-naming this exact task is.
+The directive rule is strict: **exactly one** `Task ID:` line, well formed, and
+equal to `STATE.json.task_id`. Zero lines, two lines (even identical ones), a
+malformed id and a different id all block the run. A nonempty directive is not
+evidence of authorization; naming this exact task exactly once is.
 
 Everything else is a logged no-op with exit 0: `product_owner/*`,
 `none/accepted`, `blocked`, `claude/implementing`, malformed JSON, a missing
@@ -80,123 +80,156 @@ not only while Claude is running.
 |---|---|---|
 | **child** | Claude, or the mock | no — everything it can influence |
 | **verification** | the independent `scripts/test.sh` re-run | no — Claude may have edited that file |
-| **publisher** | fetch, ancestry checks, the two pushes | yes — and it executes nothing that came from the child |
+| **publisher** | bundle import, ancestry checks, the two pushes | yes — and it executes nothing that came from the child |
 
-### Isolation of the clone
+### The rule that shapes the design
 
-Work happens in `~/.frankenstein/worktrees/agent-repo`, a **separate clone**.
-The live deployment checkout `~/FrankensteinCentral` is owned by the deploy
-mechanism. A separate clone rather than `git worktree`: worktrees share `.git`,
-so hooks and config would be shared with the production checkout. The worker
-refuses to start if the clone path resolves inside — or equal to — the
-production checkout.
+> Once the child has run, the trusted host never executes a command against,
+> nor writes through, the child's workspace — including its `.git`.
 
-### The child zone: filesystem isolation, not just environment isolation
+Sanitizing that tree from the host was itself a vulnerability: the child can
+replace `.git`, `.git/config` or any descendant with a symlink pointing
+anywhere, so a host-side `cp` or `rm -rf` through those paths becomes a write
+primitive outside the sandbox. The workspace is therefore not cleaned. It is
+**abandoned**, and what it produced leaves as an inert artifact.
 
-`env -i` hides environment variables. It does not hide the filesystem, and the
-child runs under the same UID as the deploying user. So the child is given a
-user+mount namespace in which, in this order:
+### Four sandbox invocations
+
+Each is a separate namespace, so nothing — including a background process
+started by `scripts/test.sh` — survives from one to the next.
+
+| | invocation | contents |
+|---|---|---|
+| A | the child | Claude, or the mock |
+| B | structure check | fixed git commands: the branch exists and carries commits |
+| C | verification | `bash scripts/test.sh` |
+| D | export | fixed git commands: write a bundle + manifest out |
+
+The workspace itself is **ephemeral**: discarded and recreated from origin
+every run, so nothing a previous child left can influence the next one. (`rm -rf`
+removes symlinks rather than following them, which is what makes that one host
+operation safe on a tree a previous child controlled — asserted by test.)
+
+### The child zone
+
+`env -i` hides environment variables. It does not hide the filesystem or the
+process table, and the child runs under the same UID as the deploying user. So
+the child gets a **user + mount + PID** namespace with a private `/proc`, in
+which, in this order:
 
 1. the production checkout is bind-mounted **read-only**;
-2. the agent clone is bind-mounted at a **neutral path outside the home**
-   (`/mnt`, `/media` or `/srv` — the first empty one) and becomes the working
+2. the agent workspace is bind-mounted at a **neutral path outside the home**
+   (`/mnt`, `/media` or `/srv` — the first empty ones) and becomes the working
    directory;
-3. any narrowly configured Claude authentication paths are bind-mounted
+3. narrowly configured Claude authentication paths are bind-mounted
    **read-only** into a prepared scratch home;
-4. **the real home directory is replaced** by that scratch home. `~/.config/gh`,
+4. `/etc/resolv.conf` is replaced by a staged copy, so masking `/run` cannot
+   take DNS with it;
+5. **the real home directory is replaced** by that scratch home. `~/.config/gh`,
    `~/.ssh`, `~/.gitconfig`, `~/.frankenstein`, shell configuration, the
    production checkout and the agent directory simply do not exist for the
-   child, by absolute path or any other;
-5. shared runtime and temp locations (`/run/user/<uid>`, `/tmp`, `/var/tmp`)
-   get a **private tmpfs** — skipping any that is an ancestor of something the
-   child legitimately needs, since masking those would remove the workspace or
-   the scratch home too.
+   child;
+6. `/run`, `/tmp` and `/var/tmp` get a **private tmpfs** — skipping any that is
+   an ancestor of something the child legitimately needs.
 
-On top of that the clone's `origin` remote is **removed** for the duration of
-the run — the child has nothing to push to — and the environment is rebuilt
-from nothing with `env -i`: no `GITHUB_TOKEN`, no `GH_TOKEN`, no
-`SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
+`/run` matters as much as the home: Docker on this host is usable without
+`sudo`, so `/run/docker.sock` is host-control capability. Masking `/run`
+wholesale beats enumerating sockets forever, and covers `/run/user/<uid>`,
+container sockets and service sockets in one move.
+
+The PID namespace is part of the **credential** boundary, not a nicety: without
+it the child reads `/proc/<pid>/environ` for every process this user owns, and
+`env -i` buys nothing.
+
+On top of that the clone's `origin` remote is removed for the duration of the
+run, and the environment is rebuilt from nothing with `env -i`: no
+`GITHUB_TOKEN`, no `GH_TOKEN`, no `SSH_AUTH_SOCK`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
 `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/bin/false`.
 
-If the namespace cannot be established the worker **refuses to run**.
+If the namespaces cannot be established the worker **refuses to run**.
 `FRANKENSTEIN_ALLOW_UNSANDBOXED=1` exists for hosts without unprivileged user
 namespaces; it removes the boundary, and the systemd template never sets it.
 
 ### Claude's own authentication
 
 The child needs to reach Claude, and nothing else. Two narrow channels, both
-opt-in and neither carrying a GitHub credential:
+opt-in, neither carrying a GitHub credential:
 
 - `FRANKENSTEIN_CLAUDE_EXPOSE` — colon-separated absolute paths bind-mounted
-  **read-only** into the scratch home at their original locations. Defaults are
-  `~/.claude/.credentials.json` and `~/.claude.json`; they are **candidates,
-  not assumptions**.
-- `FRANKENSTEIN_CLAUDE_ENV` — the environment variables forwarded into the
-  child. Default: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-  `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_OAUTH_TOKEN`,
-  `CLAUDE_CONFIG_DIR`.
+  **read-only** into the scratch home at their original locations. Defaults:
+  `~/.claude/.credentials.json` and `~/.claude.json` — **candidates, not
+  assumptions**.
+- `FRANKENSTEIN_CLAUDE_ENV` — variables forwarded into the child. Default:
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_MODEL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`.
 
-What the installed CLI actually needs is a property of the host, so it is
-measured there rather than guessed — see **Probe** below. If the CLI itself is
-installed under the home directory, its install directory must be added to
-`FRANKENSTEIN_CLAUDE_EXPOSE`; the probe says so explicitly when it detects
-that.
+What the installed CLI actually needs is a property of the host, so `--probe`
+measures it there. If the CLI itself lives under the home directory, its install
+directory must be added to `FRANKENSTEIN_CLAUDE_EXPOSE`; the probe says so.
 
-### The verification zone
+### The export: the only thing that crosses back
 
-Claude may edit `scripts/test.sh`. Running it on the host after the child exits
-would be a direct escape: modify the script, exit 0, and the orchestrator
-executes arbitrary code as the deploying user. The independent test re-run
-therefore happens **inside the same namespace, with the same masks**. The
-orchestrator inspects data afterwards; it does not execute code the child
-produced.
+Invocation D writes into a directory mounted **only for that invocation**, so
+the child never saw it:
+
+```
+implementation.bundle    a git bundle of refs/heads/claude/FC-###-work
+implementation.sha       the commit it claims to carry
+tree.sha
+task_branch
+```
+
+Every git command in B and D runs with `core.hooksPath=/dev/null`,
+`core.fsmonitor=`, `uploadpack.packObjectsHook=` and
+`protocol.ext.allow=never`, so nothing in the workspace's git config executes
+even inside the sandbox.
 
 ### The publisher zone
 
-The child owns `.git/hooks` and `.git/config` in its workspace, and a
-`pre-push` hook or a `core.fsmonitor` / `uploadpack.packObjectsHook` entry there
-would otherwise be executed by the trusted publisher. So:
+A **fresh clone of origin**, recreated each run. It consumes the bundle as data
+and checks it against what the host authorized *before* the child existed:
 
-- before **any** git command touches that clone again, `.git/config` is
-  restored from a trusted copy taken before the run and `.git/hooks` is emptied
-  — pure file operations, no git involved;
-- every subsequent git command in that clone runs with
-  `core.hooksPath=/dev/null`, `core.fsmonitor=` and
-  `uploadpack.packObjectsHook=`;
-- publication happens from a **fresh clone of origin** that the child never had
-  access to. The implementation commit is imported into it as data, its SHA is
-  checked against the commit verification actually ran on, and its ancestry
-  against the authorized baseline, before the task ref is pushed;
-- the handoff is written from a **fresh control clone**, and its content is read
-  from the publisher, never from the child's workspace;
-- both trusted clones carry a `pre-push` hook rejecting
-  `production`/`main`/`master` and any non-fast-forward push, detected by
-  `merge-base --is-ancestor`.
+- the bundle verifies;
+- the imported commit equals the exported SHA;
+- it is not the baseline (the run produced something);
+- it **descends from the baseline** recorded before the child ran;
+- it carries `.frankenstein/AUTHORIZING_CONTROL_COMMIT` equal to the
+  authorizing control commit;
+- its `STATE.json` names this task.
+
+Only then is the task ref pushed. The handoff is written from a **fresh control
+clone**, with content read from the publisher's object database. Both trusted
+clones carry a `pre-push` hook rejecting `production`/`main`/`master` and any
+non-fast-forward push, detected by `merge-base --is-ancestor`.
 
 May: edit files in its workspace, run tests, commit.
 
 May **not**: push or merge production, run `promote.sh` / `rollback.sh` /
 `deploy.sh`, touch systemd, force push, use `sudo`, issue a directive, or change
 scope. The worker source contains none of those invocations (asserted by test),
-and every push in the script comes from `$PUB_DIR` or `$CONTROL_DIR`.
+and every push comes from `$PUB_DIR` or `$CONTROL_DIR`.
 
 ### How this is tested
 
-Behaviorally, not by reading the source. The child is handed real attacks and
-the test asserts they failed:
+Behaviorally, not by reading the source. The child is handed real attacks:
 
 | attack | asserted |
 |---|---|
 | read `~/.config/gh/hosts.yml` | credential never obtained |
 | read `~/.ssh/id_test`, list `~` | key never obtained; home shows only scratch |
 | write `~/PWNED_HOME`, `~/.ssh/authorized_keys` | never appear on the host |
+| scan `/proc/*/environ` for a secret in the parent | never observed; the process table is the sandbox's own |
+| list `/run`, reach `docker.sock`, find any socket | none visible; `/run` is a private tmpfs |
 | read a file planted in `/var/tmp` | masked |
 | write into the production checkout | never appears |
-| `git push` to production, by remote name and by URL | production SHA unchanged; the child's `git remote -v` is empty and the bare remote is not even visible on disk |
+| `git push` to production, by remote name and by URL | production unchanged; `git remote -v` empty; the bare remote not visible on disk |
 | rewrite `scripts/test.sh` to write outside | marker never appears; run fails; nothing published |
-| plant `.git/hooks/pre-push` | never executed; branch still published |
-| set `uploadpack.packObjectsHook` and `core.hooksPath` | never honoured; config restored |
-| ordinary edits, commits, `bash scripts/test.sh` | still work |
+| plant `.git/hooks/pre-push` | never executed; branch still published; the planted file is still there afterwards, untouched |
+| set `uploadpack.packObjectsHook`, `core.hooksPath` | never honoured |
+| `rm -rf .git && ln -s <host dir> .git` | the host directory and its contents survive this run **and the next run's cleanup**; nothing is published |
+| symlink `.git/config` at a host file and `.git/hooks` at a host directory | file unmodified, directory not deleted |
+| ordinary edits, commits, `bash scripts/test.sh` | still work, still export, still publish |
 
 The last row matters as much as the others: containment that breaks honest work
 is not containment, it is an outage.
@@ -233,12 +266,15 @@ trusting the run's claim — inside the sandbox, since the test script is a file
 Claude may have edited.
 
 Failure results recorded in `runs.jsonl`: `no_sandbox`, `no_workspace_mount`,
-`sandbox_failed`, `claude_failed`, `no_branch`, `no_commits`, `tests_failed`,
-`fetch_failed`, `control_conflict`, `publisher_clone_failed`,
-`impl_import_failed`, `impl_mismatch`, `impl_not_descendant`, `push_failed`,
-`control_clone_failed`, `control_fetch_failed`, `control_conflict_late`,
-`control_reset_failed`, `state_write_failed`, `handoff_commit_failed`,
-`handoff_push_rejected` — plus `dry_run` and `success`.
+`sandbox_failed`, `claude_failed`, `no_branch`, `no_commits`,
+`workspace_unreadable`, `tests_failed`, `export_failed`, `export_incomplete`,
+`export_branch_mismatch`, `fetch_failed`, `control_conflict`,
+`publisher_clone_failed`, `bundle_invalid`, `impl_import_failed`,
+`impl_mismatch`, `impl_not_descendant`, `authorizing_snapshot_missing`,
+`task_id_mismatch`, `push_failed`, `control_clone_failed`,
+`control_fetch_failed`, `control_conflict_late`, `control_reset_failed`,
+`state_write_failed`, `handoff_commit_failed`, `handoff_push_rejected` — plus
+`dry_run` and `success`.
 
 `FRANKENSTEIN_CLAUDE_TIMEOUT` (default 3600s) bounds the run so a wedged
 process cannot hold the lock forever.
@@ -271,23 +307,39 @@ never stops deployment, and vice versa.
 bash scripts/claude-worker.sh --probe
 ```
 
-Run on the host **before** activation. It is inert: no fetch, no push, no
-deploy, no control read, no run record, and it does not require
-`~/.frankenstein/agent/ENABLED`. It reports the chosen workspace mountpoint and
-mask list, establishes the full containment around a throwaway directory, and
-from inside it:
+Run on the host **before** activation. It makes no GitHub ref change, no
+deployment and runs no product task; it does create and remove temporary
+directories under `~/.frankenstein/agent/`. It does not require
+`~/.frankenstein/agent/ENABLED`.
 
-- asserts `~/.config/gh/hosts.yml`, `~/.gitconfig`, `~/.ssh/*` and
-  `~/.frankenstein/deployed.json` are **not** visible, printing `LEAK:` for
-  anything that is;
-- shows what the home directory now contains, and that `GITHUB_TOKEN`,
-  `GH_TOKEN` and `SSH_AUTH_SOCK` are unset;
-- runs `claude -p 'Reply with the single word READY'` and reports whether the
-  installed CLI could authenticate from inside the restricted environment.
+It reports the chosen mountpoints and mask list, then measures, from inside the
+full containment:
 
-It prints `RESULT: PASS` only when containment holds **and** Claude
-authenticated. Anything else means the exposure list needs adjusting on that
-host — not that the worker should be enabled anyway.
+```
+PASS  user namespace
+PASS  mount namespace
+PASS  PID namespace / private proc
+PASS  workspace mountpoint available
+PASS  export mountpoint available
+PASS  host process environment inaccessible via /proc
+PASS  private /proc shows only sandbox processes
+PASS  docker socket unavailable
+PASS  host /run replaced by a private tmpfs
+PASS  no host runtime state visible under /run
+PASS  no host runtime sockets reachable
+PASS  real home hidden (gh, ssh, gitconfig, .frankenstein)
+PASS  no GitHub or SSH credential in the environment
+PASS  workspace writable
+PASS  scratch home writable
+PASS  production checkout not writable
+PASS  export directory writable
+PASS  Claude authenticated from inside containment
+```
+
+`RESULT: PASS` **exits 0**. `RESULT: NOT READY` **exits non-zero**, so it can
+never be mistaken for success by a script or a skim. Anything less than PASS
+means the exposure list needs adjusting on that host — not that the worker
+should be enabled anyway.
 
 ## Dry run
 
