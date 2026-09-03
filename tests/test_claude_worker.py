@@ -10,7 +10,10 @@ Covers the Product Owner's required cases A–J.
 import json
 import os
 import re
+import shlex
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -118,6 +121,20 @@ def set_control(world, *, turn, status, task_id="FC-001"):
     return git("rev-parse", "HEAD", cwd=ctl)
 
 
+def child_tmp(world):
+    """TMPDIR inside the child == $CHILD_HOME/tmp on the host.
+
+    The worker no longer forwards any test-only channel into the sandbox, so a
+    mock records evidence in its own scratch temp directory and the test reads
+    it from outside. It is wiped at the start of every run.
+    """
+    return world["agent_dir"] / "child-home" / "tmp"
+
+
+def agent_clone(world):
+    return world["tmp"] / "agenthome" / "worktrees" / "agent-repo"
+
+
 def run_worker(world, *args, mock=None, extra_env=None):
     env = dict(os.environ,
                HOME=str(world["tmp"]),
@@ -137,9 +154,10 @@ def run_worker(world, *args, mock=None, extra_env=None):
 # The previous mock wrote STATE.json/PRODUCT_DIRECTIVE.md itself, which is how
 # the stale-directive bug escaped detection.
 MOCK_INSPECT = (
-    'cp .frankenstein/PRODUCT_DIRECTIVE.md "$SEEN_DIR/directive.txt" && '
-    'cp .frankenstein/STATE.json "$SEEN_DIR/state.json" && '
-    'cp .frankenstein/AUTHORIZING_CONTROL_COMMIT "$SEEN_DIR/authorizing.txt" && '
+    'mkdir -p "$TMPDIR" && '
+    'cp .frankenstein/PRODUCT_DIRECTIVE.md "$TMPDIR/directive.txt" && '
+    'cp .frankenstein/STATE.json "$TMPDIR/state.json" && '
+    'cp .frankenstein/AUTHORIZING_CONTROL_COMMIT "$TMPDIR/authorizing.txt" && '
     'printf "seen\n" >> app.txt && '
     'printf "# handoff\n\n## Deviations From Directive\nNo deviations\n" '
     '> .frankenstein/IMPLEMENTATION_HANDOFF.md && '
@@ -284,19 +302,44 @@ def test_worker_refuses_when_clone_equals_production_checkout(world):
 
 # ══ F. control moved during the run -> no overwrite ════════════════════
 
+def hijack_control_mid_run(world, task_id="FC-002", status="changes_requested"):
+    """Move control from OUTSIDE while a run is in flight.
+
+    The child is now fully isolated — it cannot reach the remote, so it can no
+    longer stage this itself. The mock signals through its own scratch temp
+    directory and waits; this watcher, running on the host, moves control and
+    releases it.
+    """
+    ready = child_tmp(world) / "HIJACK_NOW"
+    done = child_tmp(world) / "HIJACK_DONE"
+
+    def watch():
+        deadline = time.time() + 120
+        while time.time() < deadline and not ready.exists():
+            time.sleep(0.05)
+        if not ready.exists():
+            return
+        set_control_directive(world, turn="claude", status=status,
+                              task_id=task_id, objective="superseding directive")
+        done.write_text("")
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    return t
+
+
+HIJACK_SIGNAL = (
+    'mkdir -p "$TMPDIR" && : > "$TMPDIR/HIJACK_NOW" && '
+    'for _ in $(seq 1 1200); do [ -e "$TMPDIR/HIJACK_DONE" ] && break; sleep 0.1; done && '
+)
+
+
 def test_control_change_during_run_blocks_the_handoff(world):
-    set_control(world, turn="claude", status="ready_for_implementation")
-    # the mock does its work, then the Product Owner moves control underneath
-    hijack = (MOCK_GOOD + ' && ' + 'true')
-    r = run_worker(world, mock=hijack + ' && ' + (
-        f'cd "{world["tmp"]}" && rm -rf hijack && '
-        f'git clone -q --branch control "{world["remote"]}" hijack && '
-        'cd hijack && printf \'{"protocol_version":1,"task_id":"FC-002",'
-        '"turn":"claude","status":"changes_requested","directive_commit":null,'
-        '"implementation_commit":null,"last_actor":"product_owner",'
-        '"updated_at":"2026-09-01T02:00:00Z"}\' > .frankenstein/STATE.json && '
-        'git add -A && git -c user.email=p@p -c user.name=po '
-        'commit -qm "[PO-CHANGES] FC-002" && git push -q origin HEAD:control'))
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    watcher = hijack_control_mid_run(world)
+    r = run_worker(world, mock=HIJACK_SIGNAL + MOCK_GOOD)
+    watcher.join(timeout=10)
     assert r.returncode != 0, "stale worker published over newer control state"
     assert "control moved" in r.stderr
     assert "NOT overwriting" in r.stderr
@@ -377,7 +420,7 @@ def test_prompt_explicitly_forbids_those_operations():
 def test_worker_installs_a_pre_push_hook_rejecting_production():
     src = WORKER.read_text()
     assert "hooks/pre-push" in src
-    hook = src[src.index("cat > \"$HOOK\""):src.index("chmod +x \"$HOOK\"")]
+    hook = src[src.index('cat > "$hook"'):src.index('chmod +x "$hook"')]
     assert "refs/heads/production" in hook
     assert "REFUSED" in hook
 
@@ -638,11 +681,9 @@ def test_claude_receives_the_control_directive_not_productions(world):
     control = set_control_directive(
         world, turn="claude", status="ready_for_implementation",
         task_id="FC-001", objective="AUTHORITATIVE OBJECTIVE FROM CONTROL")
-    seen = world["tmp"] / "seen"
-    seen.mkdir()
-    r = run_worker(world, mock=MOCK_INSPECT,
-                   extra_env={"SEEN_DIR": str(seen)})
+    r = run_worker(world, mock=MOCK_INSPECT)
     assert r.returncode == 0, r.stderr
+    seen = child_tmp(world)
 
     directive = (seen / "directive.txt").read_text()
     assert "AUTHORITATIVE OBJECTIVE FROM CONTROL" in directive
@@ -663,9 +704,8 @@ def test_authorizing_control_commit_is_recorded_on_the_branch(world):
     control = set_control_directive(
         world, turn="claude", status="ready_for_implementation",
         task_id="FC-001", objective="do the thing")
-    seen = world["tmp"] / "seen2"; seen.mkdir()
-    run_worker(world, mock=MOCK_INSPECT, extra_env={"SEEN_DIR": str(seen)})
-    clone = world["tmp"] / "agenthome" / "worktrees" / "agent-repo"
+    run_worker(world, mock=MOCK_INSPECT)
+    clone = agent_clone(world)
     recorded = git("show", f"claude/FC-001-work:.frankenstein/AUTHORIZING_CONTROL_COMMIT",
                    cwd=clone)
     assert recorded.strip() == control
@@ -717,41 +757,6 @@ def test_changes_requested_without_prior_work_refuses(world):
 
 
 # ══ 3. the second-stage control publication race ═══════════════════════
-
-def test_control_moving_before_publication_blocks_the_handoff(world):
-    """Move control AFTER the first token check but BEFORE the control-clone
-    publication stage. Stale state must not land on top of newer PO state."""
-    set_control_directive(world, turn="claude", status="ready_for_implementation",
-                          task_id="FC-001", objective="work")
-    # The mock does its work; the worker then verifies control (stage 1). We
-    # hijack control from inside the mock so the move lands between the two.
-    hijack = (
-        'printf "work\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
-        'git add -A && git -c user.email=c@c -c user.name=claude '
-        'commit -qm "[CLAUDE] work"')
-    marker = world["tmp"] / "po-update.sh"
-    marker.write_text(f'''#!/usr/bin/env bash
-cd "{world['tmp']}" && rm -rf hij && \
-git clone -q --branch control "{world['remote']}" hij && cd hij && \
-python3 -c "import json;p='.frankenstein/STATE.json';d=json.load(open(p));\
-d.update(task_id='FC-002',status='changes_requested',last_actor='product_owner');\
-json.dump(d,open(p,'w'),indent=2)" && \
-git add -A && git -c user.email=p@p -c user.name=po commit -qm "[PO-CHANGES] FC-002" && \
-git push -q origin HEAD:control
-''')
-    marker.chmod(0o755)
-    r = run_worker(world, mock=f'{hijack} && bash "{marker}"')
-    assert r.returncode != 0, "stale handoff published over newer control state"
-    assert "control moved" in r.stderr
-
-    ctl = world["tmp"] / "verify-race"
-    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
-    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
-    assert state["task_id"] == "FC-002", "newer Product Owner state was clobbered"
-    assert state["status"] == "changes_requested"
-    assert state["last_actor"] == "product_owner"
-
 
 POST_RECEIVE_HIJACK = r'''#!/bin/sh
 # Fires on the worker's own task-branch push, which happens strictly between
@@ -861,20 +866,24 @@ def test_child_has_no_remote_to_push_production_through(world):
     before = sh("git", "ls-remote", str(world["remote"]),
                 "refs/heads/production").stdout.split()[0]
     attack = (
+        'mkdir -p "$TMPDIR"; '
         'git push origin HEAD:production 2>/dev/null; '
         f'git push "{world["remote"]}" HEAD:production 2>/dev/null; '
-        'git remote -v > "$SEEN_DIR/remotes.txt" 2>&1; '
+        'git remote -v > "$TMPDIR/remotes.txt" 2>&1; '
+        f'ls "{world["remote"]}" > "$TMPDIR/remote-dir.txt" 2>&1; '
         'printf "work\\n" >> app.txt && '
         'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work"')
-    seen = world["tmp"] / "seen-remotes"; seen.mkdir()
-    run_worker(world, mock=attack, extra_env={"SEEN_DIR": str(seen)})
+    run_worker(world, mock=attack)
+    seen = child_tmp(world)
     after = sh("git", "ls-remote", str(world["remote"]),
                "refs/heads/production").stdout.split()[0]
     assert before == after, "production was moved by the child"
     assert (seen / "remotes.txt").read_text().strip() == "", \
         "the child's clone still had a remote configured"
+    assert "No such file" in (seen / "remote-dir.txt").read_text(), \
+        "the child could still see the bare remote on disk"
 
 
 @needs_sandbox
@@ -882,19 +891,18 @@ def test_child_environment_carries_no_reusable_credentials(world):
     """C. the child cannot obtain the credential the publisher uses."""
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
-    seen = world["tmp"] / "seen-env"; seen.mkdir()
     probe = (
-        'env > "$SEEN_DIR/env.txt"; '
-        'git config --get credential.helper >> "$SEEN_DIR/env.txt" 2>&1; '
+        'mkdir -p "$TMPDIR"; '
+        'env > "$TMPDIR/env.txt"; '
+        'git config --get credential.helper >> "$TMPDIR/env.txt" 2>&1; '
         'printf "work\\n" >> app.txt && '
         'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work"')
     run_worker(world, mock=probe,
-               extra_env={"SEEN_DIR": str(seen),
-                          "GITHUB_TOKEN": "ghp_SECRET_SHOULD_NOT_LEAK",
+               extra_env={"GITHUB_TOKEN": "ghp_SECRET_SHOULD_NOT_LEAK",
                           "GH_TOKEN": "gh_SECRET_SHOULD_NOT_LEAK"})
-    env_seen = (seen / "env.txt").read_text()
+    env_seen = (child_tmp(world) / "env.txt").read_text()
     assert "SECRET_SHOULD_NOT_LEAK" not in env_seen, \
         "a GitHub credential reached the child environment"
     assert "GIT_ASKPASS=/bin/false" in env_seen
@@ -1077,3 +1085,313 @@ def test_directive_naming_a_different_task_blocks_invocation(world):
     r = run_worker(world, mock=f'touch "{marker}"')
     assert not marker.exists(), "invoked despite directive/state task mismatch"
     assert "inconsistent" in r.stderr
+# ══ 7. filesystem isolation: the real home is not merely un-inherited ══
+#
+# env -i hides environment variables. It does NOT hide the filesystem. These
+# assert the child cannot reach the user's actual home — gh credentials, ssh
+# keys, ~/.frankenstein, shell configuration — by absolute path.
+
+WORK_AND_COMMIT = (
+    'printf "work\\n" >> app.txt && '
+    'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+    'git add -A && git -c user.email=c@c -c user.name=claude '
+    'commit -qm "[CLAUDE] work"')
+
+
+def plant_host_home_secrets(world):
+    """The worker runs with HOME=world['tmp'], so that IS the 'real home'."""
+    home = world["tmp"]
+    (home / ".config" / "gh").mkdir(parents=True, exist_ok=True)
+    (home / ".config" / "gh" / "hosts.yml").write_text(
+        "github.com:\n    oauth_token: GH_HOST_SECRET_TOKEN\n")
+    (home / ".ssh").mkdir(exist_ok=True)
+    (home / ".ssh" / "id_test").write_text("SSH_HOST_PRIVATE_KEY_MATERIAL\n")
+    (home / ".gitconfig").write_text("[user]\n\tname = anthony\n")
+    return home
+
+
+@needs_sandbox
+def test_child_cannot_read_host_github_credentials(world):
+    """A. ~/.config/gh/hosts.yml must not be reachable from the child."""
+    plant_host_home_secrets(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        '{ cat "$HOME/.config/gh/hosts.yml" || echo UNAVAILABLE; } '
+        '> "$TMPDIR/gh.txt" 2>&1; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe)
+    assert r.returncode == 0, r.stderr
+    seen = (child_tmp(world) / "gh.txt").read_text()
+    assert "GH_HOST_SECRET_TOKEN" not in seen, \
+        "the child read the host's GitHub credential"
+    assert "UNAVAILABLE" in seen or "No such file" in seen
+
+
+@needs_sandbox
+def test_child_cannot_read_host_ssh_material(world):
+    """B. ~/.ssh must not be reachable from the child."""
+    plant_host_home_secrets(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        '{ cat "$HOME/.ssh/id_test" || echo UNAVAILABLE; } > "$TMPDIR/ssh.txt" 2>&1; '
+        'ls -A "$HOME" > "$TMPDIR/homelist.txt" 2>&1; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe)
+    assert r.returncode == 0, r.stderr
+    assert "SSH_HOST_PRIVATE_KEY_MATERIAL" not in (child_tmp(world) / "ssh.txt").read_text()
+    listing = (child_tmp(world) / "homelist.txt").read_text().split()
+    for leaked in (".ssh", ".config", ".gitconfig", "remote.git", "seed",
+                   "FrankensteinCentral", "agenthome"):
+        assert leaked not in listing, f"the child can see {leaked} in the home directory"
+
+
+@needs_sandbox
+def test_child_cannot_write_the_host_home(world):
+    """C. a write to an absolute host-home path must not land there."""
+    plant_host_home_secrets(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    home = world["tmp"]
+    probe = (
+        f'echo pwned > "{home}/PWNED_HOME" 2>/dev/null; '
+        'echo pwned > "$HOME/PWNED_HOME_RELATIVE" 2>/dev/null; '
+        f'echo pwned > "{home}/.ssh/authorized_keys" 2>/dev/null; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe)
+    assert r.returncode == 0, r.stderr
+    assert not (home / "PWNED_HOME").exists(), "child wrote into the host home"
+    assert not (home / "PWNED_HOME_RELATIVE").exists()
+    assert not (home / ".ssh" / "authorized_keys").exists(), \
+        "child wrote into the host's ~/.ssh"
+
+
+@needs_sandbox
+def test_shared_temp_locations_are_masked(world):
+    """/var/tmp is not an ancestor of anything the child needs, so it is
+    replaced by a private tmpfs."""
+    marker = Path("/var/tmp") / f"fc-mask-probe-{os.getpid()}"
+    marker.write_text("HOST_VAR_TMP_CONTENT\n")
+    try:
+        set_control_directive(world, turn="claude",
+                              status="ready_for_implementation",
+                              task_id="FC-001", objective="work")
+        probe = (
+            'mkdir -p "$TMPDIR"; '
+            f'{{ cat "{marker}" || echo UNAVAILABLE; }} > "$TMPDIR/vartmp.txt" 2>&1; '
+            + WORK_AND_COMMIT)
+        r = run_worker(world, mock=probe)
+        assert r.returncode == 0, r.stderr
+        assert "HOST_VAR_TMP_CONTENT" not in (child_tmp(world) / "vartmp.txt").read_text()
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+# ══ 8. the independent test run must not be a sandbox escape ═══════════
+#
+# scripts/test.sh is a file Claude may edit. Running it on the host after the
+# child exits hands a compromised run arbitrary code execution as the deploying
+# user. This is the escape that existed in 759cea0.
+
+@needs_sandbox
+def test_verification_runs_inside_containment_not_on_the_host(world):
+    plant_host_home_secrets(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    home = world["tmp"]
+    prod = world["prod"]
+    attack = (
+        'printf "%s\\n" '
+        '"#!/usr/bin/env bash" '
+        f'"echo pwned > \\"{home}/PWNED_OUTSIDE\\" 2>/dev/null" '
+        f'"echo pwned > \\"{prod}/PWNED_OUTSIDE\\" 2>/dev/null" '
+        '"exit 1" > scripts/test.sh && chmod +x scripts/test.sh && '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=attack)
+    assert not (home / "PWNED_OUTSIDE").exists(), \
+        "the modified test.sh executed outside containment"
+    assert not (prod / "PWNED_OUTSIDE").exists(), \
+        "the modified test.sh wrote into the production checkout"
+    assert r.returncode != 0, "a failing verification must not publish"
+    assert "tests fail" in r.stderr
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-001-work" not in branches, "a failed run published anyway"
+
+
+@needs_sandbox
+def test_verification_still_passes_honest_work(world):
+    """The containment must not break the legitimate case."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, mock=WORK_AND_COMMIT)
+    assert r.returncode == 0, r.stderr
+    assert "re-running the test suite independently, inside the sandbox" in r.stderr
+
+
+# ══ 9. the publisher never executes the child's git control plane ══════
+
+@needs_sandbox
+def test_planted_pre_push_hook_never_runs(world):
+    """The child owns .git/hooks in its workspace. The publisher is a clone the
+    child never had access to, so a planted hook is never executed."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    home = world["tmp"]
+    attack = (
+        'mkdir -p .git/hooks && printf "%s\\n" '
+        '"#!/usr/bin/env bash" '
+        f'"echo pwned > \\"{home}/HOOK_RAN\\" 2>/dev/null" '
+        '"exit 0" > .git/hooks/pre-push && chmod +x .git/hooks/pre-push && '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=attack)
+    assert r.returncode == 0, r.stderr
+    assert not (home / "HOOK_RAN").exists(), \
+        "the publisher executed a hook planted by the child"
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-001-work" in branches, "publication came from the child's clone"
+    hooks = agent_clone(world) / ".git" / "hooks"
+    assert not any(hooks.iterdir()), "the child's hooks survived into the publisher zone"
+
+
+@needs_sandbox
+def test_planted_git_config_never_influences_the_publisher(world):
+    """uploadpack.packObjectsHook is honoured when another repository fetches
+    from this one — exactly what the publisher does."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    home = world["tmp"]
+    pack_hook = f'sh -c \'echo pwned > "{home}/PACKHOOK_RAN"; exec git "$@"\' --'
+    attack = (
+        'git config uploadpack.packObjectsHook ' + shlex.quote(pack_hook) + ' && '
+        'git config core.hooksPath /nonexistent-hooks && '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=attack)
+    assert r.returncode == 0, r.stderr
+    assert not (home / "PACKHOOK_RAN").exists(), \
+        "the publisher honoured git config written by the child"
+    config = (agent_clone(world) / ".git" / "config").read_text()
+    assert "packObjectsHook" not in config, "the child's git config was not restored"
+    assert "hooksPath" not in config
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-001-work" in branches
+
+
+def test_publisher_is_a_separate_clone_from_the_child_workspace():
+    c = code(WORKER)
+    assert 'PUB_DIR="$AGENT_DIR/publisher"' in c
+    assert 'rm -rf "$PUB_DIR"' in c, "the publisher clone must be fresh each run"
+    assert 'git clone --quiet --no-checkout "$REPO_URL" "$PUB_DIR"' in c, \
+        "the publisher must be cloned from origin, never from the child's clone"
+    assert 'rm -rf "$CONTROL_DIR"' in c, "the control clone must be fresh each run"
+    # every push comes from a clone the child never saw
+    pushes = [l.strip() for l in c.splitlines()
+              if re.search(r'(^|\s)git\s+[^|;]*\spush\s', l)]
+    assert pushes
+    for line in pushes:
+        assert '"$PUB_DIR"' in line or '"$CONTROL_DIR"' in line, \
+            f"push from an untrusted clone: {line}"
+
+
+def test_git_in_the_child_clone_is_defused():
+    c = code(WORKER)
+    assert "core.hooksPath=/dev/null" in c and "core.fsmonitor=" in c, \
+        "git in the child's clone must not honour hooks or fsmonitor"
+    assert "uploadpack.packObjectsHook=" in c, \
+        "the fetch out of the child's clone must not honour its pack hook"
+    assert 'cp -f "$TRUSTED_CONFIG" "$AGENT_CLONE/.git/config"' in c, \
+        "the child's git config must be restored before it is used again"
+    # the restore must happen before any verification or publication
+    assert c.index("resanitize_clone\n") < c.index("IMPL_COMMIT=")
+
+
+def test_verification_is_sandboxed_in_source():
+    c = executable(WORKER)
+    idx = c.index("bash scripts/test.sh")
+    window = c[max(0, idx - 400):idx]
+    assert "run_sandboxed" in window, \
+        "the independent test run must be inside the sandbox"
+
+
+# ══ 10. the directive must actually name the task ══════════════════════
+
+def publish_control(world, *, state, directive):
+    ctl = world["tmp"] / f"ctl-raw-{abs(hash((state, directive))) % 10**8}"
+    if ctl.exists():
+        sh("rm", "-rf", str(ctl))
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+    sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "STATE.json").write_text(state)
+    if directive is not None:
+        (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text(directive)
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "raw control", cwd=ctl)
+    sh("git", "push", "-qf", "origin", "HEAD:refs/heads/control", cwd=ctl)
+
+
+AUTHORIZED_STATE = json.dumps({
+    "protocol_version": 1, "task_id": "FC-001", "turn": "claude",
+    "status": "ready_for_implementation", "directive_commit": None,
+    "implementation_commit": None, "last_actor": None,
+    "updated_at": "2026-09-01T00:00:00Z"})
+
+
+@pytest.mark.parametrize("directive,why", [
+    ("# Product Directive\n\n## Objective\nDo something.\n", "no Task ID line"),
+    ("# Product Directive\n\nTask ID: FC-01\n", "malformed Task ID"),
+    ("# Product Directive\n\nTask ID: FC-001-extra\n", "malformed Task ID"),
+    ("# Product Directive\n\nTask ID: whatever\n", "non-FC Task ID"),
+    ("# Product Directive\n\nTask ID: FC-042\n", "different Task ID"),
+    ("# Product Directive\n\nTask ID: FC-001\nTask ID: FC-042\n",
+     "two conflicting Task IDs"),
+])
+def test_directive_must_name_exactly_this_task(world, directive, why):
+    publish_control(world, state=AUTHORIZED_STATE, directive=directive)
+    marker = world["tmp"] / "DIRINVOKED"
+    r = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists(), f"invoked despite a directive with {why}"
+    assert r.returncode == 0
+    assert "NO-OP" in r.stderr
+
+
+def test_a_correct_directive_still_authorizes(world):
+    """The strict check must not block the legitimate case."""
+    publish_control(world, state=AUTHORIZED_STATE,
+                    directive="# Product Directive\n\nTask ID: FC-001\n"
+                              "Deployment Authorization: none\n\n## Objective\nWork.\n")
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert r.returncode == 0, r.stderr
+    assert "AUTHORIZED" in r.stderr
+
+
+# ══ 11. the probe is inert ═════════════════════════════════════════════
+
+def test_probe_touches_no_refs_and_needs_no_enable(world):
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    (world["agent_dir"] / "ENABLED").unlink()
+    before = remote_refs(world)
+    r = run_worker(world, "--probe")
+    assert before == remote_refs(world), "--probe changed remote refs"
+    assert "containment probe" in r.stdout
+    assert "Nothing was fetched, pushed, deployed or changed" in r.stdout
+    assert not (world["agent_dir"] / "runs.jsonl").exists(), \
+        "--probe recorded a run"
+
+
+@needs_sandbox
+def test_probe_reports_containment_and_does_not_leak(world):
+    plant_host_home_secrets(world)
+    r = run_worker(world, "--probe",
+                   extra_env={"GITHUB_TOKEN": "ghp_SECRET_SHOULD_NOT_LEAK",
+                              "GH_TOKEN": "gh_SECRET_SHOULD_NOT_LEAK"})
+    out = r.stdout + r.stderr
+    assert "LEAK:" not in out, out
+    assert "SECRET_SHOULD_NOT_LEAK" not in out, "the probe printed a credential"
+    assert "sandbox:            available" in out
+    assert "scratch home is writable" in out
