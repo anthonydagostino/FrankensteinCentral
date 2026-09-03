@@ -464,3 +464,128 @@ def test_test_sh_does_not_run_apt_or_sudo():
                   if not l.strip().startswith("#") and not l.strip().startswith("echo")]
     joined = "\n".join(code_lines)
     assert "apt-get install" not in joined and "sudo " not in joined
+
+
+# ══ fail-safe inputs: bad repo dir, failed fetch, stale refs ════════════
+#
+# DESIRED must represent what is on GitHub RIGHT NOW. Anything less — a stale
+# remote-tracking ref, an unreadable repo — must deploy nothing.
+
+def test_invalid_repo_directory_deploys_nothing(box, tmp_path):
+    """Without set -e an unchecked cd would leave the poller running in
+    whatever directory systemd started it in."""
+    env = dict(os.environ, FRANKENSTEIN_DIR=str(tmp_path / "does-not-exist"),
+               FRANKENSTEIN_STATE_DIR=str(box["state"]))
+    env.pop("FRANKENSTEIN_BRANCH", None)
+    r = sh("bash", str(box["clone"] / "scripts" / "autopull.sh"), env=env, check=False)
+    assert not box["marker"].exists(), "deployed from an invalid repo directory"
+    assert "cannot be entered" in r.stdout
+    assert r.returncode == 0, "should not spin as a failing unit"
+
+
+def test_repo_dir_failure_never_reaches_fetch_or_deploy():
+    src = "\n".join(l for l in AUTOPULL.read_text().splitlines()
+                    if not l.lstrip().startswith("#"))
+    guard = src.index("cannot be entered")
+    assert guard < src.index("git fetch"), "cd must be checked before fetching"
+    assert guard < src.index("running_commit"), "before reading deployment state"
+    assert guard < src.index("deploy.sh"), "before invoking deploy.sh"
+
+
+def test_failed_fetch_does_not_fall_back_to_a_stale_ref(box):
+    """A: stale origin/production exists locally, fetch now fails.
+    The poller must NOT decide from the stale ref."""
+    converge(box)
+    new = push_commit(box, "production", "newer\n")
+    sh("git", "fetch", "-q", "origin", "production", cwd=box["clone"])
+    stale = git("rev-parse", "origin/production", cwd=box["clone"])
+    assert stale == new, "precondition: a remote-tracking ref exists locally"
+
+    # break the remote so the next fetch fails, leaving the stale ref in place
+    shutil.rmtree(box["remote"])
+    r, deployed = poll(box)
+    assert not deployed, (
+        "poller acted on a stale remote-tracking ref after a failed fetch\n"
+        f"{r.stdout}{r.stderr}")
+    assert "UNKNOWN" in r.stdout and "stale" in r.stdout
+    assert r.returncode == 0
+
+
+def test_successful_fetch_uses_the_fresh_ref(box):
+    """B: fetch succeeds -> normal desired-vs-running logic applies."""
+    converge(box)
+    push_commit(box, "production", "promoted\n")
+    r, deployed = poll(box)
+    assert deployed, f"fresh production change should deploy\n{r.stdout}"
+    assert "!= running" in r.stdout
+
+
+def test_unresolvable_desired_ref_deploys_nothing(box):
+    """C: fetch succeeds but the desired ref cannot be resolved."""
+    converge(box)
+    r, deployed = poll(box, branch="branch-that-does-not-exist")
+    assert not deployed
+    assert "NOT deploying" in r.stdout
+    assert r.returncode == 0
+
+
+def test_fetch_is_a_gate_not_a_best_effort():
+    src = "\n".join(l for l in AUTOPULL.read_text().splitlines()
+                    if not l.lstrip().startswith("#"))
+    fetch_line = next(l for l in src.splitlines() if "git fetch --prune origin" in l)
+    assert "|| true" not in fetch_line, (
+        "a best-effort fetch lets a stale remote-tracking ref decide the "
+        "production boundary")
+    assert "if ! git fetch" in src
+
+
+# ---- status: null running_commit is PENDING ---------------------------
+
+STATUS = ROOT / "scripts" / "frankenstein-status.sh"
+
+
+def status_with(tmp_path, record: dict | None):
+    state = tmp_path / "st"
+    state.mkdir(exist_ok=True)
+    if record is not None:
+        (state / "deployed.json").write_text(json.dumps(record))
+    env = dict(os.environ, FRANKENSTEIN_STATE_DIR=str(state))
+    return subprocess.run(["bash", str(STATUS)], capture_output=True, text=True,
+                          cwd=ROOT, env=env, timeout=60).stdout
+
+
+def test_null_running_commit_reports_deployment_pending(tmp_path):
+    """The exact post-bootstrap OptiPlex state."""
+    out = status_with(tmp_path, {
+        "production_branch": "production", "running_commit": None,
+        "last_attempt_commit": "b" * 40, "last_result": "tests_failed",
+        "last_attempt_at": "2026-09-01T00:00:00+00:00"})
+    assert "DEPLOYMENT PENDING" in out
+    assert "no confirmed running deployment" in out
+    assert "none confirmed" in out
+
+
+def test_null_running_status_does_not_claim_containers_are_down(tmp_path):
+    out = status_with(tmp_path, {
+        "production_branch": "production", "running_commit": None,
+        "last_attempt_commit": "b" * 40, "last_result": "tests_failed"})
+    assert "does not mean containers are down" in out
+
+
+def test_mismatched_running_commit_reports_pending(tmp_path):
+    out = status_with(tmp_path, {
+        "production_branch": "production", "running_commit": "c" * 40,
+        "last_attempt_commit": "d" * 40, "last_result": "tests_failed"})
+    assert "DEPLOYMENT PENDING" in out
+
+
+def test_status_does_not_truncate_placeholder_text(tmp_path):
+    """Slicing [:7] on placeholder text produced '— (none' and 'an unco'."""
+    out = status_with(tmp_path, {
+        "production_branch": "production", "running_commit": None,
+        "last_attempt_commit": None, "last_result": "tests_failed"})
+    # Assert the full placeholders render, rather than guessing at mangled
+    # forms — "— (none " is a legitimate prefix of "— (none confirmed)".
+    assert "— (none confirmed)" in out, "running placeholder was truncated"
+    assert "(last SUCCESSFUL deploy)" in out, "label was truncated"
+    assert "still on no confirmed commit" in out, "fallback text was truncated"

@@ -33,24 +33,39 @@
 set -uo pipefail
 
 DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
-cd "$DIR"
+
+# Without `set -e`, an unchecked `cd` would leave the poller running from
+# whatever directory systemd started it in — every git command below would
+# then act on the wrong repository, or none. Deploy nothing.
+if ! cd "$DIR" 2>/dev/null; then
+  echo "$(date -Is)  configured repo directory cannot be entered: $DIR — NOT deploying."
+  echo "$(date -Is)  check FRANKENSTEIN_DIR in frankenstein-deploy.service."
+  exit 0
+fi
 
 BRANCH="${FRANKENSTEIN_BRANCH:-production}"
 RECORD="${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}/deployed.json"
 
-git fetch --prune origin "$BRANCH" >/dev/null 2>&1 || true
-
-# Fail SAFE: if the production branch is missing or unfetchable, deploy
-# nothing. Never fall back to the checked-out branch — that fallback is the
-# bug this file exists to fix. Exit 0 so the timer doesn't spin on a failing
-# unit, but say so unmistakably in the journal.
-if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
-  echo "$(date -Is)  production branch 'origin/$BRANCH' not found — NOT deploying."
-  echo "$(date -Is)  create it, or set FRANKENSTEIN_BRANCH in frankenstein-deploy.service."
+# DESIRED must represent what is on GitHub RIGHT NOW. A failed fetch leaves a
+# remote-tracking ref from some earlier poll, and deciding from that would let
+# the boundary act on stale production state. So the fetch itself is a gate:
+# if it fails, current production is unknown and nothing is deployed. Never
+# fall back to a stale ref, to local HEAD, or to a local branch.
+if ! git fetch --prune origin "$BRANCH" >/dev/null 2>&1; then
+  echo "$(date -Is)  could not fetch origin/$BRANCH — current production state is UNKNOWN."
+  echo "$(date -Is)  NOT deploying (refusing to act on a stale remote-tracking ref)."
   exit 0
 fi
 
-DESIRED="$(git rev-parse "origin/$BRANCH")"
+# Fail SAFE: fetch succeeded but the ref still will not resolve — the branch is
+# missing or unreadable. Deploy nothing. Exit 0 so the timer doesn't spin on a
+# failing unit, but say so unmistakably in the journal.
+DESIRED="$(git rev-parse --verify --quiet "origin/$BRANCH^{commit}" 2>/dev/null)"
+if [ -z "$DESIRED" ]; then
+  echo "$(date -Is)  production branch 'origin/$BRANCH' could not be resolved after a successful fetch — NOT deploying."
+  echo "$(date -Is)  create it, or set FRANKENSTEIN_BRANCH in frankenstein-deploy.service."
+  exit 0
+fi
 
 # What is actually RUNNING — the last successful deployment, recorded by
 # deploy.sh. Any failure to read it yields an empty string, which means

@@ -178,16 +178,26 @@ try:
     running = rec.get("running_commit")
     attempt = rec.get("last_attempt_commit")
     result = rec.get("last_result", "?")
-    print(f"  Running commit:        {(running or '— (none confirmed)')[:7]}"
+    # Only slice real SHAs — truncating placeholder text produced "— (none".
+    short = lambda v, dash="—": v[:7] if v else dash
+    print(f"  Running commit:        {short(running, '— (none confirmed)')}"
           f"   (last SUCCESSFUL deploy)")
-    print(f"  Last attempted:        {(attempt or '—')[:7]}   at {rec.get('last_attempt_at','?')}")
+    print(f"  Last attempted:        {short(attempt)}   at {rec.get('last_attempt_at','?')}")
     print(f"  Last deploy result:    {result}")
-    if running and prod_sha and not running.startswith(prod_sha):
+    # A null/absent running_commit is PENDING too: no successfully deployed SHA
+    # is confirmed in the record. That says nothing about whether containers
+    # happen to be up — only that no deployment has been confirmed.
+    if not running:
+        print(f"  ! DEPLOYMENT PENDING — desired {prod_sha or '(unknown)'} has no "
+              f"confirmed running deployment")
+        print("  !   (no successfully deployed SHA is recorded; this does not "
+              "mean containers are down)")
+    elif prod_sha and not running.startswith(prod_sha):
         print(f"  ! DEPLOYMENT PENDING — desired {prod_sha} is not the running "
               f"commit {running[:7]}")
     if result != "success":
         print(f"  ! last attempt did NOT succeed; the box is still on "
-              f"{(running or 'an unconfirmed commit')[:7]}")
+              f"{short(running, 'no confirmed commit')}")
 except (OSError, ValueError):
     print("  Running commit:        — (no deploy record here; this file is "
           "written on the OptiPlex)")
