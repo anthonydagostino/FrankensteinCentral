@@ -57,6 +57,13 @@ CLAUDE_EXPOSE="${FRANKENSTEIN_CLAUDE_EXPOSE:-$HOME/.claude/.credentials.json:$HO
 # Environment forwarded to the child: Claude authentication only. No GitHub
 # token, no SSH agent, nothing else.
 CLAUDE_ENV_KEYS="${FRANKENSTEIN_CLAUDE_ENV:-ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR}"
+# Outbound egress allowlist for the Claude invocation ONLY. Everything else
+# runs with no egress at all. host:port entries, comma separated.
+EGRESS_ALLOW="${FRANKENSTEIN_EGRESS_ALLOW:-api.anthropic.com:443}"
+EGRESS_PORT="${FRANKENSTEIN_EGRESS_PORT:-8118}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+EGRESS_PROXY_BIN="${FRANKENSTEIN_EGRESS_PROXY:-$HERE/agent/egress-proxy.py}"
+EGRESS_RELAY_BIN="${FRANKENSTEIN_EGRESS_RELAY:-$HERE/agent/egress-relay.py}"
 
 MODE="run"
 case "${1:-}" in
@@ -79,6 +86,10 @@ PROD_REAL="$(abspath "$PROD_DIR")"
 AGENT_CLONE="$CLONE_ROOT/agent-repo"
 CLONE_REAL="$(abspath "$AGENT_CLONE")"
 CHILD_HOME="$AGENT_DIR/child-home"
+# A SECOND scratch home for the structure/verification/export invocations. The
+# child never had access to it, so no Claude credential — staged or copied —
+# can be present when child-controlled code runs during verification.
+TOOL_HOME="$AGENT_DIR/tool-home"
 EXPORT_DIR="$AGENT_DIR/export"
 
 # ── containment plumbing ─────────────────────────────────────────────────
@@ -129,20 +140,24 @@ MASK_PATHS="$(build_mask_list)"
 # every absolute path under ~ resolves into this directory instead.
 EXPOSE_LIST=""
 RESOLV_STAGE=""
-prepare_child_home() {
-  local p rel
-  rm -rf "$CHILD_HOME"
-  mkdir -p "$CHILD_HOME/tmp" "$CHILD_HOME/.cache"
-  chmod 700 "$CHILD_HOME"
-  # Masking /run can take DNS with it when /etc/resolv.conf points into it, so
-  # stage the resolved contents and bind them back over /etc/resolv.conf.
+stage_resolv_conf() {
   RESOLV_STAGE=""
-  if [ -e /etc/resolv.conf ]; then
-    if cp -L /etc/resolv.conf "$AGENT_DIR/resolv.conf.staged" 2>/dev/null; then
-      RESOLV_STAGE="$AGENT_DIR/resolv.conf.staged"
-    fi
+  if [ -e /etc/resolv.conf ] \
+     && cp -L /etc/resolv.conf "$AGENT_DIR/resolv.conf.staged" 2>/dev/null; then
+    RESOLV_STAGE="$AGENT_DIR/resolv.conf.staged"
   fi
+}
+
+# prepare_stage <dir> <expose?>
+# Builds a scratch home that will be bind-mounted over the real one. Claude's
+# credential paths are staged ONLY when asked for — that is, only for the child.
+prepare_stage() {
+  local stage="$1" with_creds="$2" p rel
+  rm -rf "$stage"
+  mkdir -p "$stage/tmp" "$stage/.cache"
+  chmod 700 "$stage"
   EXPOSE_LIST=""
+  [ "$with_creds" = "creds" ] || return 0
   IFS=':' read -r -a _expose <<<"$CLAUDE_EXPOSE"
   for p in "${_expose[@]:-}"; do
     [ -n "$p" ] || continue
@@ -150,11 +165,11 @@ prepare_child_home() {
     contains "$REAL_HOME" "$p" || continue      # only home paths need staging
     rel="${p#$REAL_HOME/}"
     if [ -d "$p" ]; then
-      mkdir -p "$CHILD_HOME/$rel"
+      mkdir -p "$stage/$rel"
     else
-      mkdir -p "$(dirname "$CHILD_HOME/$rel")"; : > "$CHILD_HOME/$rel"
+      mkdir -p "$(dirname "$stage/$rel")"; : > "$stage/$rel"
     fi
-    EXPOSE_LIST="$EXPOSE_LIST $p|$CHILD_HOME/$rel"
+    EXPOSE_LIST="$EXPOSE_LIST $p|$stage/$rel"
   done
   EXPOSE_LIST="${EXPOSE_LIST# }"
 }
@@ -163,7 +178,7 @@ prepare_child_home() {
 # the child can read /proc/<pid>/environ of the orchestrator and every other
 # process this user owns, and env -i buys nothing.
 sandbox_available() {
-  unshare --user --map-root-user --mount --pid --fork --mount-proc true >/dev/null 2>&1
+  unshare --user --map-root-user --mount --pid --fork --mount-proc --net true >/dev/null 2>&1
 }
 
 # Run "$@" inside the containment boundary. WS_SRC is bind-mounted at
@@ -172,12 +187,16 @@ sandbox_available() {
 # child never sees the directory its work will be exported into.
 WS_SRC=""
 EXPORT_SRC=""
+STAGE_HOME=""
+NET_SOCK=""
 run_sandboxed() {
   FCS_PROD="$PROD_REAL" FCS_WS_SRC="$WS_SRC" FCS_WS_MNT="$WORKSPACE_MNT" \
   FCS_EXPORT_SRC="$EXPORT_SRC" FCS_EXPORT_MNT="$EXPORT_MNT" \
-  FCS_HOME_STAGE="$CHILD_HOME" FCS_REAL_HOME="$REAL_HOME" \
+  FCS_HOME_STAGE="$STAGE_HOME" FCS_REAL_HOME="$REAL_HOME" \
   FCS_MASK="$MASK_PATHS" FCS_EXPOSE="$EXPOSE_LIST" FCS_RESOLV="$RESOLV_STAGE" \
-  unshare --user --map-root-user --mount --pid --fork --mount-proc -- /bin/bash -c '
+  FCS_NET_HELPER="$REAL_HOME/.egress-relay.py" FCS_NET_SOCK="$NET_SOCK" \
+  FCS_NET_PORT="$EGRESS_PORT" \
+  unshare --user --map-root-user --mount --pid --fork --mount-proc --net -- /bin/bash -c '
     set -u
     die() { echo "sandbox: $1" >&2; exit 97; }
     # the production checkout is read-only even where it is not hidden
@@ -216,6 +235,24 @@ run_sandboxed() {
       [ -d "$m" ] || continue
       mount -t tmpfs none "$m" 2>/dev/null || die "cannot mask $m"
     done
+    # THE NETWORK NAMESPACE IS PRIVATE AND EMPTY. Loopback is brought up
+    # inside it, so 127.0.0.1 is the sandbox own loopback and reaches nothing
+    # on the OptiPlex; there is no route to the LAN, to link-local ranges, or
+    # to anything else. Only the child gets a way out, and only through the
+    # UNIX socket the host egress proxy owns.
+    # env -i for the helper too: it lives in the sandbox PID namespace, so
+    # anything it inherited would be readable at /proc/<pid>/environ by the
+    # very process this boundary exists to contain. (The probe caught this.)
+    if [ -n "$FCS_NET_SOCK" ]; then
+      env -i PATH="$PATH" python3 "$FCS_NET_HELPER" \
+        --socket "$FCS_NET_SOCK" --port "$FCS_NET_PORT" >/dev/null 2>&1 &
+      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        ( exec 3<>"/dev/tcp/127.0.0.1/$FCS_NET_PORT" ) 2>/dev/null && break
+        sleep 0.2
+      done
+    else
+      env -i PATH="$PATH" python3 "$FCS_NET_HELPER" --loopback-only >/dev/null 2>&1 || true
+    fi
     cd "$FCS_WS_MNT" 2>/dev/null || die "cannot enter the workspace"
     exec "$@"
   ' _ "$@"
@@ -224,8 +261,8 @@ run_sandboxed() {
 # The child's environment. env -i so nothing is inherited: no GITHUB_TOKEN,
 # no GH_TOKEN, no SSH_AUTH_SOCK, no git identity, no interactive credential
 # path. Only the explicitly listed Claude authentication variables are added.
-build_child_env() {
-  local seen_home="$1" k v
+build_env() {
+  local seen_home="$1" with_creds="$2" k v
   CHILD_ENV=(env -i
     "HOME=$seen_home"
     "TMPDIR=$seen_home/tmp"
@@ -241,10 +278,55 @@ build_child_env() {
     "GIT_AUTHOR_EMAIL=noreply@anthropic.com"
     "GIT_COMMITTER_NAME=Claude Worker"
     "GIT_COMMITTER_EMAIL=noreply@anthropic.com")
+  [ "$with_creds" = "creds" ] || return 0
   for k in $CLAUDE_ENV_KEYS; do
     v="${!k:-}"
     [ -n "$v" ] && CHILD_ENV+=("$k=$v")
   done
+  # the only way out of the private network namespace
+  local proxy="http://127.0.0.1:$EGRESS_PORT"
+  CHILD_ENV+=("HTTPS_PROXY=$proxy" "https_proxy=$proxy"
+              "HTTP_PROXY=$proxy" "http_proxy=$proxy"
+              "ALL_PROXY=$proxy" "all_proxy=$proxy"
+              "GLOBAL_AGENT_HTTPS_PROXY=$proxy"
+              "NO_PROXY=" "no_proxy=")
+}
+
+# The host half of the narrow egress channel. It owns a UNIX socket inside the
+# child scratch home and speaks HTTP CONNECT over it, refusing any target that
+# is not on the allowlist or that resolves to a loopback, private, link-local
+# or reserved address. Started only for the Claude invocation.
+EGRESS_PID=""
+start_egress() {
+  NET_SOCK=""
+  cp -f "$EGRESS_RELAY_BIN" "$CHILD_HOME/.egress-relay.py" 2>/dev/null \
+    || { log "egress: could not stage the relay"; return 1; }
+  chmod 0500 "$CHILD_HOME/.egress-relay.py" 2>/dev/null
+  python3 "$EGRESS_PROXY_BIN" --socket "$CHILD_HOME/.egress.sock" \
+    --allow "$EGRESS_ALLOW" >>"${RUN_LOG:-$LOG}" 2>&1 &
+  EGRESS_PID=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    [ -S "$CHILD_HOME/.egress.sock" ] && { NET_SOCK="$REAL_HOME/.egress.sock"; return 0; }
+    sleep 0.2
+  done
+  log "egress: the proxy did not come up"
+  return 1
+}
+stop_egress() {
+  [ -n "$EGRESS_PID" ] && kill "$EGRESS_PID" 2>/dev/null
+  EGRESS_PID=""; NET_SOCK=""
+}
+
+# Tool invocations (structure, verification, export) get a scratch home the
+# child never saw, no Claude credential, and no egress whatsoever.
+stage_for_tools() {
+  prepare_stage "$TOOL_HOME" nocreds
+  STAGE_HOME="$TOOL_HOME"
+  NET_SOCK=""
+  cp -f "$EGRESS_RELAY_BIN" "$TOOL_HOME/.egress-relay.py" 2>/dev/null
+  chmod 0500 "$TOOL_HOME/.egress-relay.py" 2>/dev/null
+  build_env "$1" nocreds
 }
 
 # ── --probe: prove containment and Claude auth BEFORE activation ─────────
@@ -272,6 +354,8 @@ if [ "$MODE" = "probe" ]; then
   unshare --user --map-root-user --mount true >/dev/null 2>&1; check "mount namespace" $?
   unshare --user --map-root-user --mount --pid --fork --mount-proc true >/dev/null 2>&1
   check "PID namespace / private proc" $?
+  unshare --user --map-root-user --net true >/dev/null 2>&1
+  check "network namespace" $?
   [ -n "$WORKSPACE_MNT" ]; check "workspace mountpoint available" $?
   [ -n "$EXPORT_MNT" ];    check "export mountpoint available" $?
   if [ "$PROBE_FAIL" != "0" ]; then
@@ -280,7 +364,9 @@ if [ "$MODE" = "probe" ]; then
     exit 1
   fi
 
-  prepare_child_home
+  stage_resolv_conf
+  prepare_stage "$CHILD_HOME" creds
+  STAGE_HOME="$CHILD_HOME"
   PROBE_WS="$(mktemp -d "$AGENT_DIR/probe-XXXXXX")" || { echo "RESULT: NOT READY — no temp dir"; exit 1; }
   PROBE_OUT="$(mktemp -d "$AGENT_DIR/probeout-XXXXXX")" || { echo "RESULT: NOT READY — no temp dir"; exit 1; }
   trap 'rm -rf "$PROBE_WS" "$PROBE_OUT"' EXIT
@@ -294,15 +380,79 @@ try: os.unlink(p)
 except OSError: pass
 s = socket.socket(socket.AF_UNIX); s.bind(p)
 " "$PROBE_SOCK" 2>/dev/null || PROBE_SOCK=""
+  # decoy listeners on the host: one on loopback, one on the OptiPlex own LAN
+  # address, so LAN isolation is measured rather than asserted
+  PROBE_LISTENERS="$(python3 - <<'PYL'
+import os, socket, sys, threading, time
+
+def serve(host):
+    """A decoy listener the sandbox must not be able to reach."""
+    try:
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, 0))
+        s.listen(4)
+    except OSError:
+        return None, None
+    return s, "%s:%d" % (host, s.getsockname()[1])
+
+def lan_address():
+    try:
+        p = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        p.connect(("8.8.8.8", 53))
+        addr = p.getsockname()[0]
+        p.close()
+        return addr
+    except OSError:
+        return ""
+
+hosts = ["127.0.0.1"]
+lan = lan_address()
+if lan and lan != "127.0.0.1":
+    hosts.append(lan)
+socks, names = [], []
+for h in hosts:
+    sock, name = serve(h)
+    if sock:
+        socks.append(sock)
+        names.append(name)
+if not socks:
+    sys.exit(0)
+pid = os.fork()
+if pid:
+    print(" ".join(names) + " pid=%d" % pid)
+    sys.exit(0)
+# The child must not hold the command substitution pipe open.
+devnull = os.open(os.devnull, os.O_RDWR)
+for fd in (0, 1, 2):
+    os.dup2(devnull, fd)
+def accept_forever(s):
+    while True:
+        try:
+            c, _ = s.accept()
+            c.close()
+        except OSError:
+            return
+for s in socks:
+    threading.Thread(target=accept_forever, args=(s,), daemon=True).start()
+time.sleep(180)
+PYL
+)"
+  PROBE_LOOPBACK="$(printf '%s' "$PROBE_LISTENERS" | tr ' ' '\n' | grep '^127\.' | head -1)"
+  PROBE_LAN="$(printf '%s' "$PROBE_LISTENERS" | tr ' ' '\n' | grep -v '^127\.' | grep ':' | head -1)"
+  PROBE_HELPER_PID="$(printf '%s' "$PROBE_LISTENERS" | tr ' ' '\n' | sed -n 's/^pid=//p')"
   WS_SRC="$PROBE_WS"
   EXPORT_SRC="$PROBE_OUT"
-  build_child_env "$REAL_HOME"
+  build_env "$REAL_HOME" creds
+  start_egress || echo "  FAIL  narrow egress channel could not be started"
   echo
   echo "-- containment, measured from inside the sandbox --"
   FRANKENSTEIN_PROBE_SECRET="probe_secret_$$_do_not_leak" \
   run_sandboxed "${CHILD_ENV[@]}" \
     FRANKENSTEIN_PROBE_PROD="$PROD_REAL" \
     FRANKENSTEIN_PROBE_EXPORT="$EXPORT_MNT" \
+    FRANKENSTEIN_PROBE_LOOPBACK="$PROBE_LOOPBACK" \
+    FRANKENSTEIN_PROBE_LAN="$PROBE_LAN" \
     /bin/bash -c '
       rc=0
       say() { if [ "$2" = 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1"; rc=1; fi; }
@@ -333,11 +483,68 @@ s = socket.socket(socket.AF_UNIX); s.bind(p)
       say "production checkout not writable" $?
       ( echo ok > "$FRANKENSTEIN_PROBE_EXPORT/probe-export" ) 2>/dev/null
       say "export directory writable" $?
+      cannot_reach() {
+        [ -z "$1" ] && return 0
+        h="${1%:*}"; p="${1##*:}"
+        ! ( exec 3<>"/dev/tcp/$h/$p" ) 2>/dev/null
+      }
+      cannot_reach "$FRANKENSTEIN_PROBE_LOOPBACK"
+      say "child cannot reach a host loopback listener" $?
+      cannot_reach "$FRANKENSTEIN_PROBE_LAN"
+      say "child cannot reach the host RFC1918 LAN address" $?
+      cannot_reach "169.254.169.254:80"
+      say "child cannot reach IPv4 link-local / metadata" $?
+      cannot_reach "[::1]:22"
+      say "child cannot reach IPv6 loopback" $?
+      cannot_reach "[fe80::1]:80"
+      say "child cannot reach IPv6 link-local" $?
+      cannot_reach "[fc00::1]:80"
+      say "child cannot reach IPv6 unique-local" $?
       exit $rc'
   CONTAIN_RC=$?
   [ "$CONTAIN_RC" = 0 ] || PROBE_FAIL=1
   [ -n "$PROBE_SOCK" ] && rm -f "$PROBE_SOCK"
   EXPORT_SRC=""
+  stop_egress
+
+  echo
+  echo "-- the verification zone, where child-controlled code runs --"
+  stage_for_tools "$REAL_HOME"
+  run_sandboxed "${CHILD_ENV[@]}" \
+    FRANKENSTEIN_PROBE_LOOPBACK="$PROBE_LOOPBACK" \
+    FRANKENSTEIN_PROBE_LAN="$PROBE_LAN" \
+    /bin/bash -c '
+      rc=0
+      say() { if [ "$2" = 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1"; rc=1; fi; }
+      [ -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_BASE_URL:-}" ]
+      say "verification has no Claude credential in its environment" $?
+      [ -z "${HTTPS_PROXY:-}${HTTP_PROXY:-}${ALL_PROXY:-}${https_proxy:-}" ]
+      say "verification has no egress proxy configured" $?
+      [ ! -s "$HOME/.claude/.credentials.json" ] && [ ! -s "$HOME/.claude.json" ]
+      say "verification cannot read exposed Claude credential files" $?
+      [ ! -S "$HOME/.egress.sock" ]
+      say "verification has no egress socket" $?
+      cannot_reach() {
+        [ -z "$1" ] && return 0
+        h="${1%:*}"; p="${1##*:}"
+        ! ( exec 3<>"/dev/tcp/$h/$p" ) 2>/dev/null
+      }
+      cannot_reach "$FRANKENSTEIN_PROBE_LOOPBACK"
+      say "verification cannot reach a host loopback listener" $?
+      cannot_reach "$FRANKENSTEIN_PROBE_LAN"
+      say "verification cannot reach the host LAN address" $?
+      ! ( exec 3<>/dev/tcp/api.anthropic.com/443 ) 2>/dev/null
+      say "verification has no outbound network at all" $?
+      exit $rc'
+  VERIFY_RC=$?
+  [ "$VERIFY_RC" = 0 ] || PROBE_FAIL=1
+
+  # back to the child profile for the authentication check
+  prepare_stage "$CHILD_HOME" creds
+  STAGE_HOME="$CHILD_HOME"
+  build_env "$REAL_HOME" creds
+  WS_SRC="$PROBE_WS"
+  start_egress || { echo "  FAIL  narrow egress channel could not be started"; PROBE_FAIL=1; }
 
   echo
   echo "-- Claude authentication, from inside the sandbox --"
@@ -351,12 +558,22 @@ s = socket.socket(socket.AF_UNIX); s.bind(p)
       echo "        sandbox hides. Add its install directory to FRANKENSTEIN_CLAUDE_EXPOSE."
     fi
     OUT="$(run_sandboxed "${CHILD_ENV[@]}" timeout 120 "$CLAUDE_BIN" -p \
-            'Reply with the single word READY and nothing else.' 2>&1)"
+            'Reply with the single word READY and nothing else.' </dev/null 2>&1)"
     AUTH_RC=$?
-    if [ "$AUTH_RC" = 0 ]; then echo "  PASS  Claude authenticated from inside containment"
-    else echo "  FAIL  Claude exited $AUTH_RC"; PROBE_FAIL=1; fi
+    if [ "$AUTH_RC" = 0 ]; then
+      echo "  PASS  Claude API authentication through the permitted egress"
+    else
+      echo "  FAIL  Claude exited $AUTH_RC through the permitted egress"
+      echo "        (if this is the only failure, the CLI is not honouring the"
+      echo "         proxy environment or needs another allowlist entry —"
+      echo "         report the output and the allowlist, do not widen it here)"
+      PROBE_FAIL=1
+    fi
+    echo "  allowlist: $EGRESS_ALLOW"
     echo "  output: ${OUT:0:400}"
   fi
+  stop_egress
+  [ -n "${PROBE_HELPER_PID:-}" ] && kill "$PROBE_HELPER_PID" 2>/dev/null
 
   echo
   if [ "$PROBE_FAIL" = "0" ]; then
@@ -428,7 +645,8 @@ if status not in ALLOWED_STATUS:
     print('INVALID|status %r is not an allowed value' % status); raise SystemExit
 if not isinstance(task, str) or not re.fullmatch(r'FC-[0-9]{3,}', task):
     print('INVALID|task_id %r is not ^FC-[0-9]{3,}\$' % task); raise SystemExit
-print('OK|%s|%s|%s|%s' % (turn, status, task, d.get('implementation_commit') or ''))
+print('OK|%s|%s|%s|%s|%s' % (turn, status, task, d.get('implementation_commit') or '',
+                             d.get('directive_commit') or ''))
 " 2>/dev/null)"
 
 case "$VALIDATION" in
@@ -436,7 +654,7 @@ case "$VALIDATION" in
   INVALID\|*) noop "control state rejected: ${VALIDATION#INVALID|}" ;;
   *) noop "control state could not be validated — invoking nothing" ;;
 esac
-IFS='|' read -r _ TURN STATUS TASK_ID PRIOR_IMPL <<<"$VALIDATION"
+IFS='|' read -r _ TURN STATUS TASK_ID PRIOR_IMPL AUTHORIZED_DIRECTIVE <<<"$VALIDATION"
 
 # ── the directive must carry EXACTLY ONE Task ID naming this task ────────
 DIRECTIVE_TEXT="$(ctl_file PRODUCT_DIRECTIVE.md)"
@@ -556,7 +774,9 @@ PY
 # From here to the end of the run, the workspace is HOSTILE.
 agit remote remove origin 2>/dev/null
 
-prepare_child_home
+stage_resolv_conf
+prepare_stage "$CHILD_HOME" creds
+STAGE_HOME="$CHILD_HOME"
 if sandbox_available; then
   SEEN_HOME="$REAL_HOME"
 elif [ "$ALLOW_UNSANDBOXED" = "1" ]; then
@@ -567,8 +787,13 @@ else
 fi
 [ -n "$WORKSPACE_MNT" ] && [ -n "$EXPORT_MNT" ] || { record_run "no_workspace_mount" ""
   fail "need two neutral mountpoints outside the home (tried: $MOUNT_CANDIDATES) — refusing to run without them"; }
-build_child_env "$SEEN_HOME"
+build_env "$SEEN_HOME" creds
 WS_SRC="$AGENT_CLONE"
+if sandbox_available; then
+  start_egress || { record_run "egress_unavailable" ""
+    fail "the narrow egress channel could not be started — refusing to run the child with no way to reach Claude and no containment story"; }
+  log "egress: allowlist $EGRESS_ALLOW; everything else, including localhost and the LAN, is unreachable"
+fi
 
 PROMPT="You are the autonomous implementation worker for FrankensteinCentral.
 
@@ -609,7 +834,8 @@ else
     run_sandboxed "${CHILD_ENV[@]}" \
       timeout --signal=TERM --kill-after=60 "$MAX_RUNTIME" \
       "$CLAUDE_BIN" -p "$PROMPT" \
-      --permission-mode acceptEdits --add-dir "$WORKSPACE_MNT" >>"$RUN_LOG" 2>&1
+      --permission-mode acceptEdits --add-dir "$WORKSPACE_MNT" \
+      </dev/null >>"$RUN_LOG" 2>&1
     CLAUDE_RC=$?
   else
     log "WARNING: running Claude UNSANDBOXED (FRANKENSTEIN_ALLOW_UNSANDBOXED=1)"
@@ -621,6 +847,8 @@ else
   fi
 fi
 
+stop_egress
+
 # ══ THE TRUST TRANSITION ═════════════════════════════════════════════════
 # Nothing below reads, writes, or runs a command against the workspace from
 # the host. Only sandbox invocations touch it, and only the exported artifact
@@ -630,6 +858,12 @@ if [ "$CLAUDE_RC" -ne 0 ]; then
   record_run "claude_failed" ""
   fail "Claude exited $CLAUDE_RC — no handoff published, production untouched. Log: $RUN_LOG"
 fi
+
+# Structure, verification and export run with a scratch home the child never
+# saw, no Claude credential in the environment or on disk, and NO egress: the
+# network namespace stays empty, so child-controlled scripts/test.sh cannot
+# send anything anywhere.
+stage_for_tools "$SEEN_HOME"
 
 sandboxed_or_local() {  # run fixed commands in the sandbox where available
   if sandbox_available; then run_sandboxed "${CHILD_ENV[@]}" "$@"
@@ -760,18 +994,61 @@ git -C "$PUB_DIR" merge-base --is-ancestor "$BASELINE" refs/frankenstein/impl \
   || { record_run "impl_not_descendant" ""
        fail "the implementation does not descend from the authorized baseline ${BASELINE:0:7}"; }
 
-# the authorizing snapshot and the task id must be the ones that were sent in
+# ── the exported state must be a COMPLETE, VALID handoff ─────────────────
+# Not merely "names the right task". A buggy or hostile run that left
+# turn=claude, or an authorized status, would re-authorize itself on the very
+# next poll. Everything the Product Owner owns is checked against what
+# authorized this run; only implementation_commit is the publisher's to set.
 SNAPSHOT="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/AUTHORIZING_CONTROL_COMMIT" 2>/dev/null | tr -d ' \n\r')"
 [ "$SNAPSHOT" = "$CONTROL_COMMIT" ] || {
   record_run "authorizing_snapshot_missing" ""
   fail "the exported work does not carry the authorizing control commit ${CONTROL_COMMIT:0:7} — refusing to publish"; }
-STATE_TASK="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/STATE.json" 2>/dev/null \
-              | python3 -c "import json,sys
-try: print(json.load(sys.stdin).get('task_id',''))
-except Exception: print('')" 2>/dev/null)"
-[ "$STATE_TASK" = "$TASK_ID" ] || {
-  record_run "task_id_mismatch" ""
-  fail "the exported STATE.json names task '$STATE_TASK', not $TASK_ID — refusing to publish"; }
+
+EXPORTED_HANDOFF="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/IMPLEMENTATION_HANDOFF.md" 2>/dev/null)"
+case "$EXPORTED_HANDOFF" in
+  "") record_run "handoff_missing" ""
+      fail "the exported work carries no .frankenstein/IMPLEMENTATION_HANDOFF.md — refusing to publish" ;;
+esac
+printf '%s' "$EXPORTED_HANDOFF" | grep -qi "Deviations From Directive" || {
+  record_run "handoff_incomplete" ""
+  fail "IMPLEMENTATION_HANDOFF.md omits the 'Deviations From Directive' section — refusing to publish an unreviewable handoff"; }
+
+STATE_CHECK="$(git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/STATE.json" 2>/dev/null \
+  | python3 -c "
+import json, sys
+want_task, want_directive, version = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print('INVALID|exported STATE.json is unparseable: %s' % e); raise SystemExit
+if not isinstance(d, dict):
+    print('INVALID|exported STATE.json is not an object'); raise SystemExit
+checks = [
+    ('protocol_version', d.get('protocol_version'), version),
+    ('task_id',          d.get('task_id'),          want_task),
+    ('turn',             d.get('turn'),             'product_owner'),
+    ('status',           d.get('status'),           'awaiting_review'),
+    ('last_actor',       d.get('last_actor'),       'claude'),
+]
+for field, got, want in checks:
+    if got != want:
+        print('INVALID|exported STATE.json %s is %r, must be %r' % (field, got, want))
+        raise SystemExit
+got_directive = d.get('directive_commit') or ''
+if got_directive != want_directive:
+    print('INVALID|exported STATE.json directive_commit is %r; the Product Owner set %r '
+          'and a run may not rewrite it' % (got_directive, want_directive))
+    raise SystemExit
+print('OK')
+" "$TASK_ID" "$AUTHORIZED_DIRECTIVE" "$SUPPORTED_PROTOCOL_VERSION" 2>/dev/null)"
+case "$STATE_CHECK" in
+  OK) ;;
+  INVALID\|*) record_run "handoff_state_invalid" ""
+      fail "${STATE_CHECK#INVALID|} — refusing to publish. A run that does not hand the turn back would re-authorize itself." ;;
+  *)  record_run "handoff_state_invalid" ""
+      fail "the exported STATE.json could not be validated — refusing to publish" ;;
+esac
+log "exported state validated as a complete handoff (product_owner/awaiting_review)"
 
 git -C "$PUB_DIR" push --quiet origin "refs/frankenstein/impl:refs/heads/$TASK_BRANCH" \
   || { record_run "push_failed" ""; fail "pushing $TASK_BRANCH failed — no handoff published"; }
@@ -811,7 +1088,9 @@ try:
     doc = json.load(open(path))
 except Exception:
     raise SystemExit(1)
-doc["implementation_commit"] = impl
+doc["implementation_commit"] = impl      # the publisher is the authority here
+doc["turn"] = "product_owner"
+doc["status"] = "awaiting_review"
 doc["last_actor"] = "claude"
 doc["updated_at"] = datetime.datetime.now(
     datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -838,6 +1117,22 @@ Authorizing control commit: $CONTROL_COMMIT" \
   HANDOFF_COMMIT="$(git -C "$CONTROL_DIR" rev-parse HEAD)"
   log "published handoff ${HANDOFF_COMMIT:0:7} to $CONTROL_BRANCH"
 fi
+
+# ── read back what actually landed on control ────────────────────────────
+PUBLISHED_STATE="$(git -C "$CONTROL_DIR" show "HEAD:.frankenstein/STATE.json" 2>/dev/null \
+  | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('unreadable'); raise SystemExit
+print('%s|%s|%s|%s' % (d.get('turn'), d.get('status'),
+                       d.get('implementation_commit'), d.get('last_actor')))
+" 2>/dev/null)"
+[ "$PUBLISHED_STATE" = "product_owner|awaiting_review|$IMPL_COMMIT|claude" ] || {
+  record_run "published_state_wrong" ""
+  fail "the control commit that was just written reads '$PUBLISHED_STATE', not 'product_owner|awaiting_review|$IMPL_COMMIT|claude'. Investigate before the next poll."; }
+log "control now reads product_owner/awaiting_review at ${IMPL_COMMIT:0:7}"
 
 record_run "success" "$HANDOFF_COMMIT"
 log "DONE task=$TASK_ID impl=${IMPL_COMMIT:0:7} handoff=${HANDOFF_COMMIT:0:7} — production untouched"

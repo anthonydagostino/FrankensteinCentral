@@ -170,6 +170,19 @@ MOCK_INSPECT = (
 )
 
 
+# The publisher now refuses anything that is not a COMPLETE protocol handoff,
+# so every mock that finishes successfully must hand the turn back exactly as a
+# real run would.
+HANDOFF_STATE = (
+    'printf "# handoff\\n\\n## Deviations From Directive\\nNo deviations\\n" '
+    '> .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+    'python3 -c "'
+    "import json;q='.frankenstein/STATE.json';j=json.load(open(q));"
+    "j.update(turn='product_owner',status='awaiting_review',last_actor='claude');"
+    "json.dump(j,open(q,'w'))\" && "
+)
+
+
 # A mock "Claude" that does what the real one is asked to do.
 MOCK_GOOD = (
     'echo "mock claude ran" && '
@@ -720,8 +733,7 @@ def test_changes_requested_continues_the_existing_implementation(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="first pass")
     first = run_worker(world, mock=(
-        'printf "FIRST-PASS-WORK\\n" > first.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'printf "FIRST-PASS-WORK\\n" > first.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] FC-001 first"'))
     assert first.returncode == 0, first.stderr
@@ -733,7 +745,7 @@ def test_changes_requested_continues_the_existing_implementation(world):
                           task_id="FC-001", objective="now also do the second bit")
 
     second = run_worker(world, mock=(
-        'printf "SECOND-PASS-WORK\\n" > second.txt && '
+        'printf "SECOND-PASS-WORK\\n" > second.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] FC-001 corrections"'))
     assert second.returncode == 0, second.stderr
@@ -850,8 +862,7 @@ def test_child_cannot_write_the_production_checkout(world):
     victim = world["prod"] / "PWNED"
     attack = (
         f'(echo pwned > "{victim}") 2>/dev/null; '
-        'printf "work\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'printf "work\\n" >> app.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work"')
     run_worker(world, mock=attack)
@@ -871,8 +882,7 @@ def test_child_has_no_remote_to_push_production_through(world):
         f'git push "{world["remote"]}" HEAD:production 2>/dev/null; '
         'git remote -v > "$TMPDIR/remotes.txt" 2>&1; '
         f'ls "{world["remote"]}" > "$TMPDIR/remote-dir.txt" 2>&1; '
-        'printf "work\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'printf "work\\n" >> app.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work"')
     run_worker(world, mock=attack)
@@ -895,8 +905,7 @@ def test_child_environment_carries_no_reusable_credentials(world):
         'mkdir -p "$TMPDIR"; '
         'env > "$TMPDIR/env.txt"; '
         'git config --get credential.helper >> "$TMPDIR/env.txt" 2>&1; '
-        'printf "work\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'printf "work\\n" >> app.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work"')
     run_worker(world, mock=probe,
@@ -917,7 +926,7 @@ def test_child_can_still_do_normal_work(world):
     r = run_worker(world, mock=(
         'bash scripts/test.sh >/dev/null && '
         'printf "normal\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] normal work"'))
     assert r.returncode == 0, r.stderr
@@ -1093,7 +1102,7 @@ def test_directive_naming_a_different_task_blocks_invocation(world):
 
 WORK_AND_COMMIT = (
     'printf "work\\n" >> app.txt && '
-    'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+    + HANDOFF_STATE +
     'git add -A && git -c user.email=c@c -c user.name=claude '
     'commit -qm "[CLAUDE] work"')
 
@@ -1563,8 +1572,7 @@ def test_symlinked_git_directory_does_not_lead_the_host_anywhere(world):
     target.mkdir()
     (target / "precious.txt").write_text("MUST SURVIVE\n")
     attack = (
-        'printf "work\\n" >> app.txt && '
-        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'printf "work\\n" >> app.txt && ' + HANDOFF_STATE +
         'git add -A && git -c user.email=c@c -c user.name=claude '
         'commit -qm "[CLAUDE] work" && '
         f'rm -rf .git && ln -s "{target}" .git')
@@ -1649,3 +1657,341 @@ def test_a_forged_export_naming_another_branch_is_rejected(world):
     branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
     assert "claude/FC-999-work" not in branches, "an unauthorized branch was published"
     assert r.returncode == 0, r.stderr
+
+
+# ══ 13. network containment ════════════════════════════════════════════
+#
+# Filesystem isolation does not protect the running product from HTTP or TCP.
+# Every invocation gets a PRIVATE network namespace; only the Claude child gets
+# a way out, and only through the host egress proxy's allowlist.
+
+import contextlib
+import socket
+import threading
+
+
+@contextlib.contextmanager
+def decoy_listener(host):
+    """A host listener the sandbox must never reach. Counts connections."""
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, 0))
+    srv.listen(8)
+    hits = []
+
+    def accept():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            hits.append(1)
+            conn.close()
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield f"{host}:{srv.getsockname()[1]}", hits
+    finally:
+        srv.close()
+
+
+def host_lan_address():
+    try:
+        p = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        p.connect(("8.8.8.8", 53))
+        addr = p.getsockname()[0]
+        p.close()
+        return addr
+    except OSError:
+        return ""
+
+
+def reach_probe(targets):
+    """A mock that records, for each target, whether TCP connect succeeded."""
+    lines = ['mkdir -p "$TMPDIR"; : > "$TMPDIR/reach.txt"']
+    for label, target in targets:
+        host, _, port = target.rpartition(":")
+        lines.append(
+            f'if ( exec 3<>"/dev/tcp/{host}/{port}" ) 2>/dev/null; '
+            f'then echo "{label}=REACHED" >> "$TMPDIR/reach.txt"; '
+            f'else echo "{label}=blocked" >> "$TMPDIR/reach.txt"; fi')
+    return "; ".join(lines) + "; " + WORK_AND_COMMIT
+
+
+@needs_sandbox
+def test_child_cannot_reach_host_loopback_or_lan_services(world):
+    """1, 2, 3 — loopback, RFC1918 and link-local from the child."""
+    lan = host_lan_address()
+    with decoy_listener("127.0.0.1") as (loop_target, loop_hits):
+        targets = [("loopback", loop_target),
+                   ("linklocal", "169.254.169.254:80")]
+        lan_hits = []
+        ctx = decoy_listener(lan) if lan and lan != "127.0.0.1" else None
+        if ctx:
+            lan_target, lan_hits = ctx.__enter__()
+            targets.append(("lan", lan_target))
+        try:
+            set_control_directive(world, turn="claude",
+                                  status="ready_for_implementation",
+                                  task_id="FC-001", objective="work")
+            r = run_worker(world, mock=reach_probe(targets))
+            assert r.returncode == 0, r.stderr
+            reached = (child_tmp(world) / "reach.txt").read_text()
+        finally:
+            if ctx:
+                ctx.__exit__(None, None, None)
+    assert "REACHED" not in reached, reached
+    assert "loopback=blocked" in reached
+    assert "linklocal=blocked" in reached
+    assert not loop_hits, "the child connected to a host loopback service"
+    assert not lan_hits, "the child connected to a host LAN service"
+    if lan and lan != "127.0.0.1":
+        assert "lan=blocked" in reached
+
+
+@needs_sandbox
+def test_child_cannot_reach_ipv6_local_addresses(world):
+    """IPv6 half of the same property: ::1, fe80::/10, fc00::/7."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, mock=reach_probe([
+        ("v6loopback", "[::1]:22"),
+        ("v6linklocal", "[fe80::1]:80"),
+        ("v6ula", "[fc00::1]:80")]))
+    assert r.returncode == 0, r.stderr
+    reached = (child_tmp(world) / "reach.txt").read_text()
+    assert "REACHED" not in reached, reached
+
+
+@needs_sandbox
+def test_verification_has_no_network_and_no_claude_credential(world):
+    """4, 5, 6, 7 — invocation C runs child-controlled code, so it gets a
+    scratch home the child never saw, no credential, and no egress."""
+    creds = world["tmp"] / "fake-claude-creds.json"
+    creds.write_text('{"token": "CLAUDE_CRED_MUST_NOT_REACH_VERIFICATION"}\n')
+    lan = host_lan_address()
+    with decoy_listener("127.0.0.1") as (loop_target, loop_hits):
+        loop_host, _, loop_port = loop_target.rpartition(":")
+        set_control_directive(world, turn="claude",
+                              status="ready_for_implementation",
+                              task_id="FC-001", objective="work")
+        # scripts/test.sh is child-controlled; make it report what it can see
+        evidence = "VERIFY_EVIDENCE"
+        attack = (
+            'printf "%s\\n" '
+            '"#!/usr/bin/env bash" '
+            f'"env > {evidence}.env" '
+            f'"cat \\"$HOME/.claude/.credentials.json\\" > {evidence}.cred 2>&1 || true" '
+            f'"if ( exec 3<>/dev/tcp/{loop_host}/{loop_port} ) 2>/dev/null; '
+            f'then echo REACHED > {evidence}.net; else echo blocked > {evidence}.net; fi" '
+            f'"if ( exec 3<>/dev/tcp/1.1.1.1/443 ) 2>/dev/null; '
+            f'then echo REACHED >> {evidence}.net; else echo blocked >> {evidence}.net; fi" '
+            '"echo ALL TESTS PASSED" > scripts/test.sh && chmod +x scripts/test.sh && '
+            + WORK_AND_COMMIT)
+        r = run_worker(world, mock=attack, extra_env={
+            "FRANKENSTEIN_CLAUDE_EXPOSE": str(creds),
+            "ANTHROPIC_API_KEY": "sk-ant-MUST-NOT-REACH-VERIFICATION"})
+        assert r.returncode == 0, r.stderr
+    clone = agent_clone(world)
+    env_seen = (clone / f"{evidence}.env").read_text()
+    assert "MUST-NOT-REACH-VERIFICATION" not in env_seen, \
+        "verification received a Claude credential"
+    for banned in ("HTTPS_PROXY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                   "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert banned not in env_seen, f"verification環 carries {banned}"
+    cred_seen = (clone / f"{evidence}.cred").read_text()
+    assert "CLAUDE_CRED_MUST_NOT_REACH_VERIFICATION" not in cred_seen, \
+        "verification could read the exposed Claude credential file"
+    net_seen = (clone / f"{evidence}.net").read_text()
+    assert "REACHED" not in net_seen, net_seen
+    assert not loop_hits, "verification connected to a host service"
+
+
+@needs_sandbox
+def test_the_child_egress_channel_exists_and_filters(world):
+    """8 — the child's only route out works and enforces the allowlist.
+
+    The real Claude call cannot run in this harness, so this asserts the
+    channel itself: the proxy is reachable at the configured address, a target
+    that is not on the allowlist is refused, and so is one that resolves to a
+    private address.
+    """
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        'python3 - <<"EOF" > "$TMPDIR/egress.txt" 2>&1\n'
+        'import http.client, os\n'
+        'proxy = os.environ.get("HTTPS_PROXY", "")\n'
+        'print("HTTPS_PROXY=" + proxy)\n'
+        'host = proxy.split("//")[-1]\n'
+        'for target in ("github.com:443", "localhost:5432", "192.168.1.185:80"):\n'
+        '    try:\n'
+        '        c = http.client.HTTPConnection(host.split(":")[0],\n'
+        '                                       int(host.split(":")[1]), timeout=10)\n'
+        '        c.request("CONNECT", target)\n'
+        '        print(target + " -> " + str(c.getresponse().status))\n'
+        '    except Exception as exc:\n'
+        '        print(target + " -> error " + type(exc).__name__)\n'
+        'EOF\n'
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe)
+    assert r.returncode == 0, r.stderr
+    out = (child_tmp(world) / "egress.txt").read_text()
+    assert "HTTPS_PROXY=http://127.0.0.1:" in out, out
+    for refused in ("github.com:443 -> 403", "localhost:5432 -> 403",
+                    "192.168.1.185:80 -> 403"):
+        assert refused in out, f"expected {refused}\n{out}"
+
+
+def test_the_egress_proxy_refuses_non_global_addresses():
+    """Unit-level: a name is not an address. Every address a target resolves
+    to must be global, or a DNS answer pointing at the LAN becomes a tunnel."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "egress_proxy", ROOT / "scripts" / "agent" / "egress-proxy.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for bad in ("127.0.0.1", "10.0.0.5", "192.168.1.185", "172.16.4.4",
+                "169.254.169.254", "0.0.0.0", "::1", "fe80::1", "fc00::1",
+                "fd00::1", "ff02::1"):
+        assert not mod.address_is_global(bad), f"{bad} must be refused"
+    for good in ("1.1.1.1", "160.79.104.10", "2606:4700::1111"):
+        assert mod.address_is_global(good), f"{good} must be allowed"
+
+
+def test_every_invocation_gets_a_private_network_namespace():
+    c = code(WORKER)
+    runner = c[c.index("run_sandboxed() {"):c.index("build_env() {")]
+    assert "--pid --fork --mount-proc --net" in runner, \
+        "the sandbox runner must include a network namespace"
+    checker = c[c.index("sandbox_available() {"):c.index("run_sandboxed() {")]
+    assert "--net" in checker, "the availability check must require it too"
+    # only the child is given an egress socket
+    assert 'NET_SOCK="$REAL_HOME/.egress.sock"' in c
+    tools = c[c.index("stage_for_tools() {"):
+              c.index('if [ "$MODE" = "probe" ]; then')]
+    assert 'NET_SOCK=""' in tools, "tool invocations must get no egress"
+    assert "nocreds" in tools, "tool invocations must get no Claude credential"
+
+
+# ══ 14. the exported state must be a complete, valid handoff ═══════════
+
+def broken_handoff_mock(**state_updates):
+    """A run that produces real work but leaves protocol state wrong."""
+    updates = ",".join(f"{k}={v!r}" for k, v in state_updates.items())
+    return (
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n\\n## Deviations From Directive\\nNo deviations\\n" '
+        '> .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'python3 -c "'
+        "import json;q='.frankenstein/STATE.json';j=json.load(open(q));"
+        f"j.update({updates});"
+        "json.dump(j,open(q,'w'))\" && "
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work"')
+
+
+@pytest.mark.parametrize("updates,why", [
+    (dict(turn="claude", status="ready_for_implementation", last_actor="claude"),
+     "A. leaves itself authorized for another autonomous run"),
+    (dict(turn="claude", status="changes_requested", last_actor="claude"),
+     "A2. leaves itself authorized under a different status"),
+    (dict(turn="none", status="accepted", last_actor="claude"),
+     "B. accepts its own work"),
+    (dict(turn="product_owner", status="accepted", last_actor="claude"),
+     "B2. marks the task accepted"),
+    (dict(turn="product_owner", status="awaiting_review", last_actor="product_owner"),
+     "claims the Product Owner acted"),
+    (dict(turn="product_owner", status="awaiting_review", last_actor="claude",
+          directive_commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+     "C. rewrites the Product Owner's directive identity"),
+    (dict(turn="product_owner", status="awaiting_review", last_actor="claude",
+          protocol_version=99),
+     "changes the protocol version"),
+    (dict(turn="product_owner", status="awaiting_review", last_actor="claude",
+          task_id="FC-999"),
+     "renames the task"),
+])
+@needs_sandbox
+def test_an_invalid_exported_handoff_is_never_published(world, updates, why):
+    control_before = set_control_directive(
+        world, turn="claude", status="ready_for_implementation",
+        task_id="FC-001", objective="work")
+    r = run_worker(world, mock=broken_handoff_mock(**updates))
+    assert r.returncode != 0, f"published despite: {why}"
+    branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+    assert "claude/FC-001-work" not in branches, f"task branch published: {why}"
+    ctl = world["tmp"] / f"ctl-invalid-{abs(hash(why)) % 10000}"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    assert git("rev-parse", "HEAD", cwd=ctl) == control_before, \
+        f"control moved despite: {why}"
+
+
+@needs_sandbox
+def test_a_missing_or_stub_handoff_document_is_never_published(world):
+    """D. IMPLEMENTATION_HANDOFF.md must exist, be non-empty, and carry the
+    documented Deviations section."""
+    for mock, why in [
+        ('printf "work\\n" >> app.txt && rm -f .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+         'python3 -c "'
+         "import json;q='.frankenstein/STATE.json';j=json.load(open(q));"
+         "j.update(turn='product_owner',status='awaiting_review',last_actor='claude');"
+         "json.dump(j,open(q,'w'))\" && "
+         'git add -A && git -c user.email=c@c -c user.name=claude commit -qm "[CLAUDE] w"',
+         "missing"),
+        ('printf "work\\n" >> app.txt && '
+         'printf "# handoff\\nlooks fine\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+         'python3 -c "'
+         "import json;q='.frankenstein/STATE.json';j=json.load(open(q));"
+         "j.update(turn='product_owner',status='awaiting_review',last_actor='claude');"
+         "json.dump(j,open(q,'w'))\" && "
+         'git add -A && git -c user.email=c@c -c user.name=claude commit -qm "[CLAUDE] w"',
+         "no Deviations section"),
+    ]:
+        sh("rm", "-rf", str(world["agent_dir"] / "publisher"))
+        control_before = set_control_directive(
+            world, turn="claude", status="ready_for_implementation",
+            task_id="FC-001", objective=f"work ({why})")
+        r = run_worker(world, mock=mock)
+        assert r.returncode != 0, f"published a handoff that was {why}"
+        branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
+        assert "claude/FC-001-work" not in branches
+        ctl = world["tmp"] / f"ctl-handoff-{why.replace(' ', '-')}"
+        sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+        assert git("rev-parse", "HEAD", cwd=ctl) == control_before
+
+
+@needs_sandbox
+def test_a_valid_handoff_publishes_and_control_reads_back_correctly(world):
+    """E. and the read-back the Product Owner asked for."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert r.returncode == 0, r.stderr
+    assert "exported state validated as a complete handoff" in r.stderr
+    assert "control now reads product_owner/awaiting_review" in r.stderr
+
+    ctl = world["tmp"] / "readback"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    published = sh("git", "ls-remote", str(world["remote"]),
+                   "refs/heads/claude/FC-001-work").stdout.split()[0]
+    assert state["turn"] == "product_owner"
+    assert state["status"] == "awaiting_review"
+    assert state["last_actor"] == "claude"
+    assert state["implementation_commit"] == published
+    # and the next poll must NOT re-authorize a run
+    marker = world["tmp"] / "REAUTHORIZED"
+    again = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists(), "the handoff re-authorized another autonomous run"
+    assert "NO-OP" in again.stderr
+
+
+def test_the_publisher_is_the_authority_for_implementation_commit():
+    c = code(WORKER)
+    assert 'doc["implementation_commit"] = impl' in c
+    assert 'doc["turn"] = "product_owner"' in c
+    assert 'doc["status"] = "awaiting_review"' in c
+    assert "AUTHORIZED_DIRECTIVE" in c, \
+        "the Product Owner's directive_commit must be carried through and checked"

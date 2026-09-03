@@ -98,12 +98,16 @@ primitive outside the sandbox. The workspace is therefore not cleaned. It is
 Each is a separate namespace, so nothing — including a background process
 started by `scripts/test.sh` — survives from one to the next.
 
-| | invocation | contents |
-|---|---|---|
-| A | the child | Claude, or the mock |
-| B | structure check | fixed git commands: the branch exists and carries commits |
-| C | verification | `bash scripts/test.sh` |
-| D | export | fixed git commands: write a bundle + manifest out |
+| | invocation | contents | home | Claude credential | network |
+|---|---|---|---|---|---|
+| A | the child | Claude, or the mock | child scratch | yes, read-only | allowlisted egress |
+| B | structure check | fixed git commands | tool scratch | no | none |
+| C | verification | `bash scripts/test.sh` | tool scratch | no | none |
+| D | export | fixed git commands | tool scratch | no | none |
+
+Two separate scratch homes, not one. B, C and D get a home the child never had
+access to, so no credential — staged or copied there by the child — is present
+when child-controlled code runs during verification.
 
 The workspace itself is **ephemeral**: discarded and recreated from origin
 every run, so nothing a previous child left can influence the next one. (`rm -rf`
@@ -151,6 +155,53 @@ If the namespaces cannot be established the worker **refuses to run**.
 `FRANKENSTEIN_ALLOW_UNSANDBOXED=1` exists for hosts without unprivileged user
 namespaces; it removes the boundary, and the systemd template never sets it.
 
+### Network containment
+
+Filesystem isolation does not protect the running product from HTTP or TCP. A
+child sharing the OptiPlex network stack could reach `127.0.0.1` services, the
+box's own LAN address, the Frankenstein service ports, PostgreSQL, other LAN
+devices, and link-local ranges — and a malicious `scripts/test.sh` could post a
+credential anywhere.
+
+So **every invocation gets a private, empty network namespace** (`--net`). There
+is no route to anything. Loopback is brought up inside it, so `127.0.0.1` is the
+sandbox's own loopback and reaches nothing on the host. `ip` is not assumed to
+exist; the interface is brought up with the `SIOCSIFFLAGS` ioctl directly.
+
+B, C and D stop there: no egress at all.
+
+A needs to reach Claude, so it gets exactly that and nothing more, through a
+two-part channel that needs no privileged tooling and no third-party package:
+
+```
+child (private netns)                     host
+  HTTPS_PROXY=127.0.0.1:8118
+        │ TCP
+        ▼
+  egress-relay.py  ──── UNIX socket ────▶  egress-proxy.py ──▶ api.anthropic.com:443
+  (dumb pump, in the netns)                (HTTP CONNECT, allowlisted)
+```
+
+The UNIX socket is a filesystem object inside the child's scratch home, so it
+crosses the network namespace without giving the child a route. The host half
+speaks HTTP CONNECT and applies **two independent checks**, because a name is
+not an address:
+
+1. `host:port` must be on `FRANKENSTEIN_EGRESS_ALLOW` (default
+   `api.anthropic.com:443`);
+2. **every** address that name resolves to must be a global unicast address —
+   which is what stops a DNS answer pointing at `127.0.0.1`, the OptiPlex's LAN
+   address, `169.254.0.0/16`, `::1`, `fe80::/10` or `fc00::/7` from becoming a
+   tunnel into the house.
+
+Both helpers run under `env -i` inside the namespace. That is not cosmetic: they
+live in the child's PID namespace, so anything they inherited would be readable
+at `/proc/<pid>/environ` by the process this boundary exists to contain. The
+probe caught exactly that during development.
+
+If the egress channel cannot be started, the worker refuses to run the child
+rather than falling back to the host network stack.
+
 ### Claude's own authentication
 
 The child needs to reach Claude, and nothing else. Two narrow channels, both
@@ -196,9 +247,32 @@ and checks it against what the host authorized *before* the child existed:
 - it **descends from the baseline** recorded before the child ran;
 - it carries `.frankenstein/AUTHORIZING_CONTROL_COMMIT` equal to the
   authorizing control commit;
-- its `STATE.json` names this task.
+- `IMPLEMENTATION_HANDOFF.md` exists, is non-empty, and carries the documented
+  `Deviations From Directive` section;
+- and its `STATE.json` is a **complete, valid handoff**, not merely one that
+  names the right task:
 
-Only then is the task ref pushed. The handoff is written from a **fresh control
+| field | required value |
+|---|---|
+| `protocol_version` | the supported version |
+| `task_id` | the authorized task |
+| `turn` | `product_owner` |
+| `status` | `awaiting_review` |
+| `last_actor` | `claude` |
+| `directive_commit` | exactly what the Product Owner set — a run may not rewrite the directive's identity |
+
+That last group is a safety property, not bookkeeping. A run that left
+`turn: claude` with `ready_for_implementation` or `changes_requested` would
+**re-authorize itself on the very next poll**, and one that wrote
+`status: accepted` would have accepted its own work. Neither is publishable.
+
+`implementation_commit` is the publisher's to set, and it sets it to the exact
+commit it imported and verified.
+
+Only then is the task ref pushed. After the handoff lands, the worker re-reads
+the control commit it just created and asserts it says
+`product_owner / awaiting_review / <implementation SHA> / claude`; anything else
+fails the run loudly rather than leaving control in a state nobody checked. The handoff is written from a **fresh control
 clone**, with content read from the publisher's object database. Both trusted
 clones carry a `pre-push` hook rejecting `production`/`main`/`master` and any
 non-fast-forward push, detected by `merge-base --is-ancestor`.
@@ -229,7 +303,13 @@ Behaviorally, not by reading the source. The child is handed real attacks:
 | set `uploadpack.packObjectsHook`, `core.hooksPath` | never honoured |
 | `rm -rf .git && ln -s <host dir> .git` | the host directory and its contents survive this run **and the next run's cleanup**; nothing is published |
 | symlink `.git/config` at a host file and `.git/hooks` at a host directory | file unmodified, directory not deleted |
-| ordinary edits, commits, `bash scripts/test.sh` | still work, still export, still publish |
+| connect to a host loopback listener, the box's LAN address, `169.254.169.254` | all refused; the decoy listeners record zero connections |
+| connect to `::1`, `fe80::1`, `fc00::1` | all refused |
+| use the egress channel for `github.com`, `localhost:5432`, a LAN address | `403` from the proxy in every case |
+| rewrite `scripts/test.sh` to dump its environment, read the credential file, and phone home | no Claude credential in the environment or on disk, no proxy configured, no route out, decoy listener untouched |
+| leave `turn: claude`, or `status: accepted`, or rewrite `directive_commit`, or rename the task, or bump `protocol_version`, or claim the Product Owner acted | nothing published, control unmoved |
+| omit `IMPLEMENTATION_HANDOFF.md`, or omit its Deviations section | nothing published, control unmoved |
+| ordinary edits, commits, `bash scripts/test.sh` | still work, still export, still publish; control reads back correctly and the next poll is a NO-OP |
 
 The last row matters as much as the others: containment that breaks honest work
 is not containment, it is an outage.
@@ -267,11 +347,13 @@ Claude may have edited.
 
 Failure results recorded in `runs.jsonl`: `no_sandbox`, `no_workspace_mount`,
 `sandbox_failed`, `claude_failed`, `no_branch`, `no_commits`,
-`workspace_unreadable`, `tests_failed`, `export_failed`, `export_incomplete`,
+`workspace_unreadable`, `tests_failed`, `egress_unavailable`, `export_failed`,
+`export_incomplete`,
 `export_branch_mismatch`, `fetch_failed`, `control_conflict`,
 `publisher_clone_failed`, `bundle_invalid`, `impl_import_failed`,
 `impl_mismatch`, `impl_not_descendant`, `authorizing_snapshot_missing`,
-`task_id_mismatch`, `push_failed`, `control_clone_failed`,
+`handoff_missing`, `handoff_incomplete`, `handoff_state_invalid`,
+`published_state_wrong`, `push_failed`, `control_clone_failed`,
 `control_fetch_failed`, `control_conflict_late`, `control_reset_failed`,
 `state_write_failed`, `handoff_commit_failed`, `handoff_push_rejected` — plus
 `dry_run` and `success`.
@@ -312,15 +394,18 @@ deployment and runs no product task; it does create and remove temporary
 directories under `~/.frankenstein/agent/`. It does not require
 `~/.frankenstein/agent/ENABLED`.
 
-It reports the chosen mountpoints and mask list, then measures, from inside the
-full containment:
+It starts decoy listeners on the host's loopback and on the box's own LAN
+address, puts a marker secret in its own environment, then measures — rather
+than asserts — from inside the full containment:
 
 ```
 PASS  user namespace
 PASS  mount namespace
 PASS  PID namespace / private proc
+PASS  network namespace
 PASS  workspace mountpoint available
 PASS  export mountpoint available
+
 PASS  host process environment inaccessible via /proc
 PASS  private /proc shows only sandbox processes
 PASS  docker socket unavailable
@@ -333,13 +418,28 @@ PASS  workspace writable
 PASS  scratch home writable
 PASS  production checkout not writable
 PASS  export directory writable
-PASS  Claude authenticated from inside containment
+PASS  child cannot reach a host loopback listener
+PASS  child cannot reach the host RFC1918 LAN address
+PASS  child cannot reach IPv4 link-local / metadata
+PASS  child cannot reach IPv6 loopback
+PASS  child cannot reach IPv6 link-local
+PASS  child cannot reach IPv6 unique-local
+
+PASS  verification has no Claude credential in its environment
+PASS  verification has no egress proxy configured
+PASS  verification cannot read exposed Claude credential files
+PASS  verification has no egress socket
+PASS  verification cannot reach a host loopback listener
+PASS  verification cannot reach the host LAN address
+PASS  verification has no outbound network at all
+
+PASS  Claude API authentication through the permitted egress
 ```
 
 `RESULT: PASS` **exits 0**. `RESULT: NOT READY` **exits non-zero**, so it can
 never be mistaken for success by a script or a skim. Anything less than PASS
-means the exposure list needs adjusting on that host — not that the worker
-should be enabled anyway.
+means the exposure list or the egress allowlist needs adjusting on that host —
+not that the worker should be enabled anyway.
 
 ## Dry run
 
