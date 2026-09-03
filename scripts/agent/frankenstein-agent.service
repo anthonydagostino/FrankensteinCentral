@@ -1,0 +1,28 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED.
+# Install only after Product Owner approval:
+#   sudo cp scripts/agent/frankenstein-agent.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   touch ~/.frankenstein/agent/ENABLED     # the worker refuses without this
+#   sudo systemctl enable --now frankenstein-agent.timer
+#
+# Deliberately SEPARATE from frankenstein-deploy.*: the autonomous worker and
+# the production deployer must be independently startable and stoppable.
+[Unit]
+Description=FrankensteinCentral autonomous Claude worker (one poll)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=REPLACE_WITH_USER
+Environment=FRANKENSTEIN_DIR=/home/REPLACE_WITH_USER/FrankensteinCentral
+Environment=FRANKENSTEIN_AGENT_DIR=/home/REPLACE_WITH_USER/.frankenstein/agent
+Environment=FRANKENSTEIN_WORKTREE_ROOT=/home/REPLACE_WITH_USER/.frankenstein/worktrees
+# Hard ceiling so a wedged run cannot hold the worker forever.
+Environment=FRANKENSTEIN_CLAUDE_TIMEOUT=3600
+TimeoutStartSec=5400
+ExecStart=/usr/bin/env bash /home/REPLACE_WITH_USER/FrankensteinCentral/scripts/claude-worker.sh
+
+# The worker never needs root. It must not be able to touch systemd or the
+# production checkout's owner.
+NoNewPrivileges=yes
+PrivateTmp=yes
