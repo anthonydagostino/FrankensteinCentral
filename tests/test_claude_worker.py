@@ -108,6 +108,9 @@ def set_control(world, *, turn, status, task_id="FC-001"):
         "status": status, "directive_commit": None,
         "implementation_commit": None, "last_actor": None,
         "updated_at": "2026-09-01T00:00:00Z"}, indent=2))
+    (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text(
+        f"# Product Directive\n\nTask ID: {task_id}\n"
+        f"Deployment Authorization: none\n\n## Objective\ndo the work\n")
     (ctl / ".frankenstein" / "IMPLEMENTATION_HANDOFF.md").write_text("# handoff\n")
     sh("git", "add", "-f", ".frankenstein", cwd=ctl)
     sh("git", "commit", "-qm", f"control {turn}/{status}", cwd=ctl)
@@ -128,6 +131,25 @@ def run_worker(world, *args, mock=None, extra_env=None):
         env.update(extra_env)
     return subprocess.run(["bash", str(WORKER), *args], capture_output=True,
                           text=True, timeout=300, env=env)
+
+
+# A mock that RECORDS what it was actually handed before doing its work.
+# The previous mock wrote STATE.json/PRODUCT_DIRECTIVE.md itself, which is how
+# the stale-directive bug escaped detection.
+MOCK_INSPECT = (
+    'cp .frankenstein/PRODUCT_DIRECTIVE.md "$SEEN_DIR/directive.txt" && '
+    'cp .frankenstein/STATE.json "$SEEN_DIR/state.json" && '
+    'cp .frankenstein/AUTHORIZING_CONTROL_COMMIT "$SEEN_DIR/authorizing.txt" && '
+    'printf "seen\n" >> app.txt && '
+    'printf "# handoff\n\n## Deviations From Directive\nNo deviations\n" '
+    '> .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+    'python3 -c "import json;p=\'.frankenstein/STATE.json\';'
+    'd=json.load(open(p));d.update(turn=\'product_owner\','
+    'status=\'awaiting_review\',last_actor=\'claude\');'
+    'json.dump(d,open(p,\'w\'))" && '
+    'git add -A && '
+    'git -c user.email=c@c -c user.name=claude commit -qm "[CLAUDE] inspected"'
+)
 
 
 # A mock "Claude" that does what the real one is asked to do.
@@ -167,8 +189,28 @@ def test_unauthorized_state_never_invokes_claude(world, turn, status):
 
 # ══ B. claude + authorized status -> invoked once ═══════════════════════
 
+def seed_task_branch(world, task_id="FC-001"):
+    """Publish an existing implementation branch for the task.
+
+    changes_requested continues work already under review; without a prior
+    branch the worker correctly refuses, so tests about that status must
+    provide one.
+    """
+    wt = world["tmp"] / f"seedbranch-{task_id}"
+    sh("git", "clone", "-q", "--branch", "production", str(world["remote"]), str(wt))
+    sh("git", "checkout", "-q", "-b", f"claude/{task_id}-work", cwd=wt)
+    (wt / "prior.txt").write_text("prior pass\n")
+    sh("git", "add", "-A", cwd=wt)
+    sh("git", "-c", "user.email=c@c", "-c", "user.name=claude",
+       "commit", "-qm", f"[CLAUDE] {task_id} prior pass", cwd=wt)
+    sh("git", "push", "-q", "origin", f"HEAD:refs/heads/claude/{task_id}-work", cwd=wt)
+    return git("rev-parse", "HEAD", cwd=wt)
+
+
 @pytest.mark.parametrize("status", ["ready_for_implementation", "changes_requested"])
 def test_authorized_state_invokes_claude(world, status):
+    if status == "changes_requested":
+        seed_task_branch(world)
     set_control(world, turn="claude", status=status)
     r = run_worker(world, mock=MOCK_GOOD)
     assert "AUTHORIZED" in r.stderr, r.stderr
@@ -324,8 +366,9 @@ def test_worker_never_invokes_promotion_or_deployment_tooling():
 
 def test_prompt_explicitly_forbids_those_operations():
     """The same names must appear in the prompt — as prohibitions."""
-    prompt = WORKER.read_text()
-    prompt = prompt[prompt.index('PROMPT="'):]
+    src = WORKER.read_text()
+    start = src.index('PROMPT="')
+    prompt = src[start:src.index('directive."', start)]
     for named in ("promote.sh", "rollback.sh", "deploy.sh", "systemd", "sudo"):
         assert named in prompt, f"prompt does not forbid {named}"
     assert "You may NOT" in prompt
@@ -356,7 +399,8 @@ def test_pre_push_hook_actually_rejects_production(world, tmp_path):
     assert "REFUSED" in r.stderr
 
     ok = subprocess.run(["bash", str(hook)], input=(
-        "refs/heads/claude/FC-001-work aaa refs/heads/claude/FC-001-work bbb\n"),
+        "refs/heads/claude/FC-001-work aaa refs/heads/claude/FC-001-work "
+        + "0" * 40 + "\n"),
         capture_output=True, text=True, timeout=30)
     assert ok.returncode == 0, "hook blocked a legitimate task-branch push"
 
@@ -500,8 +544,12 @@ def test_control_carries_only_protocol_files():
 
 def test_worker_reads_state_from_control_not_the_working_tree():
     c = code(WORKER)
-    assert 'show "$CONTROL_COMMIT:.frankenstein/STATE.json"' in c, \
-        "authoritative state must come from the control commit itself"
+    assert 'show "$CONTROL_COMMIT:.frankenstein/$1"' in c, \
+        "protocol files must be read out of the control commit itself"
+    assert 'STATE_JSON="$(ctl_file STATE.json)"' in c
+    assert 'DIRECTIVE_TEXT="$(ctl_file PRODUCT_DIRECTIVE.md)"' in c
+    # nothing may be read from a working tree instead
+    assert "cat .frankenstein/STATE.json" not in c
 
 
 def test_control_bootstrap_never_switches_the_users_checkout():
@@ -529,3 +577,503 @@ def test_control_bootstrap_is_idempotent_when_control_exists(tmp_path):
     exists_check = c.index("EXISTS=1")
     assert exists_check < c.index("mktemp -d"), \
         "existence must be checked before any temp clone or mutation"
+
+
+# ══ 1. the AUTHORITATIVE control snapshot must reach Claude ════════════
+#
+# The task branch descends from production, whose .frankenstein/ copies may be
+# stale placeholders. The run must see the directive and state that authorized
+# it, not production's.
+
+def make_production_stale(world):
+    """Put a DIFFERENT directive and state on production."""
+    seed = world["seed"]
+    (seed / ".frankenstein").mkdir(exist_ok=True)
+    (seed / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text(
+        "# Product Directive\n\nTask ID: FC-999\n\n## Objective\n"
+        "STALE PRODUCTION PLACEHOLDER — must never be acted on.\n")
+    (seed / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 1, "task_id": "FC-999", "turn": "product_owner",
+        "status": "awaiting_directive", "directive_commit": None,
+        "implementation_commit": None, "last_actor": None,
+        "updated_at": "2020-01-01T00:00:00Z"}))
+    sh("git", "add", "-A", cwd=seed)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "stale protocol files on production", cwd=seed)
+    sh("git", "push", "-q", "origin", "production", cwd=seed)
+
+
+def set_control_directive(world, *, turn, status, task_id, objective):
+    ctl = world["tmp"] / f"ctldir-{task_id}-{status}"
+    if ctl.exists():
+        sh("rm", "-rf", str(ctl))
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "config", "user.email", "t@t", cwd=ctl)
+    sh("git", "config", "user.name", "t", cwd=ctl)
+    if sh("git", "ls-remote", "--heads", "origin", "control", cwd=ctl).stdout.strip():
+        sh("git", "checkout", "-q", "-B", "control", "origin/control", cwd=ctl)
+    else:
+        sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+        sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text(
+        f"# Product Directive\n\nTask ID: {task_id}\n"
+        f"Deployment Authorization: none\n\n## Objective\n{objective}\n")
+    (ctl / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 1, "task_id": task_id, "turn": turn,
+        "status": status, "directive_commit": None,
+        "implementation_commit": None, "last_actor": None,
+        "updated_at": "2026-09-01T00:00:00Z"}, indent=2))
+    (ctl / ".frankenstein" / "IMPLEMENTATION_HANDOFF.md").write_text("# handoff\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "commit", "-qm", f"directive {task_id}", cwd=ctl)
+    sh("git", "push", "-q", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    return git("rev-parse", "HEAD", cwd=ctl)
+
+
+def test_claude_receives_the_control_directive_not_productions(world):
+    """THE BUG: production carried FC-999 placeholders while control authorized
+    FC-001. The run must see control's versions."""
+    make_production_stale(world)
+    control = set_control_directive(
+        world, turn="claude", status="ready_for_implementation",
+        task_id="FC-001", objective="AUTHORITATIVE OBJECTIVE FROM CONTROL")
+    seen = world["tmp"] / "seen"
+    seen.mkdir()
+    r = run_worker(world, mock=MOCK_INSPECT,
+                   extra_env={"SEEN_DIR": str(seen)})
+    assert r.returncode == 0, r.stderr
+
+    directive = (seen / "directive.txt").read_text()
+    assert "AUTHORITATIVE OBJECTIVE FROM CONTROL" in directive
+    assert "STALE PRODUCTION PLACEHOLDER" not in directive, \
+        "the run was handed production's stale directive"
+    assert "FC-001" in directive and "FC-999" not in directive
+
+    state = json.loads((seen / "state.json").read_text())
+    assert state["task_id"] == "FC-001", "the run saw production's stale state"
+    assert state["status"] == "ready_for_implementation"
+
+    assert (seen / "authorizing.txt").read_text().strip() == control, \
+        "the immutable authorizing control SHA was not preserved for the run"
+
+
+def test_authorizing_control_commit_is_recorded_on_the_branch(world):
+    make_production_stale(world)
+    control = set_control_directive(
+        world, turn="claude", status="ready_for_implementation",
+        task_id="FC-001", objective="do the thing")
+    seen = world["tmp"] / "seen2"; seen.mkdir()
+    run_worker(world, mock=MOCK_INSPECT, extra_env={"SEEN_DIR": str(seen)})
+    clone = world["tmp"] / "agenthome" / "worktrees" / "agent-repo"
+    recorded = git("show", f"claude/FC-001-work:.frankenstein/AUTHORIZING_CONTROL_COMMIT",
+                   cwd=clone)
+    assert recorded.strip() == control
+
+
+# ══ 2. changes_requested continues, never restarts ═════════════════════
+
+def test_changes_requested_continues_the_existing_implementation(world):
+    """A. first run -> commit A. PO requests changes. B. second run -> commit B
+    descending from A, with A's product work still present."""
+    make_production_stale(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="first pass")
+    first = run_worker(world, mock=(
+        'printf "FIRST-PASS-WORK\\n" > first.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] FC-001 first"'))
+    assert first.returncode == 0, first.stderr
+    remote_after_first = sh("git", "ls-remote", str(world["remote"]),
+                            "refs/heads/claude/FC-001-work").stdout.split()[0]
+
+    # Product Owner requests changes
+    set_control_directive(world, turn="claude", status="changes_requested",
+                          task_id="FC-001", objective="now also do the second bit")
+
+    second = run_worker(world, mock=(
+        'printf "SECOND-PASS-WORK\\n" > second.txt && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] FC-001 corrections"'))
+    assert second.returncode == 0, second.stderr
+
+    verify = world["tmp"] / "verify-continuation"
+    sh("git", "clone", "-q", "--branch", "claude/FC-001-work",
+       str(world["remote"]), str(verify))
+    assert (verify / "first.txt").exists(), "the first pass's work was discarded"
+    assert (verify / "second.txt").exists(), "the corrections are missing"
+    ancestry = sh("git", "merge-base", "--is-ancestor", remote_after_first, "HEAD",
+                  cwd=verify, check=False)
+    assert ancestry.returncode == 0, "commit B does not descend from commit A"
+
+
+def test_changes_requested_without_prior_work_refuses(world):
+    set_control_directive(world, turn="claude", status="changes_requested",
+                          task_id="FC-007", objective="continue something absent")
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert r.returncode != 0
+    assert "nothing to continue" in r.stderr
+
+
+# ══ 3. the second-stage control publication race ═══════════════════════
+
+def test_control_moving_before_publication_blocks_the_handoff(world):
+    """Move control AFTER the first token check but BEFORE the control-clone
+    publication stage. Stale state must not land on top of newer PO state."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    # The mock does its work; the worker then verifies control (stage 1). We
+    # hijack control from inside the mock so the move lands between the two.
+    hijack = (
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work"')
+    marker = world["tmp"] / "po-update.sh"
+    marker.write_text(f'''#!/usr/bin/env bash
+cd "{world['tmp']}" && rm -rf hij && \
+git clone -q --branch control "{world['remote']}" hij && cd hij && \
+python3 -c "import json;p='.frankenstein/STATE.json';d=json.load(open(p));\
+d.update(task_id='FC-002',status='changes_requested',last_actor='product_owner');\
+json.dump(d,open(p,'w'),indent=2)" && \
+git add -A && git -c user.email=p@p -c user.name=po commit -qm "[PO-CHANGES] FC-002" && \
+git push -q origin HEAD:control
+''')
+    marker.chmod(0o755)
+    r = run_worker(world, mock=f'{hijack} && bash "{marker}"')
+    assert r.returncode != 0, "stale handoff published over newer control state"
+    assert "control moved" in r.stderr
+
+    ctl = world["tmp"] / "verify-race"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    assert state["task_id"] == "FC-002", "newer Product Owner state was clobbered"
+    assert state["status"] == "changes_requested"
+    assert state["last_actor"] == "product_owner"
+
+
+POST_RECEIVE_HIJACK = r'''#!/bin/sh
+# Fires on the worker's own task-branch push, which happens strictly between
+# the two control token checks.
+while read -r old new ref; do
+  case "$ref" in
+    refs/heads/claude/*)
+      [ -e "__FIRED__" ] && continue
+      : > "__FIRED__"
+      d=$(mktemp -d)
+      (
+        unset GIT_DIR GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY \
+              GIT_ALTERNATE_OBJECT_DIRECTORIES
+        git clone -q --branch control "__REMOTE__" "$d" || exit 0
+        cd "$d" || exit 0
+        python3 -c "import json;p='.frankenstein/STATE.json';d=json.load(open(p));d.update(task_id='FC-002',status='changes_requested',last_actor='product_owner');json.dump(d,open(p,'w'),indent=2)"
+        git add -A
+        git -c user.email=p@p -c user.name=po commit -qm "[PO-CHANGES] FC-002"
+        git push -q origin HEAD:control
+      ) >/dev/null 2>&1
+      rm -rf "$d"
+      ;;
+  esac
+done
+exit 0
+'''
+
+
+def test_control_moving_between_the_two_token_checks_blocks_the_handoff(world):
+    """The genuine second-stage race.
+
+    Moving control from inside the mock is caught by the FIRST token check, so
+    that test does not exercise stage 2 at all. This one moves control from a
+    post-receive hook on the remote, fired by the worker's own task-branch
+    push — which happens strictly between the two checks. Without the late
+    CONTROL_AT_PUBLISH check (and with a reset to origin/control rather than
+    to the authorizing commit) the stale handoff rebases cleanly onto newer
+    Product Owner state and then fast-forwards over it.
+    """
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    fired = world["tmp"] / "HOOK_FIRED"
+    hook = world["remote"] / "hooks" / "post-receive"
+    hook.write_text(POST_RECEIVE_HIJACK
+                    .replace("__FIRED__", str(fired))
+                    .replace("__REMOTE__", str(world["remote"])))
+    hook.chmod(0o755)
+
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert fired.exists(), "the race never triggered — the test would prove nothing"
+    assert r.returncode != 0, "stale handoff published over newer control state"
+    assert "before publication" in r.stderr
+
+    ctl = world["tmp"] / "verify-stage2"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    assert state["task_id"] == "FC-002", "newer Product Owner state was clobbered"
+    assert state["status"] == "changes_requested"
+    assert state["last_actor"] == "product_owner"
+    assert state["implementation_commit"] is None, \
+        "a stale implementation SHA was stamped onto newer state"
+
+
+def test_control_clone_resets_to_the_authorizing_commit_not_origin():
+    c = code(WORKER)
+    assert 'reset --hard --quiet "$CONTROL_COMMIT"' in c, \
+        "resetting to origin/control would rebase stale state onto newer PO state"
+    assert "CONTROL_AT_PUBLISH" in c, "the late token check is missing"
+
+
+def test_control_fetch_and_reset_failures_stop_publication():
+    c = code(WORKER)
+    assert "control_fetch_failed" in c and "control_reset_failed" in c, \
+        "without set -e these need explicit failure paths"
+
+
+# ══ 4. the child-process boundary (behavioral) ═════════════════════════
+
+SANDBOX_OK = subprocess.run(
+    ["unshare", "--user", "--map-root-user", "--mount", "true"],
+    capture_output=True).returncode == 0
+needs_sandbox = pytest.mark.skipif(
+    not SANDBOX_OK, reason="user namespaces unavailable in this environment")
+
+
+@needs_sandbox
+def test_child_cannot_write_the_production_checkout(world):
+    """A. the child tries to write a marker into the production checkout."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    victim = world["prod"] / "PWNED"
+    attack = (
+        f'(echo pwned > "{victim}") 2>/dev/null; '
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work"')
+    run_worker(world, mock=attack)
+    assert not victim.exists(), "child wrote into the production checkout"
+
+
+@needs_sandbox
+def test_child_has_no_remote_to_push_production_through(world):
+    """B. the child attempts a production push by any git invocation."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    before = sh("git", "ls-remote", str(world["remote"]),
+                "refs/heads/production").stdout.split()[0]
+    attack = (
+        'git push origin HEAD:production 2>/dev/null; '
+        f'git push "{world["remote"]}" HEAD:production 2>/dev/null; '
+        'git remote -v > "$SEEN_DIR/remotes.txt" 2>&1; '
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work"')
+    seen = world["tmp"] / "seen-remotes"; seen.mkdir()
+    run_worker(world, mock=attack, extra_env={"SEEN_DIR": str(seen)})
+    after = sh("git", "ls-remote", str(world["remote"]),
+               "refs/heads/production").stdout.split()[0]
+    assert before == after, "production was moved by the child"
+    assert (seen / "remotes.txt").read_text().strip() == "", \
+        "the child's clone still had a remote configured"
+
+
+@needs_sandbox
+def test_child_environment_carries_no_reusable_credentials(world):
+    """C. the child cannot obtain the credential the publisher uses."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    seen = world["tmp"] / "seen-env"; seen.mkdir()
+    probe = (
+        'env > "$SEEN_DIR/env.txt"; '
+        'git config --get credential.helper >> "$SEEN_DIR/env.txt" 2>&1; '
+        'printf "work\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] work"')
+    run_worker(world, mock=probe,
+               extra_env={"SEEN_DIR": str(seen),
+                          "GITHUB_TOKEN": "ghp_SECRET_SHOULD_NOT_LEAK",
+                          "GH_TOKEN": "gh_SECRET_SHOULD_NOT_LEAK"})
+    env_seen = (seen / "env.txt").read_text()
+    assert "SECRET_SHOULD_NOT_LEAK" not in env_seen, \
+        "a GitHub credential reached the child environment"
+    assert "GIT_ASKPASS=/bin/false" in env_seen
+    assert "GIT_TERMINAL_PROMPT=0" in env_seen
+
+
+@needs_sandbox
+def test_child_can_still_do_normal_work(world):
+    """D. ordinary edits, git operations and tests still work in the clone."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, mock=(
+        'bash scripts/test.sh >/dev/null && '
+        'printf "normal\\n" >> app.txt && '
+        'printf "# handoff\\n" > .frankenstein/IMPLEMENTATION_HANDOFF.md && '
+        'git add -A && git -c user.email=c@c -c user.name=claude '
+        'commit -qm "[CLAUDE] normal work"'))
+    assert r.returncode == 0, r.stderr
+    verify = world["tmp"] / "verify-normal"
+    sh("git", "clone", "-q", "--branch", "claude/FC-001-work",
+       str(world["remote"]), str(verify))
+    assert "normal" in (verify / "app.txt").read_text()
+
+
+def test_worker_refuses_to_run_unconfined_by_default():
+    c = code(WORKER)
+    assert "refusing to run" in c and "unconfined" in c
+    assert "ALLOW_UNSANDBOXED" in c
+    svc = (ROOT / "scripts" / "agent" / "frankenstein-agent.service").read_text()
+    assert "ALLOW_UNSANDBOXED" not in svc, \
+        "the systemd template must not disable the sandbox"
+
+
+def test_pre_push_hook_detects_real_force_pushes(tmp_path):
+    """The earlier hook only blocked ref names and claimed force protection it
+    did not have. This asserts genuine non-fast-forward detection."""
+    m = re.search(r"<<'HOOKEOF'\n(.*?)\nHOOKEOF\n", WORKER.read_text(), re.S)
+    hook = tmp_path / "pre-push"; hook.write_text(m.group(1)); hook.chmod(0o755)
+    repo = tmp_path / "r"; repo.mkdir()
+    sh("git", "init", "-q", str(repo))
+    shas = []
+    for msg in ("a", "b"):
+        (repo / "f").write_text(msg)
+        sh("git", "add", "-A", cwd=repo)
+        sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+           "commit", "-qm", msg, cwd=repo)
+        shas.append(git("rev-parse", "HEAD", cwd=repo))
+    old, new = shas
+    zero = "0" * 40
+
+    def hook_run(line):
+        return subprocess.run(["bash", str(hook)], input=line, cwd=repo,
+                              capture_output=True, text=True, timeout=30)
+
+    assert hook_run(f"r {new} refs/heads/production {old}\n").returncode != 0
+    rewind = hook_run(f"r {old} refs/heads/claude/FC-001-work {new}\n")
+    assert rewind.returncode != 0, "hook does not detect force pushes"
+    assert "non-fast-forward" in rewind.stderr
+    assert hook_run(f"r {new} refs/heads/claude/FC-001-work {old}\n").returncode == 0
+    assert hook_run(f"r {new} refs/heads/claude/FC-002-work {zero}\n").returncode == 0
+
+
+# ══ 5. --dry-run must not mutate anything remote ═══════════════════════
+
+def remote_refs(world):
+    out = sh("git", "ls-remote", str(world["remote"])).stdout
+    return sorted(l.strip() for l in out.splitlines() if l.strip())
+
+
+def test_dry_run_changes_no_remote_refs(world):
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    before = remote_refs(world)
+    r = run_worker(world, "--dry-run", mock=MOCK_GOOD)
+    after = remote_refs(world)
+    assert before == after, (
+        "--dry-run changed remote refs:\n"
+        f"before: {before}\nafter:  {after}")
+    assert r.returncode == 0, r.stderr
+    assert "DRY RUN" in r.stderr and "nothing pushed" in r.stderr
+
+
+def test_dry_run_reports_what_would_be_published(world):
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    r = run_worker(world, "--dry-run", mock=MOCK_GOOD)
+    assert "task branch:" in r.stderr
+    assert "implementation SHA:" in r.stderr
+    assert "control transition:" in r.stderr
+
+
+def test_dry_run_is_recorded_as_such(world):
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    run_worker(world, "--dry-run", mock=MOCK_GOOD)
+    rec = json.loads((world["agent_dir"] / "runs.jsonl").read_text().strip().splitlines()[-1])
+    assert rec["result"] == "dry_run" and rec["mode"] == "dry-run"
+
+
+# ══ 6. exact task-id and state validation ══════════════════════════════
+
+@pytest.mark.parametrize("task_id", [
+    "FC-001junk", "FC-01", "fc-001", "FC-001 ", "FC-", "XX-001", "FC-001-extra",
+])
+def test_malformed_task_ids_are_rejected(world, task_id):
+    ctl = world["tmp"] / f"tid-{task_id.strip().replace(' ', '_')}"
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+    sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 1, "task_id": task_id, "turn": "claude",
+        "status": "ready_for_implementation"}))
+    (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text("# d\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "bad id", cwd=ctl)
+    sh("git", "push", "-qf", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    marker = world["tmp"] / "TID"
+    r = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists(), f"invoked on malformed task_id {task_id!r}"
+    assert r.returncode == 0
+
+
+def test_wrong_protocol_version_is_rejected(world):
+    ctl = world["tmp"] / "pv"
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+    sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 99, "task_id": "FC-001", "turn": "claude",
+        "status": "ready_for_implementation"}))
+    (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text("# d\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "pv", cwd=ctl)
+    sh("git", "push", "-qf", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    marker = world["tmp"] / "PV"
+    r = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists()
+    assert "protocol_version" in r.stderr
+
+
+def test_missing_directive_blocks_invocation(world):
+    ctl = world["tmp"] / "nodir"
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+    sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 1, "task_id": "FC-001", "turn": "claude",
+        "status": "ready_for_implementation"}))
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "no directive", cwd=ctl)
+    sh("git", "push", "-qf", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    marker = world["tmp"] / "ND"
+    r = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists()
+    assert "no PRODUCT_DIRECTIVE" in r.stderr
+
+
+def test_directive_naming_a_different_task_blocks_invocation(world):
+    ctl = world["tmp"] / "mismatch"
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "checkout", "-q", "--orphan", "control", cwd=ctl)
+    sh("git", "reset", "-q", cwd=ctl)
+    (ctl / ".frankenstein").mkdir(exist_ok=True)
+    (ctl / ".frankenstein" / "STATE.json").write_text(json.dumps({
+        "protocol_version": 1, "task_id": "FC-001", "turn": "claude",
+        "status": "ready_for_implementation"}))
+    (ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md").write_text(
+        "# Product Directive\n\nTask ID: FC-042\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t",
+       "commit", "-qm", "mismatch", cwd=ctl)
+    sh("git", "push", "-qf", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    marker = world["tmp"] / "MM"
+    r = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists(), "invoked despite directive/state task mismatch"
+    assert "inconsistent" in r.stderr
