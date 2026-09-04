@@ -19,6 +19,18 @@ Environment=FRANKENSTEIN_AGENT_DIR=/home/REPLACE_WITH_USER/.frankenstein/agent
 Environment=FRANKENSTEIN_WORKTREE_ROOT=/home/REPLACE_WITH_USER/.frankenstein/worktrees
 # Hard ceiling so a wedged run cannot hold the worker forever.
 Environment=FRANKENSTEIN_CLAUDE_TIMEOUT=3600
+#
+# AUTHENTICATION. An unattended worker must NOT depend on the operator's
+# interactive OAuth session: that token expires, and the sandbox mounts
+# ~/.claude/.credentials.json read-only on purpose, so a run cannot refresh it
+# (a refresh from inside the sandbox could rotate and invalidate the session
+# the operator uses by hand). Supply a dedicated, separately revocable API key
+# instead, in a root-owned file with mode 0600 containing one line:
+#
+#   ANTHROPIC_API_KEY=sk-ant-...
+#
+# Uncomment once that file exists. Never put the key in this unit file.
+#EnvironmentFile=/etc/frankenstein/claude-api-key
 TimeoutStartSec=5400
 ExecStart=/usr/bin/env bash /home/REPLACE_WITH_USER/FrankensteinCentral/scripts/claude-worker.sh
 

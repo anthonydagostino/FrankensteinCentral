@@ -231,6 +231,36 @@ This is the one place a real host differed from the design, and the probe is
 what found it: on the OptiPlex the CLI is at `~/.npm-global/bin/claude` and the
 child got `exit 127, No such file or directory`.
 
+### Authentication for unattended operation
+
+`~/.claude/.credentials.json` is bound **read-only**, and that is a deliberate
+trade. A refresh from inside the sandbox would rewrite the operator's stored
+session, and if the provider rotates refresh tokens it could invalidate the
+login they use by hand. So this fails closed: an expired token produces a
+failed run, never a mutated host credential.
+
+The consequence is that **an unattended worker must not depend on an
+interactive OAuth session**. That token expires on its own schedule, so a
+worker that passes its probe today would start failing silently later. Give it
+a dedicated, separately revocable API key instead, through the systemd unit:
+
+```bash
+sudo install -d -m 0700 /etc/frankenstein
+printf 'ANTHROPIC_API_KEY=sk-ant-...\n' | sudo tee /etc/frankenstein/claude-api-key >/dev/null
+sudo chmod 0600 /etc/frankenstein/claude-api-key
+# then uncomment the EnvironmentFile line in frankenstein-agent.service
+```
+
+The key never appears in the unit file, and `ANTHROPIC_API_KEY` is already on
+the forwarded-variable list, so nothing else changes. A dedicated key is also
+the right blast radius: autonomous runs stay revocable without touching the
+operator's own account.
+
+`--probe` reports which credential is actually in play, prints an **ADVISORY**
+when only an expiring session is available, and classifies an authentication
+failure — a `401` proves the sandbox, install root and egress all worked and
+only the credential is bad.
+
 ### The export: the only thing that crosses back
 
 Invocation D writes into a directory mounted **only for that invocation**, so

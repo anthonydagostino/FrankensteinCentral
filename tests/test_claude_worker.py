@@ -2115,3 +2115,57 @@ def test_the_install_root_is_detected_not_configured():
     assert "autodetect_claude_install" in c
     assert 'for exe in "$CLAUDE_BIN" node; do' in c, \
         "the interpreter matters too — an nvm node is hidden by the same mask"
+
+
+# ══ 16. authentication lifecycle ═══════════════════════════════════════
+#
+# The probe on the real host reached Anthropic and got a 401: the OAuth token
+# in ~/.claude/.credentials.json had expired. That is not a one-off — an
+# unattended worker cannot depend on a session that expires and which the
+# sandbox deliberately will not let it refresh.
+
+def test_the_probe_classifies_a_credential_rejection(world):
+    """A 401 means the sandbox, install root and egress all worked. The probe
+    must say so instead of leaving 'not ready' ambiguous."""
+    c = code(WORKER)
+    assert "DIAGNOSIS: the request REACHED Anthropic" in c
+    assert "DIAGNOSIS: the CLI or its interpreter could not be executed" in c
+    assert "not a credential rejection" in c
+
+
+def test_the_probe_warns_that_an_oauth_session_expires(world):
+    """Silence here would let a probe that passes today start failing on its
+    own once the token expires."""
+    r = run_worker(world, "--probe")
+    out = r.stdout + r.stderr
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        assert "API key from the environment" in out
+        assert "ADVISORY" not in out
+    else:
+        assert "ADVISORY" in out, out
+        assert "ANTHROPIC_API_KEY" in out
+        assert "claude credential:" in out
+
+
+def test_the_credential_file_is_read_only_by_design():
+    """A refresh from inside the sandbox could rotate and invalidate the
+    session the operator uses interactively, so this one fails closed."""
+    c = code(WORKER)
+    expose = c[c.index("CLAUDE_EXPOSE="):c.index("CLAUDE_ENV_KEYS=")]
+    assert ".credentials.json" in expose, \
+        "the credential must be a read-only bind, not a writable copy"
+    writable = c[c.index("CLAUDE_WRITABLE="):c.index("EGRESS_ALLOW=")]
+    assert ".credentials.json" not in writable
+    assert ".claude.json" in writable
+
+
+def test_the_unit_template_documents_a_dedicated_api_key():
+    svc = (ROOT / "scripts" / "agent" / "frankenstein-agent.service").read_text()
+    assert "ANTHROPIC_API_KEY" in svc
+    assert "EnvironmentFile" in svc
+    # the key itself must never be written into the unit
+    assert "sk-ant-..." in svc, "only a placeholder belongs here"
+    for line in svc.splitlines():
+        if line.startswith("Environment=") and "ANTHROPIC" in line:
+            raise AssertionError(f"a credential must not sit in the unit: {line}")
+    assert "#EnvironmentFile" in svc, "must ship commented out, not active"

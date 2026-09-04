@@ -403,6 +403,13 @@ if [ "$MODE" = "probe" ]; then
   echo "  masked locations:   ${MASK_PATHS:-<none>}"
   echo "  claude binary:      $(command -v "$CLAUDE_BIN" 2>/dev/null || echo '<not found>')"
   echo "  auto-exposed install roots: ${AUTO_EXPOSED:-<none needed>}"
+  if [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    echo "  claude credential:          API key from the environment (does not expire)"
+  elif [ -e "$REAL_HOME/.claude/.credentials.json" ]; then
+    echo "  claude credential:          the host interactive OAuth session (EXPIRES)"
+  else
+    echo "  claude credential:          none found"
+  fi
   echo "  writable config copies:     $CLAUDE_WRITABLE"
   echo "  exposure candidates:"
   IFS=':' read -r -a _probe_expose <<<"$CLAUDE_EXPOSE"
@@ -628,9 +635,19 @@ PYL
       echo "  PASS  Claude API authentication through the permitted egress"
     else
       echo "  FAIL  Claude exited $AUTH_RC through the permitted egress"
-      echo "        (if this is the only failure, the CLI is not honouring the"
-      echo "         proxy environment or needs another allowlist entry —"
-      echo "         report the output and the allowlist, do not widen it here)"
+      case "$OUT" in
+        *401*|*expired*|*Re-authenticate*|*re-authenticate*|*"Invalid API key"*)
+          echo "        DIAGNOSIS: the request REACHED Anthropic and was rejected on"
+          echo "        credentials, so the sandbox, the install root and the egress"
+          echo "        tunnel are all working. Only the credential is bad." ;;
+        *"not found"*|*"No such file"*)
+          echo "        DIAGNOSIS: the CLI or its interpreter could not be executed"
+          echo "        inside the sandbox. Report the auto-exposed install roots." ;;
+        *)
+          echo "        DIAGNOSIS: not a credential rejection. The CLI may not honour"
+          echo "        the proxy environment, or may need another allowlist entry."
+          echo "        Report the output and the allowlist; do not widen it here." ;;
+      esac
       PROBE_FAIL=1
     fi
     echo "  allowlist: $EGRESS_ALLOW"
@@ -640,6 +657,17 @@ PYL
   [ -n "${PROBE_HELPER_PID:-}" ] && kill "$PROBE_HELPER_PID" 2>/dev/null
 
   echo
+  if [ -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    echo "ADVISORY: this host authenticates Claude with the interactive OAuth"
+    echo "session in ~/.claude/.credentials.json. That token EXPIRES, and the"
+    echo "sandbox mounts it read-only so a run cannot refresh it — deliberately,"
+    echo "because a refresh from inside could rotate and invalidate the session"
+    echo "you use interactively. An unattended worker should therefore use a"
+    echo "dedicated API key (ANTHROPIC_API_KEY) supplied through the systemd"
+    echo "unit, not a personal login. A probe that passes today will start"
+    echo "failing on its own otherwise."
+    echo
+  fi
   if [ "$PROBE_FAIL" = "0" ]; then
     echo "RESULT: PASS — containment holds and Claude authenticated from inside it."
   else
