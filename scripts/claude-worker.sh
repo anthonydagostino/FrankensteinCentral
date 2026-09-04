@@ -53,7 +53,17 @@ ALLOW_UNSANDBOXED="${FRANKENSTEIN_ALLOW_UNSANDBOXED:-0}"
 # absolute paths. Everything else under the home stays hidden. These defaults
 # are CANDIDATES, not assumptions — `--probe` reports which ones exist on the
 # host and whether the installed CLI can actually authenticate with them.
-CLAUDE_EXPOSE="${FRANKENSTEIN_CLAUDE_EXPOSE:-$HOME/.claude/.credentials.json:$HOME/.claude.json}"
+# Read-only exposures: the CLI's own authentication material. The install
+# directories of the CLI and its interpreter are detected and added to this
+# automatically — a CLI installed under the home directory (npm --prefix, nvm,
+# asdf) would otherwise be hidden by the home mask and simply not exist for the
+# child. Colon-separated absolute paths.
+CLAUDE_EXPOSE="${FRANKENSTEIN_CLAUDE_EXPOSE:-$HOME/.claude/.credentials.json}"
+# Copied WRITABLE into the scratch home instead of bind-mounted read-only.
+# ~/.claude.json is configuration the CLI rewrites on startup, so a read-only
+# bind would break it; the child gets a throwaway copy and the host's file is
+# never touched by the run.
+CLAUDE_WRITABLE="${FRANKENSTEIN_CLAUDE_WRITABLE:-$HOME/.claude.json}"
 # Environment forwarded to the child: Claude authentication only. No GitHub
 # token, no SSH agent, nothing else.
 CLAUDE_ENV_KEYS="${FRANKENSTEIN_CLAUDE_ENV:-ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR}"
@@ -138,6 +148,45 @@ MASK_PATHS="$(build_mask_list)"
 
 # The scratch home. Bind-mounted OVER the real home inside the namespace, so
 # every absolute path under ~ resolves into this directory instead.
+# Where an executable is installed, when that is inside the home directory.
+# For ~/.npm-global/bin/claude that is ~/.npm-global; for an nvm node it is the
+# version directory. Both hold bin/ and lib/node_modules/, which is what the
+# CLI needs to run at all. Nothing under either is credential material.
+install_root_for() {
+  local link real root
+  link="$(command -v "$1" 2>/dev/null)" || return 0
+  [ -n "$link" ] || return 0
+  if contains "$REAL_HOME" "$link"; then
+    root="$(dirname "$(dirname "$link")")"
+    [ "$root" = "$REAL_HOME" ] && root="$(dirname "$link")"
+    contains "$REAL_HOME" "$root" && [ "$root" != "$REAL_HOME" ] && echo "$root"
+    return 0
+  fi
+  real="$(abspath "$link")"
+  if contains "$REAL_HOME" "$real"; then
+    root="$(dirname "$(dirname "$real")")"
+    contains "$REAL_HOME" "$root" && [ "$root" != "$REAL_HOME" ] && echo "$root"
+  fi
+}
+
+# Add the CLI and its interpreter to the read-only exposure list. Without this
+# the home mask hides the very binary the child is meant to run.
+AUTO_EXPOSED=""
+autodetect_claude_install() {
+  local exe root
+  AUTO_EXPOSED=""
+  for exe in "$CLAUDE_BIN" node; do
+    root="$(install_root_for "$exe")"
+    [ -n "$root" ] || continue
+    case ":$CLAUDE_EXPOSE:$AUTO_EXPOSED:" in *":$root:"*) continue ;; esac
+    AUTO_EXPOSED="$AUTO_EXPOSED:$root"
+  done
+  AUTO_EXPOSED="${AUTO_EXPOSED#:}"
+  [ -n "$AUTO_EXPOSED" ] && CLAUDE_EXPOSE="$CLAUDE_EXPOSE:$AUTO_EXPOSED"
+  return 0
+}
+autodetect_claude_install
+
 EXPOSE_LIST=""
 RESOLV_STAGE=""
 stage_resolv_conf() {
@@ -172,6 +221,17 @@ prepare_stage() {
     EXPOSE_LIST="$EXPOSE_LIST $p|$stage/$rel"
   done
   EXPOSE_LIST="${EXPOSE_LIST# }"
+  # writable throwaway copies of the configuration the CLI rewrites
+  IFS=':' read -r -a _writable <<<"$CLAUDE_WRITABLE"
+  for p in "${_writable[@]:-}"; do
+    [ -n "$p" ] || continue
+    [ -e "$p" ] || continue
+    contains "$REAL_HOME" "$p" || continue
+    rel="${p#$REAL_HOME/}"
+    mkdir -p "$(dirname "$stage/$rel")"
+    cp -a "$p" "$stage/$rel" 2>/dev/null || continue
+    chmod u+w "$stage/$rel" 2>/dev/null
+  done
 }
 
 # A PID namespace is part of the credential boundary, not a nicety: without it
@@ -342,6 +402,8 @@ if [ "$MODE" = "probe" ]; then
   echo "  export mount:       ${EXPORT_MNT:-<none found>}"
   echo "  masked locations:   ${MASK_PATHS:-<none>}"
   echo "  claude binary:      $(command -v "$CLAUDE_BIN" 2>/dev/null || echo '<not found>')"
+  echo "  auto-exposed install roots: ${AUTO_EXPOSED:-<none needed>}"
+  echo "  writable config copies:     $CLAUDE_WRITABLE"
   echo "  exposure candidates:"
   IFS=':' read -r -a _probe_expose <<<"$CLAUDE_EXPOSE"
   for p in "${_probe_expose[@]:-}"; do
@@ -554,8 +616,10 @@ PYL
   else
     CLAUDE_PATH="$(command -v "$CLAUDE_BIN")"
     if contains "$REAL_HOME" "$CLAUDE_PATH"; then
+      root="$(install_root_for "$CLAUDE_BIN")"
       echo "  NOTE: the CLI lives under the home directory ($CLAUDE_PATH), which the"
-      echo "        sandbox hides. Add its install directory to FRANKENSTEIN_CLAUDE_EXPOSE."
+      echo "        home mask hides. Its install root ${root:-<undetermined>} is"
+      echo "        exposed read-only so the child can execute it."
     fi
     OUT="$(run_sandboxed "${CHILD_ENV[@]}" timeout 120 "$CLAUDE_BIN" -p \
             'Reply with the single word READY and nothing else.' </dev/null 2>&1)"

@@ -1995,3 +1995,123 @@ def test_the_publisher_is_the_authority_for_implementation_commit():
     assert 'doc["status"] = "awaiting_review"' in c
     assert "AUTHORIZED_DIRECTIVE" in c, \
         "the Product Owner's directive_commit must be carried through and checked"
+
+
+# ══ 15. a CLI installed under the home directory ═══════════════════════
+#
+# The OptiPlex has it at ~/.npm-global/bin/claude. The home mask hides that,
+# so without detecting the install root the child cannot execute the very
+# binary it exists to run — the probe on the real host reported exit 127,
+# "No such file or directory".
+
+def install_fake_cli(world, name="fake-claude", prefix_name=".npm-global"):
+    """Mimic an npm --prefix install inside the home directory."""
+    prefix = world["tmp"] / prefix_name
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
+    pkg = prefix / "lib" / "node_modules" / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "cli.js").write_text("CLI_PAYLOAD_REACHED\n")
+    launcher = prefix / "bin" / name
+    launcher.write_text(
+        '#!/usr/bin/env bash\n'
+        'cat "$(dirname "$0")/../lib/node_modules/pkg/cli.js"\n')
+    launcher.chmod(0o755)
+    return prefix, launcher
+
+
+@needs_sandbox
+def test_a_cli_installed_under_the_home_is_still_executable(world):
+    prefix, launcher = install_fake_cli(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        'command -v fake-claude > "$TMPDIR/which.txt" 2>&1 || '
+        'echo NOT_ON_PATH > "$TMPDIR/which.txt"; '
+        '{ fake-claude || echo CLI_FAILED; } > "$TMPDIR/ran.txt" 2>&1; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe, extra_env={
+        "FRANKENSTEIN_CLAUDE_BIN": "fake-claude",
+        "PATH": f"{prefix / 'bin'}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    ran = (child_tmp(world) / "ran.txt").read_text()
+    assert "CLI_PAYLOAD_REACHED" in ran, \
+        f"the child could not execute a home-installed CLI:\n{ran}"
+
+
+@needs_sandbox
+def test_the_exposed_install_root_is_read_only(world):
+    """Exposing it must not make it writable — the child could otherwise
+    rewrite the CLI the next run executes."""
+    prefix, launcher = install_fake_cli(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        f'( echo pwned > "{launcher}" ) 2>/dev/null && '
+        'echo WRITABLE > "$TMPDIR/w.txt" || echo readonly > "$TMPDIR/w.txt"; '
+        f'( echo pwned > "{prefix}/bin/new-file" ) 2>/dev/null && '
+        'echo CREATED >> "$TMPDIR/w.txt" || echo blocked >> "$TMPDIR/w.txt"; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe, extra_env={
+        "FRANKENSTEIN_CLAUDE_BIN": "fake-claude",
+        "PATH": f"{prefix / 'bin'}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    assert "WRITABLE" not in (child_tmp(world) / "w.txt").read_text()
+    assert "CREATED" not in (child_tmp(world) / "w.txt").read_text()
+    assert "CLI_PAYLOAD_REACHED" in (prefix / "lib" / "node_modules" / "pkg" / "cli.js").read_text()
+    assert "pwned" not in launcher.read_text()
+
+
+@needs_sandbox
+def test_the_install_root_is_not_exposed_to_the_verification_zone(world):
+    """It is Claude's to run, not something child-controlled test code needs."""
+    prefix, _ = install_fake_cli(world)
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    evidence = "CLI_VISIBILITY"
+    attack = (
+        'printf "%s\\n" '
+        '"#!/usr/bin/env bash" '
+        f'"command -v fake-claude > {evidence} 2>&1 || echo HIDDEN > {evidence}" '
+        '"echo ALL TESTS PASSED" > scripts/test.sh && chmod +x scripts/test.sh && '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=attack, extra_env={
+        "FRANKENSTEIN_CLAUDE_BIN": "fake-claude",
+        "PATH": f"{prefix / 'bin'}:{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stderr
+    seen = (agent_clone(world) / evidence).read_text()
+    assert "HIDDEN" in seen, f"verification could reach the CLI install root: {seen}"
+
+
+@needs_sandbox
+def test_writable_config_is_a_throwaway_copy(world):
+    """~/.claude.json is rewritten by the CLI on startup, so a read-only bind
+    would break it. The child gets a copy; the host's file is untouched."""
+    config = world["tmp"] / ".claude.json"
+    config.write_text('{"numStartups": 1}\n')
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    probe = (
+        'mkdir -p "$TMPDIR"; '
+        'cat "$HOME/.claude.json" > "$TMPDIR/before.json" 2>&1; '
+        '{ echo "{\\"numStartups\\": 999}" > "$HOME/.claude.json" && echo ok || echo FAILED; } '
+        '> "$TMPDIR/write.txt" 2>&1; '
+        + WORK_AND_COMMIT)
+    r = run_worker(world, mock=probe, extra_env={
+        "FRANKENSTEIN_CLAUDE_WRITABLE": str(config)})
+    assert r.returncode == 0, r.stderr
+    assert "numStartups" in (child_tmp(world) / "before.json").read_text(), \
+        "the CLI's config never reached the child"
+    assert "ok" in (child_tmp(world) / "write.txt").read_text(), \
+        "the child could not rewrite its own config copy"
+    assert config.read_text() == '{"numStartups": 1}\n', \
+        "the run modified the host's real config"
+
+
+def test_the_install_root_is_detected_not_configured():
+    c = code(WORKER)
+    assert "install_root_for()" in c
+    assert "autodetect_claude_install" in c
+    assert 'for exe in "$CLAUDE_BIN" node; do' in c, \
+        "the interpreter matters too — an nvm node is hidden by the same mask"
