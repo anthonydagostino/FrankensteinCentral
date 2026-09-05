@@ -259,6 +259,11 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
                             "date": (t.get("date") or "")[:10],
                             "type": t.get("type", txn_type),
                             "ingested": ingested,
+                            # Account names are what identify a savings
+                            # allocation ("...to Fidelity"): the description
+                            # alone often doesn't name the destination.
+                            "source": t.get("source_name") or "",
+                            "destination": t.get("destination_name") or "",
                             "category": t.get("category_name") or "Uncategorized"})
         if len(data) < 50:
             break
@@ -534,6 +539,87 @@ async def month():
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 
 
+CYCLE_LOOKBACK_DAYS = 75   # ~2 monthly or ~5 biweekly pay cycles of history
+
+
+def _cycle_window(today: date, lookback: int = CYCLE_LOOKBACK_DAYS) -> tuple[str, str]:
+    """The range the paycheck-cycle read needs, as (start, end).
+
+    Two claims are computed off this one window, so it must cover both:
+      * the current pay cycle — the lookback, long enough to contain the
+        previous paycheck even on a monthly schedule;
+      * month-to-date — so the same savings-vs-spending classification is
+        applied to both numbers instead of two windows disagreeing.
+
+    As with `_month_window`, the end is never equal to the start (Firefly
+    answers a zero-length range with 422), which on the 1st of a month is
+    exactly what a naive month-start-to-today range produces.
+    """
+    month_start = today.replace(day=1)
+    start = min(today - timedelta(days=max(lookback, 1) - 1), month_start)
+    return start.isoformat(), max(today, start + timedelta(days=1)).isoformat()
+
+
+async def _cycle_payload() -> dict:
+    """Raw material for the paycheck engine: deposits (to find the paycheck),
+    withdrawals (spending), and transfers (money moved to savings) over a
+    window that spans both the current pay cycle and the calendar month.
+
+    Transfers are fetched here and ONLY here. They are still not spending —
+    the engine uses them to recognise the money that left the spendable pot
+    on payday (Fidelity, Marcus), which is the opposite of spending it.
+    """
+    import calendar
+    today = _today()
+    start, end = _cycle_window(today)
+    month_start = today.replace(day=1)
+    days_total = calendar.monthrange(today.year, today.month)[1]
+    async with httpx.AsyncClient() as client:
+        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=10)
+        dep = await _fetch_txns(client, "deposit", start, end, max_pages=4)
+        tr = await _fetch_txns(client, "transfer", start, end, max_pages=4)
+        ledger_latest = await _ledger_latest(client)
+        ingest_latest = await _ingest_latest(client, wd + dep + tr)
+    # Firefly is asked for one day past today so the range is never
+    # zero-length; drop anything future-dated so no claim covers days that
+    # haven't happened.
+    keep = lambda rows: [t for t in rows if t["date"] and t["date"] <= today.isoformat()]  # noqa: E731
+    wd, dep, tr = keep(wd), keep(dep), keep(tr)
+    return {
+        "connected": True,
+        "currency": "USD",
+        "tz": str(LOCAL_TZ),
+        "today": today.isoformat(),
+        "window": {"start": start, "end": today.isoformat(),
+                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+        "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
+                  "days_total": days_total, "days_elapsed": today.day,
+                  "days_left": days_total - today.day},
+        "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
+        "days_stale": max(0, (today - ledger_latest).days) if ledger_latest else None,
+        "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
+        "ingest_days": (max(0, (today - ingest_latest).days) if ingest_latest else None),
+        "month_ingested": bool(ingest_latest and ingest_latest >= month_start),
+        "importer_url": FIREFLY_IMPORTER_URL or None,
+        "withdrawals": wd,
+        "deposits": dep,
+        "transfers": tr,
+    }
+
+
+@app.get("/cycle")
+async def cycle():
+    """Paycheck-cycle raw data. The math lives in the budget service's pure
+    engine (services/budget/app/paycheck.py); this endpoint stays a dumb,
+    read-only window onto Firefly."""
+    if not _connected():
+        return {"connected": False}
+    try:
+        return await _cached("cycle", 45, _cycle_payload)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
+
+
 @app.get("/bills")
 async def bills():
     """Firefly's own bills, normalized — Firefly stays the source of truth for
@@ -655,4 +741,5 @@ async def networth():
 
 @app.get("/")
 async def root():
-    return {"app": "Firefly", "endpoints": ["/summary", "/dashboard", "/networth", "/health"]}
+    return {"app": "Firefly", "endpoints": ["/summary", "/dashboard", "/spending",
+            "/month", "/cycle", "/bills", "/networth", "/health"]}

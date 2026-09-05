@@ -593,6 +593,15 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     # A brand-new month with nothing imported yet is unknown, not $0.
     month_ingested = sp.get("month_ingested")
     month_spend = None if month_ingested is False else sp.get("month")
+    # The pay-cycle engine computes the same month with savings transfers
+    # taken back out (moving $1,100 to Fidelity is not $1,100 spent), so its
+    # number is the more accurate answer to "what did I spend". Fall back to
+    # the raw withdrawal total when the pay cycle isn't configured.
+    pay = (budget or {}).get("paycheck") or {}
+    pay_month = pay.get("month") or {}
+    month_label = pay_month.get("label")
+    if pay.get("configured") and pay_month.get("spent") is not None:
+        month_spend = pay_month.get("spent")
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
     # Homepage headline: a trailing 30-day window, NOT the calendar month the
@@ -608,6 +617,9 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     if stale:
         obs.append(f"Financial data hasn't been imported for {days_stale} days — "
                    "today's spending is unknown, not zero.")
+    cyc = pay.get("cycle") or {}
+    if pay.get("available") and cyc.get("text"):
+        obs.append(cyc["text"])
     pace = sp.get("pace_pct")
     baseline = sp.get("baseline")
     if pace is not None:
@@ -635,7 +647,12 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     return {
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
+        "month_label": month_label,
+        "month_savings": pay_month.get("savings"),
         "month_ingested": month_ingested,
+        # What's left of the current paycheck after the savings that come out
+        # of it — the homepage's "left to spend". Never a bank balance.
+        "paycheck": _paycheck_brief(pay),
         "last_30": last_30,
         "last_30_trend_pct": last_30_trend,
         "last_30_note": sp.get("last_30_note"),
@@ -663,6 +680,29 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "upcoming_bills": soon[:4],
         "unusual": unusual,
         "observations": obs[:3],
+    }
+
+
+def _paycheck_brief(pay: dict) -> dict:
+    """The homepage's slice of the pay cycle — the numbers behind "left to
+    spend", not the whole cycle payload. Unavailable states keep their reason
+    so the card can say why rather than showing a blank."""
+    pay = pay or {}
+    if not pay.get("available"):
+        return {"available": False, "configured": bool(pay.get("configured")),
+                "reason": pay.get("reason")}
+    c = pay.get("cycle") or {}
+    return {
+        "available": True, "configured": True,
+        "fresh": pay.get("fresh"), "stale_reason": pay.get("stale_reason"),
+        "as_of": pay.get("as_of"),
+        "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
+        "savings_total": c.get("savings_total"),
+        "allocations": c.get("allocations", []),
+        "spendable": c.get("spendable"), "spent": c.get("spent"),
+        "left": c.get("left"), "per_day": c.get("per_day"),
+        "next_payday": c.get("next_payday"), "days_to_next": c.get("days_to_next"),
+        "overdue": c.get("overdue"), "state": c.get("state"), "text": c.get("text"),
     }
 
 

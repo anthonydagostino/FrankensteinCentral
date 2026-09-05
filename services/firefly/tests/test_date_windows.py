@@ -121,3 +121,40 @@ def test_live_uses_the_shared_window():
     live = src.split("async def _live()", 1)[1].split("async def _data", 1)[0]
     assert "_month_window(today)" in live, "_live() must use the tested helper"
     assert "replace(day=1)" not in live, "_live() is rebuilding the range inline again"
+
+
+# ---- the pay-cycle window ----------------------------------------------
+# One window feeds two claims (month-to-date spending and the current pay
+# cycle), so it has to satisfy both on every day of the calendar — not just
+# on the days that are convenient to test.
+
+cycle_window = ff._cycle_window
+
+
+@pytest.mark.parametrize("today", CALENDAR, ids=lambda d: d.isoformat())
+def test_cycle_window_is_valid_every_single_day(today):
+    start, end = cycle_window(today)
+    assert start < end, f"zero-length range on {today} — Firefly returns 422"
+    # reaches the 1st of the month, so month-to-date is computable from it
+    assert start <= today.replace(day=1).isoformat()
+    # covers the lookback, so the previous paycheck is inside it
+    assert start <= (today - timedelta(days=ff.CYCLE_LOOKBACK_DAYS - 1)).isoformat()
+    # and never claims days that haven't happened
+    assert end <= (today + timedelta(days=1)).isoformat()
+
+
+@pytest.mark.parametrize("today", FIRSTS, ids=lambda d: d.isoformat())
+def test_cycle_window_on_the_first_still_reaches_back_a_full_lookback(today):
+    """On the 1st the month is empty; the pay cycle that is running started
+    in the previous month and must still be inside the window."""
+    start, _ = cycle_window(today)
+    assert start < today.replace(day=1).isoformat()
+
+
+def test_cycle_uses_the_shared_window():
+    """The helper is only worth testing if _cycle_payload() actually uses it."""
+    src = Path(ff.__file__).read_text()
+    body = src.split("async def _cycle_payload()", 1)[1].split('@app.get("/cycle")', 1)[0]
+    assert "_cycle_window(today)" in body, "_cycle_payload() must use the tested helper"
+    assert "timedelta(days=CYCLE_LOOKBACK_DAYS" not in body, \
+        "_cycle_payload() is rebuilding the range inline again"
