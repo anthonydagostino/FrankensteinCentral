@@ -94,21 +94,35 @@ auth ruling).
 
 ## Non-product track — needs no directive
 
-`PROTOCOL.md` calls itself development-process infrastructure, so this can
-proceed while the roadmap is decided. Both belong to the protocol agent.
+`PROTOCOL.md` calls itself development-process infrastructure, so this proceeds
+while the roadmap is decided. All of it belongs to the protocol agent.
 
-1. **`--check` cannot see the violation that happened.** It validates
-   `STATE.json` internally and passes on the branch carrying 1,524 unauthorized
-   lines. It should fail when a branch holds product commits protocol state does
-   not authorize.
-2. **Name the authoritative `.frankenstein/` in `PROTOCOL.md`.**
-   `docs/AUTONOMOUS-WORKER.md` is unambiguous that `control` is the source of
-   truth and the worker materializes it onto task branches. `PROTOCOL.md` never
-   says so. Close that gap before a directive on `control` meets an agent
-   reading its own copy.
-3. **Branch naming.** No branch follows `claude/FC-###-<slug>`, so no branch
-   ties to a task id. The worker creates `claude/FC-###-work` correctly; the
-   drift is in the human-started sessions.
+1. **`--check` still cannot see the violation that happened.** *Open.* Verified
+   this tick: `scripts/frankenstein-status.sh` is unchanged from `production`
+   and contains no branch inspection at all, so it validates `STATE.json`
+   internally and passes on the branch carrying 1,524 unauthorized lines. It
+   should fail when a branch holds product commits protocol state does not
+   authorize. This is now the only one of the three still outstanding, and it
+   is the one that would have caught FC-001's problem automatically.
+2. ~~**Name the authoritative `.frankenstein/`.**~~ **Closed** by `42be8fc`.
+   `PROTOCOL.md` now has a *control branch* section naming it as the
+   authorization channel and stating what may and may not travel on it. It also
+   added something I had not thought to ask for: a **control write order**. When
+   the Product Owner writes through sequential single-file commits, the state
+   flip goes last, so a half-written directive cannot wake the worker — and the
+   worker's strict validation is explicitly not to be loosened to accommodate
+   one. That closes a race I would have missed until it fired.
+3. **Branch naming.** *Open.* No branch follows `claude/FC-###-<slug>`, so no
+   branch ties to a task id. The worker creates `claude/FC-###-work` correctly;
+   the drift is in the human-started sessions, including this one. Low harm
+   until two tasks run at once.
+
+The same commit also wrote down the rule that answers decision 6 below before
+it is asked: **the human leaves the message path, not the decision path.**
+Deployment, credentials, spending, destructive deletion, weakening containment
+and widening egress stay explicit human approvals no matter what `STATE.json`
+says, and `turn: claude` has never authorized any of them. That is the right
+line, and it is now in the protocol rather than in someone's judgement.
 
 ## What I need from the Product Owner
 
