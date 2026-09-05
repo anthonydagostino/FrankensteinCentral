@@ -25,6 +25,25 @@ points at it.
 Reading the repo, answering questions, and explaining existing behavior are
 always allowed. The restriction is on changing the product.
 
+## Agent boundaries — deployment is not yours
+
+An agent doing **product work** (the money layer, services, gateway, docs,
+tests) has exactly one delivery mechanism: commit to its task branch and
+push that branch. Specifically, it must **never**:
+
+- run `scripts/promote.sh` (with or without `--force`/`--bootstrap`),
+- push, force-push, or otherwise move the `production` branch by any other
+  means, including a direct `git push <sha>:refs/heads/production`,
+- edit anything under `.frankenstein/` — `STATE.json`,
+  `PRODUCT_DIRECTIVE.md`, `IMPLEMENTATION_HANDOFF.md` and `PROTOCOL.md`
+  included.
+
+Only the **protocol agent** moves deployment and owns the protocol files.
+This holds even when the Product Owner says "deploy this" in a session:
+the answer is to hand over the commit SHA and stop, not to override the
+gates. `promote.sh --force` is not an escape hatch for a product agent —
+it exists for the protocol agent's explicitly approved overrides.
+
 ## Working conventions
 
 - Run `bash scripts/test.sh` before handing anything off. `scripts/deploy.sh`
