@@ -404,7 +404,10 @@ if [ "$MODE" = "probe" ]; then
   echo "  claude binary:      $(command -v "$CLAUDE_BIN" 2>/dev/null || echo '<not found>')"
   echo "  auto-exposed install roots: ${AUTO_EXPOSED:-<none needed>}"
   if [ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]; then
-    echo "  claude credential:          API key from the environment (does not expire)"
+    echo "  claude credential:          dedicated API key from the environment"
+    echo "                              (long-lived; not tied to the interactive"
+    echo "                              OAuth session lifecycle. Still revocable,"
+    echo "                              and still rotatable by a human.)"
   elif [ -e "$REAL_HOME/.claude/.credentials.json" ]; then
     echo "  claude credential:          the host interactive OAuth session (EXPIRES)"
   else

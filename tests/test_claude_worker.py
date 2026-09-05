@@ -1487,7 +1487,14 @@ def test_probe_reports_containment_and_does_not_leak(world):
                      "PASS  production checkout not writable",
                      "PASS  export directory writable"):
         assert required in out, f"probe did not report: {required}\n{out}"
-    assert "  FAIL" not in out, out
+    # Containment is asserted strictly: not one FAIL may appear before the
+    # authentication section. Authentication is deliberately excluded, because
+    # it depends on ambient host state — a sandbox home with no credential and
+    # no ANTHROPIC_API_KEY in the environment makes "Not logged in" the correct
+    # probe result, and a containment test that only passes on a host that
+    # happens to be logged in is testing the host, not the sandbox.
+    containment = out.split("-- Claude authentication")[0]
+    assert "  FAIL" not in containment, containment
     # Whether the verdict is PASS or NOT READY depends on whether the Claude
     # CLI is installed here; the exit status must agree with it either way.
     if "RESULT: PASS" in out:
@@ -2139,7 +2146,8 @@ def test_the_probe_warns_that_an_oauth_session_expires(world):
     r = run_worker(world, "--probe")
     out = r.stdout + r.stderr
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        assert "API key from the environment" in out
+        assert "dedicated API key from the environment" in out
+        assert "not tied to the interactive" in out
         assert "ADVISORY" not in out
     else:
         assert "ADVISORY" in out, out
@@ -2169,3 +2177,25 @@ def test_the_unit_template_documents_a_dedicated_api_key():
         if line.startswith("Environment=") and "ANTHROPIC" in line:
             raise AssertionError(f"a credential must not sit in the unit: {line}")
     assert "#EnvironmentFile" in svc, "must ship commented out, not active"
+
+
+def test_no_credential_is_described_as_non_expiring():
+    """An API key outlives the interactive OAuth session; it is not eternal.
+    A probe that promises otherwise teaches the operator the wrong lesson on
+    the day the key is revoked or rotated."""
+    for path in (WORKER, ROOT / "scripts" / "agent" / "frankenstein-agent.service",
+                 ROOT / "docs" / "AUTONOMOUS-WORKER.md"):
+        text = path.read_text().lower()
+        for claim in ("does not expire", "doesn't expire", "never expires",
+                      "non-expiring"):
+            assert claim not in text, f"{path.name} claims a credential {claim}"
+
+
+def test_the_probe_verdict_never_passes_on_a_containment_failure(world):
+    """The split above must not become a way for a containment FAIL to be
+    filed under authentication and ignored: NOT READY still has to be the
+    verdict whenever any FAIL line is printed at all."""
+    c = code(WORKER)
+    assert 'RESULT: NOT READY — see the FAIL lines above' in c
+    assert 'if [ "$PROBE_FAIL" = "0" ]; then' in c, \
+        "the verdict must be driven by PROBE_FAIL, not by which section failed"
