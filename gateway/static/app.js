@@ -425,9 +425,53 @@ const RENDERERS = {
       ? `<p class="bud-sync">Data synced ${esc(agoTxt(fr.ingest_days))}${fr.activity_days != null ? ` · last transaction ${esc(agoTxt(fr.activity_days))}` : ""}</p>`
       : "";
 
+    // ---- the pay cycle: what's left of this paycheck --------------------
+    // Shown as the arithmetic, not just the answer: paycheck, each savings
+    // deduction, what's been spent since payday, what's left. A number the
+    // user can't retrace is a number they can't trust.
+    const pay = d.paycheck || {};
+    const pc = pay.cycle || {};
+    const dshort = (iso) => {
+      if (!iso) return "";
+      const parts = String(iso).slice(0, 10).split("-");
+      if (parts.length !== 3) return String(iso);
+      return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+parts[1] - 1] + " " + (+parts[2]);
+    };
+    let paySection = "";
+    if (pay.available && !pc.overdue) {
+      const allocRows = (pc.allocations || []).map((a) => {
+        const note = a.source === "observed" ? `seen ${esc(dshort(a.date))}`
+          : a.source === "withheld_before_deposit" ? "withheld before the deposit — not subtracted"
+          : "expected — no transfer in the ledger yet";
+        const amt = a.source === "withheld_before_deposit" ? a.planned : a.amount;
+        return `<div class="btxn"><span class="grow">${esc(a.name)}</span>
+          <span class="sub">${note}</span>
+          <span class="mono ${a.source === "withheld_before_deposit" ? "" : "down"}">${a.source === "withheld_before_deposit" ? "" : "−"}${fmt(amt, 2)}</span></div>`;
+      }).join("");
+      const perDay = pc.per_day != null
+        ? `<div class="bud-sync">About ${fmt(pc.per_day, 2)}/day keeps you going to ${esc(dshort(pc.next_payday))}.</div>`
+        : `<div class="bud-sync">Per-day guidance is paused — ${esc(pay.stale_reason || "the ledger isn't current")}.</div>`;
+      paySection = `
+        <h4>This paycheck · since ${esc(dshort(pc.start))}</h4>
+        <div>
+          <div class="btxn"><span class="grow"><b>Paycheck</b></span><span class="sub">${esc(pc.paycheck_desc || "")}${pc.paycheck_parts > 1 ? ` (${pc.paycheck_parts} deposits)` : ""}</span><span class="mono up">${fmt(pc.paycheck, 2)}</span></div>
+          ${allocRows}
+          <div class="btxn"><span class="grow"><b>Yours to spend</b></span><span class="sub">after savings</span><span class="mono">${fmt(pc.spendable, 2)}</span></div>
+          <div class="btxn"><span class="grow">Spent since payday</span><span class="sub">${pc.days_elapsed} day(s)${pay.as_of ? ` · ledger through ${esc(pay.as_of)}` : ""}</span><span class="mono down">−${fmt(pc.spent, 2)}</span></div>
+          <div class="btxn"><span class="grow"><b>Left to spend</b></span><span class="sub">${pc.days_to_next > 0 ? `${pc.days_to_next} day(s) to ${esc(dshort(pc.next_payday))}` : `payday ${esc(dshort(pc.next_payday))}`}</span><span class="mono ${pc.left < 0 ? "down" : "up"}"><b>${fmt(pc.left, 2)}</b></span></div>
+        </div>
+        ${perDay}`;
+    } else if (pay.available && pc.overdue) {
+      paySection = `<h4>This paycheck</h4><p class="bud-paused">${esc(pc.text)}</p>`;
+    } else if (pay.configured === false) {
+      paySection = `<h4>This paycheck</h4><p class="empty">Not set up yet — add your paycheck and the savings that come out of it in ⚙ Settings to see what's left to spend.</p>`;
+    } else if (pay.reason) {
+      paySection = `<h4>This paycheck</h4><p class="empty">Left to spend unavailable — ${esc(pay.reason)}.</p>`;
+    }
+
     // ---- setup empty state ----
     if (!d.configured) {
-      body.innerHTML = `${paused}
+      body.innerHTML = `${paused}${paySection}
         <p class="empty" style="margin:8px 0 14px">🫙 No budgets configured yet. Give each spending area a monthly limit and map it to your Firefly categories — then this page shows how full each "glass" is, your safe pace, and calm warnings before the money runs out.</p>
         <button class="btn" id="bud-setup2">Set up budgets</button>`;
       const b = document.getElementById("bud-setup2");
@@ -444,7 +488,7 @@ const RENDERERS = {
       <div class="bstats">
         <div class="bstat"><div class="l">${esc(mo.label || "This month")}</div><div class="v">${mo.days_left ?? "—"}<span class="u"> days left</span></div></div>
         <div class="bstat"><div class="l">Income</div><div class="v">${d.income_month ? fmt(d.income_month) : "—"}</div></div>
-        <div class="bstat"><div class="l">Spent</div><div class="v">${fmt((d.totals || {}).spent_month)}</div></div>
+        <div class="bstat"><div class="l">Spent${(pay.month || {}).savings ? ' <span class="u">· excl. savings</span>' : ""}</div><div class="v">${fmt((pay.month || {}).spent != null ? pay.month.spent : (d.totals || {}).spent_month)}</div></div>
         <div class="bstat"><div class="l">Bills remaining</div><div class="v">${billsRemaining != null ? fmt(billsRemaining) : "—"}</div></div>
         <div class="bstat safe"><div class="l">Budget room<span class="u"> · ${esc(d.budget_room_scope || "")}</span></div><div class="v">${fmt(d.budget_room)}</div></div>
       </div>`;
@@ -506,7 +550,7 @@ const RENDERERS = {
         <span class="mono">${b.amount != null ? fmt(b.amount) : "—"}</span></div>`).join("") : "";
 
     body.innerHTML = `
-      ${paused}${noMonthData}${syncLine}${stats}
+      ${paused}${noMonthData}${syncLine}${stats}${paySection}
       ${warns ? `<div class="bwarns">${warns}</div>` : (fresh && (d.budgets || []).length ? '<p class="empty" style="margin:4px 0 10px">✓ All budgets compatible with the time remaining.</p>' : "")}
       <div class="vgrid">${vessels}</div>
       ${uncat}${unbudgeted}

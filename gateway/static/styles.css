@@ -446,6 +446,21 @@ body {
 .bud-line.over, .bud-line.approaching { border-left: 3px solid #ff9f43; }
 .bud-line.paused { color: var(--muted); }
 
+/* settings savings-deduction rows (paycheck) — same shape as budget rows */
+.alloc-row { display: grid; grid-template-columns: 1.1fr .6fr 1.4fr auto auto; gap: 8px;
+  margin-bottom: 8px; align-items: center; }
+.alloc-row input[type="text"], .alloc-row input[type="number"], .alloc-row input:not([type]) {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 9px; padding: 8px 10px; font-size: 13px; font-family: inherit; min-width: 0; }
+.alloc-row input:focus { outline: none; border-color: var(--accent-2); }
+.alloc-row .a-pre { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.alloc-row .a-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; }
+.alloc-row .a-x:hover { color: var(--down); }
+@media (max-width: 640px) {
+  .alloc-row { grid-template-columns: 1fr .7fr auto; }
+  .alloc-row .a-match { grid-column: 1 / -2; }
+}
+
 /* settings budget rows + hints */
 .budget-row { display: grid; grid-template-columns: 1.1fr .6fr 1.6fr auto; gap: 8px; margin-bottom: 8px; }
 .budget-row input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
