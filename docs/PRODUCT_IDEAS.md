@@ -344,20 +344,368 @@ This also retires a manual Jira task by making it a property of the system.
 
 ---
 
-# If I had to pick three
+# Wave 2 — from a full read of the service code
 
-**#2 (infra & restore-test), #1 (job pipeline), #3 (Do-Next widening)** — in that
-order.
+Wave 1 came from the architecture and your backlog. This wave comes from reading
+`core`, `assistant`, `gmail`, `fitness`, `budget`, `firefly` and `app.js` line by
+line. It's less about new features and more about the gap between what this
+system already computes and what it actually tells you — which turns out to be
+large, and cheap to close.
 
-#2 because an unbacked-up password vault on a single disk is the only item here
-that can cost you something you cannot get back, and your own backlog has been
-saying so since the `Data Loss Prevention` epic was created.
+---
 
-#1 because it's the highest-stakes thing you're doing and most of it is already
-built and wired to nothing.
+## Group A — four places the dashboard states something it doesn't know
 
-#3 because it's small, it's pure logic, and it makes the other two show up where
-you'll actually see them.
+These are grouped because they're one idea wearing four hats: **the honesty rules
+in `docs/BUDGETS.md` are excellent and they stop at the money layer.** "Zero and
+unknown are different states" is true of far more than spending.
+
+### 13. "Not configured" and "unreachable" are rendered as the same thing
+
+`_get()` (`assistant/main.py:190`) swallows every exception and returns `{}` —
+"a down sub-app just contributes nothing". Then:
+
+```python
+"portfolio": stocks or {"configured": False},                        # :713
+connected = bool(firefly) and firefly.get("connected") is not False  # :562
+```
+
+So when `stocks` times out, the home screen tells you **"No holdings yet. Add
+your stocks →"**. When `firefly` is briefly unreachable, it tells you
+**"Firefly not connected — set FIREFLY_URL/FIREFLY_TOKEN"**. Both are
+instructions to go fix configuration that is already correct. A transient blip
+reads as a setup error, and if you act on it you'll go looking for a problem
+that doesn't exist.
+
+The right pattern is already in this repo — `gmail` is the one service that
+gets it right, with `mode: disconnected | live | error` and
+`sync_status: healthy | failed | never`, and a UI that distinguishes "not
+connected yet" from "last refresh failed, showing last known good".
+
+**Proposal.** Make that contract universal: `_get` returns a tagged result
+(`ok` / `unreachable` / `error`) instead of `{}`, and every card renders three
+states rather than two. "Couldn't reach Firefly — showing the last figures I
+had, from 14:05" is a true sentence. The current one isn't.
+
+**Effort:** S · **Acceptance signal:** stop the `stocks` container and confirm
+the portfolio card says it's unreachable, not that you have no holdings.
+
+### 14. `● Systems healthy` is computed from 2 of your 15 services
+
+```python
+down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]  # :693
+```
+
+The footer's health claim only ever looks at `core` and `gmail`. `firefly`,
+`budget`, `schedule`, `stocks`, `finance`, `tasks`, `networth`, `vault`,
+`deals`, `plex` and `powerbuy` can all be down and it will still say
+**"● Systems healthy"** — while the cards above it quietly render idea #13's
+"not configured" messages.
+
+The gateway already has the real thing: `GET /api/health` probes all 15
+concurrently and returns per-service status *and* each one's `/health` detail
+payload — which the UI then throws away entirely.
+
+**Proposal.** Feed the real aggregate into the footer, and let it expand into a
+per-service list. This also becomes the natural home for idea #2's infra card.
+
+**Effort:** XS · **Acceptance signal:** a stopped container makes the footer say
+so by name.
+
+### 15. The clock seam stops at the money layer, and it's costing you gym credit
+
+`docs/TESTING.md` is one of the better documents in this repo. It describes a
+real incident ("at 01:37 UTC it was September in the container and still August
+in New York"), states the rule — **"One clock. All date logic goes through
+`_today()`. A test asserts no bare `date.today()` / `datetime.now()` call
+reappears elsewhere in the module"** — and backs it with a 1,166-case calendar
+sweep in `firefly`.
+
+That discipline was applied to three services. Only `gmail`, `budget` and
+`firefly` have tests at all. `core`, `assistant` and `fitness` have none — and
+those are the three that decide what the dashboard tells you to do.
+
+Here's the concrete cost. `fitness` stores visits as **naive UTC**:
+
+```python
+when_at = (visit.when or datetime.utcnow()).isoformat()   # fitness/main.py:85
+```
+
+`core._gym()` reads that back through `_parse_day()` and buckets it with
+`_week_start()` (Monday). A naive string has no offset, so the date taken is the
+**UTC** date. In New York that means:
+
+- a workout logged after **8pm EDT** is credited to **tomorrow**;
+- a workout logged **Sunday evening** is credited to **next week**.
+
+That feeds the `fitness` score component (weight 20, the second-heaviest) and
+the gym rule in `_do_next`. So on a Sunday night, after you've been to the gym,
+the dashboard can tell you to go to the gym — and dock your score for not
+having gone.
+
+**Proposal.** Store tz-aware timestamps, give `fitness`/`core`/`assistant` the
+same `_today()` seam `firefly` has, and port the calendar-sweep test pattern.
+The rule already exists and is written down; it just hasn't reached the services
+that own your habits.
+
+**Effort:** S (fix) + M (test coverage) · **Acceptance signal:** a visit logged
+at 9pm local counts for today, asserted on every day of a two-year sweep.
+
+### 16. The daily score treats "you didn't set a goal" as "you failed"
+
+`compute_score()` (`core/main.py`) says in its own docstring: *"`null`
+components are treated as not-yet."* The code immediately below does:
+
+```python
+ratio = 0.0 if ratio is None else max(0.0, min(1.0, float(ratio)))
+```
+
+`null` becomes `0.0` — scored as a total miss. So on a day you never set a Big 3,
+`big3_total` is 0, the `tasks` component is 0, and you lose its full 20 points —
+indistinguishable from setting three items and doing none of them. Same for
+nutrition before you've rated the day: you're marked as eating badly until you
+say otherwise, which is exactly the "`$0` vs unknown" error `BUDGETS.md` forbids
+one service over.
+
+The mechanism to fix it already exists — `compute_score` drops zero-weight
+components and renormalises to 100. Unset components should drop out the same
+way.
+
+Two smaller things in the same function while you're in there: the component
+named **`tasks` is actually Big 3** (`comp["tasks"] = big3_done / big3_total`),
+and the genuine open-task count is fetched from the tasks service on every
+request and then never scored or shown. One of those should change name; the
+other should change purpose.
+
+**Proposal.** Unset ⇒ excluded and renormalised, and the score displays what it
+was out of ("74, from 4 of 5 tracked"). A score you can't trust is a score you
+stop looking at, and this is the number sitting in your header all day.
+
+**Effort:** S · **Acceptance signal:** a fresh day with nothing logged reads as
+"nothing tracked yet", not as a low score.
+
+---
+
+## Group B — things that are built, tested, running, and connected to nothing
+
+### 17. The unwired inventory
+
+I went looking for one of these and found nine. Every row is code that exists
+and executes, whose output no user can reach:
+
+| what | where | status |
+|---|---|---|
+| `_nudges()` — severity-tagged attention feed with actions | `core/main.py:~355` | computed on every `/today`; the string "nudges" appears nowhere in `assistant` or the frontend |
+| `deadlines` table — interviews, deadline emails, bills | `assistant`, written on every sync | readable only via `/space`, i.e. **only on the legacy lounge** |
+| `GET /weekly-review` | `core/main.py:623` | zero frontend references |
+| Sleep — column, model, `POST /sleep`, score component | `core` | score weight defaults to **0**, no UI control anywhere |
+| `market.move_threshold_pct` | settable in ⚙ Settings, saved to `core` | read by nothing — "Alert on move ≥ 3%" produces no alert |
+| `finance.low_balance` | `DEFAULT_SETTINGS` | consumed nowhere |
+| `captures.kind` (+ `CapturePatch.kind`) | `core` schema | UI only ever writes `'note'` |
+| `focus_sessions.label` | `core` schema | UI only ever writes `'Study'` |
+| `jobs.html` | `gateway/static/` | linked only from the legacy lounge (wave 1, #1) |
+
+`core._nudges()` is the painful one. `AUDIT.md` §3 promised a "unified **Needs
+Attention** feed (severity Important/FYI)". It was built — with per-item icons,
+severity, detail lines and typed actions — and the home screen renders a single
+`do_next` instead. You have the feed. It's just never asked for.
+
+The `deadlines` one is close behind: the assistant extracts interview times and
+bill due dates on every sync and files them, and the only page that can display
+them is the canvas dashboard you deliberately demoted.
+
+**Proposal.** One directive that closes all nine, plus the thing that stops it
+recurring: **a test that fails when a `DEFAULT_SETTINGS` key or a service
+endpoint has no consumer.** It's a grep-level check and it would have caught
+every row in this table. A settings field that silently does nothing is worse
+than a missing one — you configure it, you believe it's on, and you stop
+watching for the thing it was supposed to catch.
+
+**Effort:** M for all nine, XS each · **Acceptance signal:** the consumer test
+is green, and turning on the Big 3 nudge makes it appear.
+
+### 18. Pending calendar holds — the entire point of the Gmail→Bones→Cal
+pipeline — are filtered off the home screen
+
+```python
+events = [e for e in schedule.get("events", []) if e.get("status", "confirmed") == "confirmed"]  # :696
+```
+
+Your README describes the pipeline's whole value as the **pending** state: 🟡
+proposed by you, 🟠 they countered, 🟢 confirmed. `next_event`, the "Head to X"
+rule and the "Get ready for X" rule in `_do_next` all read this filtered list, so
+they only ever see 🟢.
+
+The result: Bones scans your sent mail, finds the three interview slots you
+offered, writes three colour-coded holds into your real Google Calendar — and the
+dashboard shows you none of them and never mentions them. The most sophisticated
+thing this system does is invisible on its own home screen.
+
+**Proposal.** Surface pending distinctly: "3 slots offered to EliseAI, awaiting
+reply" and "they countered — Thursday 2pm needs your yes". Pending-awaiting-you
+should be able to win Do-Next; pending-awaiting-them should not.
+
+**Effort:** S · **Depends on:** nothing — the data is already in the payload
+being discarded
+
+### 19. `build_home` never fetches tasks or PowerBuy
+
+The fan-out at `:676` gathers 14 endpoints. `TASKS_URL` and `POWERBUY_URL` are
+both configured in `docker-compose.yml`, both used elsewhere in the service, and
+neither is in the list. So the home screen is structurally incapable of showing
+an open task or an expiring unpaid resale buy — which is the mechanical reason
+wave 1's #3 and #8 exist. Worth stating separately because it's a two-line fix
+that unblocks both.
+
+**Effort:** XS
+
+---
+
+## Group C — new capability worth building
+
+### 20. Cash runway — the one number your situation actually calls for
+
+You are job hunting, your income includes resale, and you have a full ledger
+(`firefly`), account balances (`networth`), bills (`finance`) and budgets
+(`budget`) already wired into the same aggregator. Nothing computes the number
+that combines them: **liquid balances ÷ trailing average monthly burn = months of
+runway.**
+
+Every other money figure on this dashboard is a rear-view mirror — what you spent,
+what's due, what a category has left. Runway is the only forward-looking one, and
+it's the one that changes decisions: whether to take the contract, how hard to
+push on offers, whether the NAS purchase (SCRUM-32/54) waits a month.
+
+Do it with the honesty rules already established: runway is `null` when the
+ledger is stale, never an optimistic number; it shows the burn window it used;
+resale proceeds are separated from salary so you can see runway with and without
+them.
+
+**Effort:** S — pure composition over data already in `build_home`
+**Acceptance signal:** one number, with its inputs visible, that goes `null`
+rather than lying when the ledger hasn't been imported.
+
+### 21. Evening mode should be a different screen, not a different colour
+
+`AUDIT.md` Phase 1 promises "new Today homepage with **morning/evening modes**".
+What shipped: `assistant` computes `mode` (morning/day/evening), `home.js` sets
+`document.body.setAttribute("data-mode", …)`, and `home.css:25` has exactly one
+rule keyed off it. The content is identical at 7am and 11pm — the palette shifts.
+
+The card order and the calls to action are what should change:
+
+- **Morning** — lead with the day: next event, Big 3 entry, what's due, the one
+  thing to do first.
+- **Evening** — lead with the close-out: log sleep (idea #17 makes it loggable),
+  rate nutrition, tick or roll over the Big 3, set tomorrow's, and on Sunday lead
+  with the weekly review that already exists.
+
+This is the cheapest way to make the dashboard something you open *twice* a day
+instead of once, and it closes an AUDIT promise that's currently only cosmetic.
+
+**Effort:** S · **Depends on:** #17 (sleep control, weekly review)
+
+### 22. Let Bones take input by text, not just answer questions
+
+`_telegram_listen_loop()` is already running: long-polling, owner-only (`chat_id
+!= TELEGRAM_CHAT_ID` is dropped), no inbound firewall exposure, answering through
+the same `/ask` the web box uses. That's a finished two-way channel.
+
+It is read-only. You can ask Bones what's due; you can't tell it anything.
+
+**Proposal.** Accept the same verbs the ⌘K palette already implements —
+`gym`, `water 24`, `study 45`, `capture <text>`, `big3 done 2`. The command
+parser exists in `home.js`; the transport exists in `assistant`. This matters
+specifically because your logging moments (leaving the gym, drinking water, an
+idea on the train) are exactly the moments you are not in front of the OptiPlex —
+and a habit tracker you can only reach from one desk is a habit tracker you'll
+abandon.
+
+**Effort:** S · **Depends on:** nothing new
+**Acceptance signal:** text "gym" from outside the house, watch the score move.
+
+### 23. Where the week actually went
+
+`focus_sessions` already has a `label` column; the UI hardcodes `"Study"`. Let
+the focus timer take a label — Study / Applications / Resale / FrankensteinCentral
+— and the weekly review can answer a question nothing currently can: *where did
+my hours go?* For someone splitting time between an exam, a job hunt, a resale
+operation and building this, that breakdown is more actionable than the total.
+
+**Effort:** XS · **Depends on:** #17 (weekly review wired)
+
+### 24. Show the dashboard its own deploy state
+
+You have a full deployment protocol — `production` branch, `promote.sh`,
+`autopull.sh`, a test gate that keeps the previous build running on failure, and
+`~/.frankenstein/deployed.json` recording `running_commit`, `last_attempt_commit`,
+`last_result` and `last_success_at`. All of it is only visible by SSH-ing in and
+running `frankenstein-status.sh`.
+
+The dashboard should show its own version: what commit is running, when it
+deployed, whether the last attempt failed and left you on an older build. That
+last case is the one that matters — a failed deploy is currently silent from
+the UI, so the box can sit on a stale build for days while you assume your fix
+is live.
+
+Pairs naturally with idea #14's expanded systems footer.
+
+**Effort:** XS · **Note:** read-only display; no promotion controls in the UI —
+`promote.sh` should stay the only path, per `PROTOCOL.md`.
+
+### 25. Streaks for more than study
+
+`_study()` computes a consecutive-day streak, and it's the only one. Gym weeks
+hit, days the score cleared a threshold, water goal met — same query shape, and
+streaks are the single cheapest retention mechanic there is. "Best week ever" and
+"you've hit your gym goal 4 weeks running" are the sentences that make you not
+want to break the chain.
+
+**Effort:** XS · **Depends on:** #15 (otherwise evening workouts silently break
+the chain, which is worse than having no streak)
+
+### 26. Turn a booked interview into a prepared one
+
+When Cal books an interview, the system knows the company, the thread, and the
+time. `jobs.html` holds your research on those companies. Nothing joins them.
+
+Surface, on the event and the day before: your notes on that company, the
+original JD from the thread, who you've spoken to, and what you asked last time.
+And — draft-only — a follow-up email for an application that's gone quiet
+(wave 1, #1). `PROTOCOL.md` lists **sending email** as a high-risk action
+requiring explicit approval, and it's right to; a draft sitting in Gmail waiting
+for you to hit send is not that, and it removes the part you actually procrastinate
+on.
+
+**Effort:** M · **Depends on:** wave 1 #1
+
+---
+
+# If I had to pick five
+
+In order:
+
+1. **#2 — infra & restore test.** Still first. It's the only item across both
+   waves that protects something you can't get back, and your own `Data Loss
+   Prevention` epic has been saying so since you created it.
+2. **#13–16 as one correctness pass.** The dashboard currently tells you your
+   holdings aren't set up when a container blinked, calls 15 services healthy
+   after checking 2, credits Sunday-night workouts to next week, and scores an
+   unset goal as a failed one. Everything else in this document is worth less
+   while the numbers on the screen can't be taken at face value — and each fix
+   is small.
+3. **#17 — the unwired inventory.** Nine features you already paid for,
+   including the attention feed `AUDIT.md` promised and the deadlines the
+   assistant files on every sync. Highest ratio of value to new code in the
+   document, and the consumer test stops the pattern coming back.
+4. **#1 — the job pipeline.** Highest stakes, ~80% already built, and #18 and
+   #26 fall out of it nearly free.
+5. **#20 — cash runway.** One number, composed entirely from data already in
+   `build_home`, and the only forward-looking figure on the whole dashboard.
+
+A reasonable first directive is #2 or the #13–16 pass. #13–16 is the safer
+opening move under the protocol: contained, testable, no new services, and it
+makes every later idea land on a screen you trust.
 
 ---
 
