@@ -16,6 +16,7 @@ memory.
 | **Deployed at** | 2026-09-03 02:18:09 UTC |
 | **Last deploy result** | `success` |
 | **Convergence** | ✅ desired == running — `origin/production` and `deployed.json.running_commit` agree |
+| **Superseded by** | `bf31ab9` — this documentation set, deployed 2026-09-05 23:54:47 UTC. Documentation only: no Docker build context was touched, no container was recreated (uptimes unchanged), and all 15 sub-apps stayed `up`. Every measurement below therefore still describes the same running system. |
 | **Repo path on box** | `/home/antdag3/FrankensteinCentral` |
 | **Remote** | `https://github.com/anthonydagostino/FrankensteinCentral.git` |
 | **Protocol state** | FC-001 · turn `product_owner` · status `awaiting_directive` · deployment auth `none` |
