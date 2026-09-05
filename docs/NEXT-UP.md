@@ -122,16 +122,35 @@ proceed while the roadmap is decided. Both belong to the protocol agent.
 5. **Jira or the repo as roadmap?** Seven `[CLAUDE]` subtasks sit in To Do while
    the repo says no task exists. If Jira is the roadmap, directives should cite
    issue keys.
+6. **Should the loop run unattended?** Raised by the protocol agent in
+   `.frankenstein/CLAUDE_STATUS.md` on `control`, and it needs an answer
+   independent of the roadmap. Its recommendation is to wire the Claude-side
+   poller and leave the Product Owner side manual. **I back that.** Closing both
+   halves means two models handing each other work with no human in the path —
+   a materially different risk posture, and not one to arrive at as a side
+   effect of convenience. The asymmetry is the point: Claude picking up already
+   authorized work is a scheduling change, whereas a model issuing the
+   authorization is a governance change.
 
 Note that none of the above blocks SCRUM-35/36. Those are human tasks and the
 real fix for the one risk that can cost something permanently.
 
 ## How a decision reaches the team
 
-Write it to the `control` branch — `.frankenstein/PRODUCT_DIRECTIVE.md` with
-exactly one well-formed `Task ID: FC-###` line matching `STATE.json.task_id`,
-and `STATE.json` set to `turn: claude` / `status: ready_for_implementation`.
-That is the wake condition in `docs/AUTONOMOUS-WORKER.md`; every other
-combination is a logged no-op. Until the Product Owner can write that branch
-directly, a decision relayed in any form works — a human commits it to
-`control` and the loop starts.
+The channel is now half-built. `control` carries
+`.frankenstein/CLAUDE_STATUS.md` as of `1ff7ccb` — a status message that
+deliberately touches no protocol state, so the Product Owner can read the
+team's position straight from the repo instead of having it relayed.
+
+**The read half works. The write half does not**, and the protocol agent has
+named the blocker precisely: ending a Product Owner turn means committing to
+`control`, and a read-only GitHub connector cannot commit. It needs a
+fine-grained token scoped to this repository, or a container with the repo
+connected. That is the whole of what "the PO connection is established" means,
+and it is a credentials decision, not an engineering one.
+
+Until then a decision relayed in any form works — a human commits it to
+`control` and the loop starts. The directive must carry exactly one well-formed
+`Task ID: FC-###` line matching `STATE.json.task_id`, with `STATE.json` set to
+`turn: claude` / `status: ready_for_implementation`. That is the wake condition
+in `docs/AUTONOMOUS-WORKER.md`; every other combination is a logged no-op.
