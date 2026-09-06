@@ -57,6 +57,45 @@ otherwise move the `production` branch by any other means"). To its credit the
 CM agent flagged its own action, asking whether to "route future docs to task
 branch". The answer is yes.
 
+## The PO has not woken in nearly two hours
+
+`STATE.json` on `control` last moved at **21:42:30Z**. The corrected FC-002
+handoff was published at **22:05Z** and has been sitting `awaiting_review`
+since. It is now past 23:51Z — roughly **1h45m**, against a Codex Product Owner
+wakeup that `FC-002`'s own directive says runs **every 15 minutes**. That is
+about seven cycles with no response.
+
+I can only observe that `control` has not moved; I cannot see Codex's
+scheduler. But the loop executed exactly once and then stalled on the Product
+Owner side, which is the same failure mode as the ChatGPT era with a different
+actor. Worth checking that the wakeup is actually firing before assuming the
+review is merely slow.
+
+## The unshipped-work survey, and the conflict nobody had measured
+
+`WORK_QUEUE.md` on `handoff` (`0046b3a`) surveys everything built and not
+shipped. Everything is pushed; nothing is stranded locally. Three items are
+verified and fast-forwardable from production:
+
+| branch | tip | vs production | suite |
+|---|---|---|---|
+| `claude/po-handoff-release` (FC-002) | `f1fa382` | +5, fast-forward | 1586 pass |
+| `claude/FC-001-dashboard-firefly-calendar` | `0a5d24a` | +1, fast-forward | 1486 pass |
+| money/paycheck `d1af4e7` | — | cherry-picks clean onto production | 2276 pass |
+
+**The finding worth acting on:** FC-001 and the money layer **conflict** — one
+hunk, about 30 lines, in `gateway/static/home.js`. The calendar card and the
+paycheck rewrite touch the same region. I flagged the collision when drafting
+the directive; the agent has now measured it exactly, and correctly refused to
+resolve it, because *what the dashboard home shows and in what order* is a
+product decision, not an implementation one.
+
+FC-001 and FC-002 together rebase clean and pass 1603. Whichever promotes
+first, the other needs a rebase, and that rebase is verified clean.
+
+So Anthony's dashboard work is not stuck behind engineering. It is stuck behind
+two decisions: the order, and which layout wins in `home.js`.
+
 ## THE LOOP IS LIVE — first directive ever issued, 2026-09-06 21:42Z
 
 `control` is at `760f4c2` and `STATE.json` finally moved off its seed values:
