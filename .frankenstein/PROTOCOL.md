@@ -10,14 +10,34 @@ the repository instead of relying on a human to relay every message by hand.
 The repo is the shared source of truth.
 
 ```
-Product Owner writes directive
+Product Owner writes directive to `control`
   → Claude reads directive
     → Claude implements + tests
-      → Claude writes handoff
-        → Product Owner reviews repo state + handoff
+      → Claude publishes handoff to `handoff`
+        → Product Owner reviews the task branch + handoff
           → Product Owner accepts / requests changes / issues next directive
-            → repeat
+            → the release service promotes accepted, deploy-approved work
+              → repeat
 ```
+
+## Who the actors are
+
+| actor | role | writes |
+|---|---|---|
+| **Anthony** | product stakeholder — intent, and exceptional consent | nothing routinely |
+| **Codex** | Product Owner and orchestrator | `control`, only |
+| **Claude** | implementation | task branches and `handoff`, only |
+| **release service** | deterministic promotion; no model in it | `production`, only |
+
+Three separations hold this up, and none of them is optional:
+
+1. **Claude cannot write `control`.** An implementation agent that can write
+   control can write `status: accepted` and release its own work.
+2. **The Product Owner does not hold the production credential.** Acceptance is
+   judgement; release is mechanism. See `docs/RELEASE-SERVICE.md`.
+3. **Anthony is not in the message path.** He states product intent and gives
+   consent for the genuinely exceptional; he does not relay, review diffs,
+   copy SHAs, or run deploy commands.
 
 ## The four files
 
@@ -30,13 +50,27 @@ Product Owner writes directive
 
 No protocol state lives anywhere else.
 
+They live on two branches, and which branch a copy is on decides who may write
+it. On `control`, all four are the **Product Owner's**; Claude reads them and
+never writes them. On `handoff`, `STATE.json` and `IMPLEMENTATION_HANDOFF.md`
+are **Claude's report**, plus `AUTHORIZING_CONTROL_COMMIT` and `TASK_BRANCH`,
+which bind that report to the directive that authorized it.
+
+`AGENTS.md` at the repository root is the Product Owner's own operating
+contract.
+
 ---
 
 ## Responsibilities
 
-### Product Owner
+### Product Owner (Codex)
 
-- Owns product direction and the roadmap.
+- Owns product direction, the roadmap and the backlog.
+- **Sole writer of `control`**, and the only actor whose acceptance authorizes
+  a release.
+- Reads `handoff`, the task branch diff and the test results, then decides.
+- Does **not** hold or use the production credential; the release service
+  performs the promotion.
 - Defines requirements and acceptance criteria.
 - Approves or rejects work.
 - Decides what happens next, and when.
@@ -54,6 +88,10 @@ No protocol state lives anywhere else.
 - Reports honestly, including failures and things not done.
 - Records deviations explicitly.
 - **Stops after the handoff** unless the directive explicitly authorizes continued work.
+- **Never writes `control`**, never marks its own work `accepted` or
+  `deploy-approved`, and never pushes `production`. These are refused by
+  server-side rules, by the worker's `pre-push` hooks, and by the release
+  service's independent validation — not merely by instruction.
 
 ---
 
@@ -169,8 +207,12 @@ When the approved scope is complete:
 8. **Push the task branch.** This is always allowed, at every Deployment
    Authorization level, because a task-branch push deploys nothing. The
    Product Owner cannot review what was never pushed.
-9. **Stop.** Do not start another feature, and do not promote to production —
-   promotion happens only after acceptance, and only when authorized.
+9. **Publish the handoff to the `handoff` branch** — never to `control`. Under
+   the autonomous worker this is done for you, from a clone you never touch;
+   working by hand, push the same four files to `handoff`.
+10. **Stop.** Do not start another feature, do not mark the work accepted, and
+    do not promote to production. Acceptance is the Product Owner's; promotion
+    is the release service's.
 
 ---
 
@@ -221,10 +263,16 @@ them.
 
 | | |
 |---|---|
-| bus | the `control` branch — orphan history, carries `.frankenstein/` only |
+| bus | `control` (Product Owner → Claude) and `handoff` (Claude → Product Owner) |
+| both | orphan history, carrying `.frankenstein/` only |
 | transport | GitHub |
 | what travels here | directives, corrections, handoffs, protocol state |
 | what never travels here | code, product changes, anything deployable |
+
+The channel is **one-way per branch**, and that is the point. Claude reads
+`control` and writes `handoff`; the Product Owner reads `handoff` and writes
+`control`. A single shared branch would mean the implementation agent could
+write acceptance.
 
 `control` shares no history with `production`, so it cannot be fast-forwarded
 into it, and the poller watches `production` only. A commit on `control`
@@ -433,10 +481,14 @@ Deployment Authorization is a separate decision the Product Owner makes
 independently, and either can come first:
 
 - accepted + `none` → the work is approved and sits on its branch, unpromoted.
-- accepted + `deploy-approved` → promotion may proceed.
+- accepted + `deploy-approved` → the release service promotes it, unattended,
+  on its next poll.
 - not accepted + `deploy-approved` → **no promotion.** Authorization does not
-  excuse failing the acceptance criteria, and Claude may not promote work the
-  Product Owner has not accepted.
+  excuse failing the acceptance criteria.
+
+The release service checks both independently, along with the whole
+*directive → implementation → acceptance* chain, and fails closed on any
+mismatch. It is documented in `docs/RELEASE-SERVICE.md`.
 
 Deployment state deliberately does **not** live in `STATE.json`: only the box
 knows what actually ran. `implementation_commit` means "this was pushed for
@@ -450,6 +502,14 @@ whose tree is the known-good one — not rewinding the branch:
 ```
 production:  A --- B --- C(bad) --- D(tree of B, "rollback")
 ```
+
+Routine rollback needs no host access and no human: the Product Owner writes
+`rollback_to: <good-sha>` to `control` with `status: accepted` and
+`Deployment Authorization: deploy-approved`, and the release service builds
+that forward-moving commit itself. The target must already be an ancestor of
+`production` — you can only roll back to something that was actually released.
+
+`scripts/rollback.sh` remains for host-side operation:
 
 ```
 bash scripts/rollback.sh --dry-run <good-sha>

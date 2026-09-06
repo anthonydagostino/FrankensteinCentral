@@ -1,0 +1,46 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED.
+# Install only after the Product Owner write path and the GitHub rulesets are
+# in place (see docs/RELEASE-SERVICE.md):
+#   sudo cp scripts/agent/frankenstein-release.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   touch /home/fcrelease/.frankenstein/release/ENABLED   # refuses without this
+#   sudo systemctl enable --now frankenstein-release.timer
+#
+# Deliberately SEPARATE from frankenstein-agent.* and frankenstein-deploy.*:
+# the release actor, the implementation worker and the deployer must be
+# independently startable and stoppable, and they run as different Unix users.
+#
+# This unit runs as fcrelease, which holds the ONLY production credential on
+# the box. No Claude and no Codex ever runs as this user.
+[Unit]
+Description=FrankensteinCentral deterministic release service (one poll)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=fcrelease
+Environment=FRANKENSTEIN_DIR=/home/fcrelease/FrankensteinCentral
+Environment=FRANKENSTEIN_RELEASE_DIR=/home/fcrelease/.frankenstein/release
+# The repository is public, so control and production are fetched anonymously.
+# The credential below is needed only for the single push to production.
+Environment=FRANKENSTEIN_REPO_URL=https://github.com/anthonydagostino/FrankensteinCentral.git
+#
+# THE PRODUCTION CREDENTIAL. A fine-grained PAT belonging to the machine
+# account frankenstein-release-bot, scoped to this repository only, with
+# Contents: read and write — and nothing else. It is read through a git
+# credential helper from a file owned by fcrelease with mode 0600. Never an
+# Environment= line here, and never a file inside the repository.
+#
+#   /home/fcrelease/.frankenstein/release-token     mode 0600, owner fcrelease
+#
+# Uncomment once that file exists.
+#Environment=GIT_CONFIG_GLOBAL=/home/fcrelease/.gitconfig
+TimeoutStartSec=600
+ExecStart=/usr/bin/env bash /home/fcrelease/FrankensteinCentral/scripts/release-service.sh
+
+# It never needs root, and must not be able to touch systemd.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/fcrelease/.frankenstein

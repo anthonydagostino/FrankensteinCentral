@@ -39,7 +39,8 @@ def executable(path: Path) -> str:
     c = code(path)
     if 'PROMPT="' in c:
         start = c.index('PROMPT="')
-        end = c.index('directive."', start) + len('directive."')
+        # to the closing quote of the assignment; the prompt contains none
+        end = c.index('"', start + len('PROMPT="')) + 1
         c = c[:start] + c[end:]
     return c
 
@@ -250,16 +251,24 @@ def test_authorized_state_invokes_claude(world, status):
 
 
 def test_successful_run_publishes_branch_and_handoff(world):
-    set_control(world, turn="claude", status="ready_for_implementation")
+    control_before = set_control(world, turn="claude",
+                                 status="ready_for_implementation")
     r = run_worker(world, mock=MOCK_GOOD)
     assert r.returncode == 0, r.stderr
     branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
     assert "claude/FC-001-work" in branches, "task branch was not published"
-    ctl = world["tmp"] / "verify"
-    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
-    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+
+    ho = world["tmp"] / "verify"
+    sh("git", "clone", "-q", "--branch", "handoff", str(world["remote"]), str(ho))
+    state = json.loads((ho / ".frankenstein" / "STATE.json").read_text())
     assert state["status"] == "awaiting_review"
     assert state["implementation_commit"], "handoff must name the commit to review"
+
+    # and control — Product Owner state — is untouched
+    ctl = world["tmp"] / "verify-ctl"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    assert git("rev-parse", "HEAD", cwd=ctl) == control_before, \
+        "the worker wrote control; an agent that can do that can accept itself"
 
 
 # ══ C. second poll while locked -> not invoked again ════════════════════
@@ -424,10 +433,12 @@ def test_prompt_explicitly_forbids_those_operations():
     """The same names must appear in the prompt — as prohibitions."""
     src = WORKER.read_text()
     start = src.index('PROMPT="')
-    prompt = src[start:src.index('directive."', start)]
-    for named in ("promote.sh", "rollback.sh", "deploy.sh", "systemd", "sudo"):
+    prompt = src[start:src.index('"', start + len('PROMPT="'))]
+    for named in ("promote.sh", "rollback.sh", "deploy.sh", "release-service.sh",
+                  "systemd", "sudo", "control branch"):
         assert named in prompt, f"prompt does not forbid {named}"
     assert "You may NOT" in prompt
+    assert "mark your own\nwork accepted" in prompt
 
 
 def test_worker_installs_a_pre_push_hook_rejecting_production():
@@ -461,7 +472,7 @@ def test_pre_push_hook_actually_rejects_production(world, tmp_path):
     assert ok.returncode == 0, "hook blocked a legitimate task-branch push"
 
 
-def test_worker_pushes_only_task_and_control_refs():
+def test_worker_pushes_only_task_and_handoff_refs():
     """Match actual `git push` invocations, not any line containing 'push'
     (the pre-push hook path contains the word)."""
     c = executable(WORKER)
@@ -471,8 +482,10 @@ def test_worker_pushes_only_task_and_control_refs():
               if re.search(r'(^|\s)git\s+[^|;]*\spush\s', l)]
     assert pushes, "expected at least one push"
     for line in pushes:
-        assert ("$TASK_BRANCH" in line or "$CONTROL_BRANCH" in line), \
+        assert ("$TASK_BRANCH" in line or "$HANDOFF_BRANCH" in line), \
             f"unexpected push target: {line}"
+    assert not any("$CONTROL_BRANCH" in l for l in pushes), \
+        "the worker must never push control"
 
 
 # ══ J. malformed control state -> no invocation ════════════════════════
@@ -832,17 +845,22 @@ def test_control_moving_between_the_two_token_checks_blocks_the_handoff(world):
         "a stale implementation SHA was stamped onto newer state"
 
 
-def test_control_clone_resets_to_the_authorizing_commit_not_origin():
+def test_the_late_token_check_is_a_read_not_a_write():
+    """The stage-2 check survived the move to `handoff`, but it is now a
+    read-only comparison: there is no control clone to reset and no control
+    push to race."""
     c = code(WORKER)
-    assert 'reset --hard --quiet "$CONTROL_COMMIT"' in c, \
-        "resetting to origin/control would rebase stale state onto newer PO state"
     assert "CONTROL_AT_PUBLISH" in c, "the late token check is missing"
+    assert "control-clone" not in c, "the worker still creates a control clone"
+    assert 'reset --hard --quiet "$CONTROL_COMMIT"' not in c, \
+        "the worker still resets a control working tree"
 
 
-def test_control_fetch_and_reset_failures_stop_publication():
+def test_handoff_clone_failures_stop_publication():
     c = code(WORKER)
-    assert "control_fetch_failed" in c and "control_reset_failed" in c, \
-        "without set -e these need explicit failure paths"
+    for result in ("control_fetch_failed", "handoff_clone_failed",
+                   "handoff_checkout_failed"):
+        assert result in c, f"without set -e {result} needs an explicit path"
 
 
 # ══ 4. the child-process boundary (behavioral) ═════════════════════════
@@ -1000,7 +1018,7 @@ def test_dry_run_reports_what_would_be_published(world):
     r = run_worker(world, "--dry-run", mock=MOCK_GOOD)
     assert "task branch:" in r.stderr
     assert "implementation SHA:" in r.stderr
-    assert "control transition:" in r.stderr
+    assert "handoff branch:" in r.stderr
 
 
 def test_dry_run_is_recorded_as_such(world):
@@ -1297,13 +1315,13 @@ def test_publisher_is_a_separate_clone_from_the_child_workspace():
     assert 'rm -rf "$PUB_DIR"' in c, "the publisher clone must be fresh each run"
     assert 'git clone --quiet --no-checkout "$REPO_URL" "$PUB_DIR"' in c, \
         "the publisher must be cloned from origin, never from the child's clone"
-    assert 'rm -rf "$CONTROL_DIR"' in c, "the control clone must be fresh each run"
+    assert 'rm -rf "$HANDOFF_DIR"' in c, "the handoff clone must be fresh each run"
     # every push comes from a clone the child never saw
     pushes = [l.strip() for l in c.splitlines()
               if re.search(r'(^|\s)git\s+[^|;]*\spush\s', l)]
     assert pushes
     for line in pushes:
-        assert '"$PUB_DIR"' in line or '"$CONTROL_DIR"' in line, \
+        assert '"$PUB_DIR"' in line or '"$HANDOFF_DIR"' in line, \
             f"push from an untrusted clone: {line}"
 
 
@@ -1644,9 +1662,9 @@ def test_a_normal_run_still_exports_verifies_and_publishes(world):
     published = git("rev-parse", "HEAD", cwd=verify)
     assert published == (export / "implementation.sha").read_text().strip()
 
-    ctl = world["tmp"] / "verify-export-ctl"
-    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
-    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    ho = world["tmp"] / "verify-export-handoff"
+    sh("git", "clone", "-q", "--branch", "handoff", str(world["remote"]), str(ho))
+    state = json.loads((ho / ".frankenstein" / "STATE.json").read_text())
     assert state["implementation_commit"] == published
 
 
@@ -1929,6 +1947,9 @@ def test_an_invalid_exported_handoff_is_never_published(world, updates, why):
     assert r.returncode != 0, f"published despite: {why}"
     branches = sh("git", "ls-remote", "--heads", str(world["remote"])).stdout
     assert "claude/FC-001-work" not in branches, f"task branch published: {why}"
+    assert "refs/heads/handoff" not in sh(
+        "git", "ls-remote", "--heads", str(world["remote"])).stdout, \
+        f"a handoff was published despite: {why}"
     ctl = world["tmp"] / f"ctl-invalid-{abs(hash(why)) % 10000}"
     sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
     assert git("rev-parse", "HEAD", cwd=ctl) == control_before, \
@@ -1970,29 +1991,39 @@ def test_a_missing_or_stub_handoff_document_is_never_published(world):
 
 
 @needs_sandbox
-def test_a_valid_handoff_publishes_and_control_reads_back_correctly(world):
+def test_a_valid_handoff_publishes_and_reads_back_correctly(world):
     """E. and the read-back the Product Owner asked for."""
-    set_control_directive(world, turn="claude", status="ready_for_implementation",
-                          task_id="FC-001", objective="work")
+    control_before = set_control_directive(
+        world, turn="claude", status="ready_for_implementation",
+        task_id="FC-001", objective="work")
     r = run_worker(world, mock=MOCK_GOOD)
     assert r.returncode == 0, r.stderr
     assert "exported state validated as a complete handoff" in r.stderr
-    assert "control now reads product_owner/awaiting_review" in r.stderr
+    assert "handoff now reads product_owner/awaiting_review" in r.stderr
 
-    ctl = world["tmp"] / "readback"
-    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
-    state = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    ho = world["tmp"] / "readback"
+    sh("git", "clone", "-q", "--branch", "handoff", str(world["remote"]), str(ho))
+    state = json.loads((ho / ".frankenstein" / "STATE.json").read_text())
     published = sh("git", "ls-remote", str(world["remote"]),
                    "refs/heads/claude/FC-001-work").stdout.split()[0]
     assert state["turn"] == "product_owner"
     assert state["status"] == "awaiting_review"
     assert state["last_actor"] == "claude"
     assert state["implementation_commit"] == published
-    # and the next poll must NOT re-authorize a run
+
+    ctl = world["tmp"] / "readback-ctl"
+    sh("git", "clone", "-q", "--branch", "control", str(world["remote"]), str(ctl))
+    assert git("rev-parse", "HEAD", cwd=ctl) == control_before, \
+        "control moved; acceptance is the Product Owner's to write, not Claude's"
+
+    # The next poll must NOT re-run. Control still says ready_for_implementation
+    # — the Product Owner has not reviewed yet — so the ONLY thing standing
+    # between this and an endless loop is the handoff token.
     marker = world["tmp"] / "REAUTHORIZED"
     again = run_worker(world, mock=f'touch "{marker}"')
-    assert not marker.exists(), "the handoff re-authorized another autonomous run"
+    assert not marker.exists(), "the same authorization ran a second time"
     assert "NO-OP" in again.stderr
+    assert "already answers control" in again.stderr
 
 
 def test_the_publisher_is_the_authority_for_implementation_commit():
@@ -2199,3 +2230,127 @@ def test_the_probe_verdict_never_passes_on_a_containment_failure(world):
     assert 'RESULT: NOT READY — see the FAIL lines above' in c
     assert 'if [ "$PROBE_FAIL" = "0" ]; then' in c, \
         "the verdict must be driven by PROBE_FAIL, not by which section failed"
+
+
+# ══ 8. the control / handoff separation ════════════════════════════════
+# Codex is the Product Owner and owns `control`. The crux of the split: an
+# implementation agent that can write `control` can write `status: accepted`
+# and release its own work. So the worker publishes to `handoff` and control
+# is read-only to it — consumed for the directive, never produced.
+
+
+@pytest.mark.parametrize("ref", ["production", "control", "main", "master"])
+def test_pre_push_hook_rejects_every_protected_ref(tmp_path, ref):
+    """Behavioral: run the hook the worker installs against each ref."""
+    m = re.search(r"<<'HOOKEOF'\n(.*?)\nHOOKEOF\n", WORKER.read_text(), re.S)
+    assert m, "could not locate the pre-push hook heredoc"
+    hook = tmp_path / "pre-push"
+    hook.write_text(m.group(1))
+    hook.chmod(0o755)
+    r = subprocess.run(
+        ["bash", str(hook)],
+        input=f"refs/heads/claude/FC-001-work aaa refs/heads/{ref} bbb\n",
+        capture_output=True, text=True, timeout=30)
+    assert r.returncode != 0, f"hook allowed a push to {ref}"
+    assert "REFUSED" in r.stderr
+
+    ok = subprocess.run(
+        ["bash", str(hook)],
+        input="refs/heads/handoff aaa refs/heads/handoff " + "0" * 40 + "\n",
+        capture_output=True, text=True, timeout=30)
+    assert ok.returncode == 0, "hook blocked a legitimate handoff push"
+
+
+def test_worker_source_contains_no_control_write():
+    c = executable(WORKER)
+    assert "HEAD:$CONTROL_BRANCH" not in c, "the worker still pushes control"
+    assert "refs/heads/$CONTROL_BRANCH" not in c or "ls-remote" in c
+    for line in c.splitlines():
+        if re.search(r'(^|\s)git\s+[^|;]*\spush\s', line):
+            assert "CONTROL" not in line, f"control write: {line.strip()}"
+
+
+def test_handoff_records_the_implementation_and_its_authorization(world):
+    """4 and 5: the handoff names the exact implementation commit AND the
+    exact control commit that authorized it. The release service re-derives
+    the whole chain from these two facts."""
+    control = set_control_directive(world, turn="claude",
+                                    status="ready_for_implementation",
+                                    task_id="FC-001", objective="work")
+    r = run_worker(world, mock=MOCK_GOOD)
+    assert r.returncode == 0, r.stderr
+
+    impl = sh("git", "ls-remote", str(world["remote"]),
+              "refs/heads/claude/FC-001-work").stdout.split()[0]
+    ho = world["tmp"] / "binding"
+    sh("git", "clone", "-q", "--branch", "handoff", str(world["remote"]), str(ho))
+    f = ho / ".frankenstein"
+    assert (f / "AUTHORIZING_CONTROL_COMMIT").read_text().strip() == control
+    assert (f / "TASK_BRANCH").read_text().strip() == "claude/FC-001-work"
+    state = json.loads((f / "STATE.json").read_text())
+    assert state["implementation_commit"] == impl
+    assert state["authorizing_control_commit"] == control
+    assert state["task_branch"] == "claude/FC-001-work"
+
+    # the same binding travels on the implementation itself
+    tb = world["tmp"] / "binding-branch"
+    sh("git", "clone", "-q", "--branch", "claude/FC-001-work",
+       str(world["remote"]), str(tb))
+    assert (tb / ".frankenstein" / "AUTHORIZING_CONTROL_COMMIT"
+            ).read_text().strip() == control
+
+
+def test_handoff_is_an_orphan_branch(world):
+    """It shares no history with production, so it can never be
+    fast-forwarded into it by accident."""
+    set_control(world, turn="claude", status="ready_for_implementation")
+    assert run_worker(world, mock=MOCK_GOOD).returncode == 0
+
+    probe = world["tmp"] / "orphan-probe"
+    sh("git", "clone", "-q", str(world["remote"]), str(probe))
+    r = subprocess.run(["git", "merge-base", "origin/production", "origin/handoff"],
+                       cwd=probe, capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0 and not r.stdout.strip(), \
+        "handoff shares history with production"
+
+
+def test_a_second_poll_does_not_repeat_an_answered_authorization(world):
+    """Control no longer flips when a run finishes — the Product Owner does
+    that after review. Without the handoff token the worker would re-run the
+    same directive on every poll, forever."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    assert run_worker(world, mock=MOCK_GOOD).returncode == 0
+    first = sh("git", "ls-remote", str(world["remote"]),
+               "refs/heads/handoff").stdout.split()[0]
+
+    marker = world["tmp"] / "RERAN"
+    again = run_worker(world, mock=f'touch "{marker}"')
+    assert not marker.exists(), "the worker re-ran an authorization it had answered"
+    assert again.returncode == 0
+    assert "already answers control" in again.stderr
+    assert sh("git", "ls-remote", str(world["remote"]),
+              "refs/heads/handoff").stdout.split()[0] == first
+
+
+def test_a_new_control_commit_authorizes_a_new_run(world):
+    """The token must not wedge the loop shut: when the Product Owner moves
+    control, the worker runs again and the handoff moves forward."""
+    set_control_directive(world, turn="claude", status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    assert run_worker(world, mock=MOCK_GOOD).returncode == 0
+    first = sh("git", "ls-remote", str(world["remote"]),
+               "refs/heads/handoff").stdout.split()[0]
+
+    set_control_directive(world, turn="claude", status="changes_requested",
+                          task_id="FC-001", objective="work, corrected")
+    assert run_worker(world, mock=MOCK_GOOD).returncode == 0
+    second = sh("git", "ls-remote", str(world["remote"]),
+                "refs/heads/handoff").stdout.split()[0]
+    assert second != first, "the corrected run published no new handoff"
+
+    probe = world["tmp"] / "handoff-history"
+    sh("git", "clone", "-q", "--branch", "handoff", str(world["remote"]), str(probe))
+    assert sh("git", "merge-base", "--is-ancestor", first, second,
+              cwd=probe, check=False).returncode == 0, \
+        "the handoff branch was rewritten rather than appended to"

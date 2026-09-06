@@ -7,17 +7,30 @@ non-interactively against an isolated clone.
 **It is not enabled.** The systemd units are templates, and the worker refuses
 to run unless `~/.frankenstein/agent/ENABLED` exists.
 
-## Three branches
+## Four branches
 
 | branch | who moves it | deploys? | contents |
 |---|---|---|---|
-| `production` | `promote.sh`, after PO acceptance | **yes** — the only branch the deploy poller watches | product code |
-| `control` | Product Owner (and the worker's handoff) | never | `.frankenstein/` only |
-| `claude/FC-###-work` | the worker | never | implementation |
+| `production` | the deterministic release service, after PO acceptance | **yes** — the only branch the deploy poller watches | product code |
+| `control` | the Product Owner, **only** | never | `.frankenstein/` only |
+| `handoff` | this worker, **only** | never | implementation output |
+| `claude/FC-###-work` | this worker | never | implementation |
 
-`control` is an **orphan** branch sharing no history with `production`. It
-therefore cannot be fast-forwarded into production by accident, a merge would
-be unmistakable, and a directive never requires touching production to write.
+`control` and `handoff` are **orphan** branches sharing no history with
+`production`. Neither can be fast-forwarded into production by accident, a
+merge would be unmistakable, and neither requires touching production to write.
+
+### The worker does not write `control`
+
+This is the crux of the separation, not a detail of it. **An implementation
+agent that can write `control` can write `status: accepted` and release its own
+work.** So control is read-only here: consumed for the directive, never
+produced. The worker publishes to `handoff`, and the Product Owner — the only
+actor a ruleset lets write `control` — reads that and decides.
+
+The worker's `pre-push` hooks refuse `control` as well as
+`production`/`main`/`master`, and a test asserts that no `git push` in the
+source names the control branch.
 
 ## Wake condition
 
@@ -311,20 +324,48 @@ That last group is a safety property, not bookkeeping. A run that left
 `implementation_commit` is the publisher's to set, and it sets it to the exact
 commit it imported and verified.
 
-Only then is the task ref pushed. After the handoff lands, the worker re-reads
-the control commit it just created and asserts it says
-`product_owner / awaiting_review / <implementation SHA> / claude`; anything else
-fails the run loudly rather than leaving control in a state nobody checked. The handoff is written from a **fresh control
-clone**, with content read from the publisher's object database. Both trusted
-clones carry a `pre-push` hook rejecting `production`/`main`/`master` and any
-non-fast-forward push, detected by `merge-base --is-ancestor`.
+Only then is the task ref pushed, and then the handoff. The handoff is written
+from a **fresh clone the child never saw**, with content read from the
+publisher's object database, and it carries four files:
+
+| file | why |
+|---|---|
+| `STATE.json` | the handoff state, with `implementation_commit` stamped by the publisher |
+| `IMPLEMENTATION_HANDOFF.md` | what Claude did, and its declared deviations |
+| `AUTHORIZING_CONTROL_COMMIT` | **the binding** — which control commit authorized this work |
+| `TASK_BRANCH` | which branch carries it |
+
+The release service re-derives the entire *directive → implementation →
+acceptance* chain from those last two facts, so a later acceptance cannot name
+a substituted commit.
+
+After the handoff lands, the worker re-reads what it just wrote and asserts it
+says `product_owner / awaiting_review / <implementation SHA> / claude`;
+anything else fails the run loudly rather than leaving a state nobody checked.
+Every trusted clone carries a `pre-push` hook rejecting
+`production`/`control`/`main`/`master` and any non-fast-forward push, detected
+by `merge-base --is-ancestor`.
+
+### One authorization, one run
+
+Control no longer flips to `awaiting_review` when a run finishes — the Product
+Owner does that, after reviewing. Nothing else would stop the next poll
+re-running the same directive forever, so the completion token is the worker's
+**own** branch: before starting, it reads `handoff`'s
+`AUTHORIZING_CONTROL_COMMIT` and no-ops if that already equals the control
+commit authorizing this run.
+
+Server-side, so it survives losing this host's state, and readable by the
+Product Owner. A new directive or a `changes_requested` produces a new control
+commit, which is exactly what makes the next run legitimate.
 
 May: edit files in its workspace, run tests, commit.
 
-May **not**: push or merge production, run `promote.sh` / `rollback.sh` /
-`deploy.sh`, touch systemd, force push, use `sudo`, issue a directive, or change
-scope. The worker source contains none of those invocations (asserted by test),
-and every push comes from `$PUB_DIR` or `$CONTROL_DIR`.
+May **not**: push or merge production, **write `control`**, mark its own work
+accepted or deploy-approved, run `promote.sh` / `rollback.sh` / `deploy.sh` /
+`release-service.sh`, touch systemd, force push, use `sudo`, issue a directive,
+or change scope. The worker source contains none of those invocations (asserted
+by test), and every push comes from `$PUB_DIR` or `$HANDOFF_DIR`.
 
 ### How this is tested
 
@@ -350,7 +391,8 @@ Behaviorally, not by reading the source. The child is handed real attacks:
 | connect to `::1`, `fe80::1`, `fc00::1` | all refused |
 | use the egress channel for `github.com`, `localhost:5432`, a LAN address | `403` from the proxy in every case |
 | rewrite `scripts/test.sh` to dump its environment, read the credential file, and phone home | no Claude credential in the environment or on disk, no proxy configured, no route out, decoy listener untouched |
-| leave `turn: claude`, or `status: accepted`, or rewrite `directive_commit`, or rename the task, or bump `protocol_version`, or claim the Product Owner acted | nothing published, control unmoved |
+| leave `turn: claude`, or `status: accepted`, or rewrite `directive_commit`, or rename the task, or bump `protocol_version`, or claim the Product Owner acted | nothing published, control unmoved, no handoff branch created |
+| push `control` from any trusted clone | refused by the `pre-push` hook; no `git push` in the source names it |
 | omit `IMPLEMENTATION_HANDOFF.md`, or omit its Deviations section | nothing published, control unmoved |
 | a CLI installed at `~/.npm-global/bin/…` | still executable by the child, still invisible to verification |
 | rewrite the host's `~/.claude.json` | the child rewrites its own copy; the host's file is byte-identical afterwards |
@@ -367,12 +409,10 @@ is not containment, it is an outage.
   recorded at the start.
   - *Stage 1*, after verification: control is re-fetched; if it moved, the run
     stops.
-  - *Stage 2*, in the control clone immediately before writing the handoff:
-    checked again, because the Product Owner can move control during the
-    task-branch push that sits between the two. The clone is then reset to the
-    **authorizing commit explicitly**, never to `origin/control` — resetting
-    onto whatever origin now points at would rebase this run's stale state on
-    top of newer Product Owner state and fast-forward over it cleanly.
+  - *Stage 2*, immediately before writing the handoff: checked again, because
+    the Product Owner can move control during the task-branch push that sits
+    between the two. This is now a **read-only comparison** — the worker writes
+    no control state, so there is no clone to reset and no push to race.
   - The handoff push is non-forcing, so a race past both checks still cannot
     clobber.
 
@@ -398,8 +438,8 @@ Failure results recorded in `runs.jsonl`: `no_sandbox`, `no_workspace_mount`,
 `publisher_clone_failed`, `bundle_invalid`, `impl_import_failed`,
 `impl_mismatch`, `impl_not_descendant`, `authorizing_snapshot_missing`,
 `handoff_missing`, `handoff_incomplete`, `handoff_state_invalid`,
-`published_state_wrong`, `push_failed`, `control_clone_failed`,
-`control_fetch_failed`, `control_conflict_late`, `control_reset_failed`,
+`published_state_wrong`, `push_failed`, `handoff_clone_failed`,
+`handoff_checkout_failed`, `control_fetch_failed`, `control_conflict_late`,
 `state_write_failed`, `handoff_commit_failed`, `handoff_push_rejected` — plus
 `dry_run` and `success`.
 
@@ -497,7 +537,7 @@ FRANKENSTEIN_MOCK_CLAUDE='...' bash scripts/claude-worker.sh   # inject a mock
 `--dry-run` exercises control fetch → validation → wake decision → isolated
 clone → control snapshot → sandboxed mock invocation → independent test re-run
 → the stage-1 token check, and then **stops before any push**. It reports what
-it would have published — task branch, implementation SHA, control transition —
+it would have published — task branch, implementation SHA, handoff branch —
 and records the run as `dry_run`. A test snapshots every ref on the remote
 before and after and asserts they are identical.
 

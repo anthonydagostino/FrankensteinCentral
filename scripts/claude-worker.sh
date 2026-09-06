@@ -8,10 +8,15 @@
 #   bash scripts/claude-worker.sh --dry-run    full flow, mocked Claude, NO pushes
 #   bash scripts/claude-worker.sh --probe      containment + Claude-auth self test
 #
-# ── THREE BRANCHES ───────────────────────────────────────────────────────
+# ── FOUR BRANCHES ────────────────────────────────────────────────────────
 #   production          only PO-accepted code; the ONLY branch the deploy
 #                       poller watches. This worker NEVER touches it.
-#   control             PO <-> Claude orchestration state. Never deploys.
+#   control             Product Owner state. READ-ONLY to this worker: it
+#                       consumes the directive and never writes a byte back.
+#                       An agent that can write control can write
+#                       `status: accepted` and release its own work.
+#   handoff             implementation output. The ONE ref besides the task
+#                       branch that this worker publishes.
 #   claude/FC-###-work  implementation work. Never deploys.
 #
 # ── THE ONE RULE THAT SHAPES EVERYTHING BELOW ────────────────────────────
@@ -40,6 +45,7 @@ AGENT_DIR="${FRANKENSTEIN_AGENT_DIR:-$HOME/.frankenstein/agent}"
 CLONE_ROOT="${FRANKENSTEIN_WORKTREE_ROOT:-$HOME/.frankenstein/worktrees}"
 PROD_DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
 CONTROL_BRANCH="${FRANKENSTEIN_CONTROL_BRANCH:-control}"
+HANDOFF_BRANCH="${FRANKENSTEIN_HANDOFF_BRANCH:-handoff}"
 PROD_BRANCH="${FRANKENSTEIN_BRANCH:-production}"
 MAX_RUNTIME="${FRANKENSTEIN_CLAUDE_TIMEOUT:-3600}"
 CLAUDE_BIN="${FRANKENSTEIN_CLAUDE_BIN:-claude}"
@@ -784,6 +790,22 @@ case "$STATUS" in
   *) noop "turn=claude but status=$STATUS is not an authorized start state" ;;
 esac
 
+# ── has this exact authorization already been answered? ──────────────────
+# The worker no longer writes control, so control does NOT flip to
+# awaiting_review when a run finishes — the Product Owner does that, after
+# reviewing. Nothing else would stop the next poll re-running the same
+# authorization forever, so the completion token is the worker's OWN branch:
+# `handoff` records the control commit that authorized the work it carries.
+# Server-side, so it survives losing this host's state, and readable by the
+# Product Owner. Control moving (a new directive, or changes_requested)
+# produces a new commit, which is what makes the next run legitimate.
+HANDOFF_TIP="$(agit rev-parse --verify --quiet "origin/$HANDOFF_BRANCH^{commit}")"
+if [ -n "$HANDOFF_TIP" ]; then
+  ANSWERED="$(agit show "$HANDOFF_TIP:.frankenstein/AUTHORIZING_CONTROL_COMMIT" 2>/dev/null | tr -d ' \n\r')"
+  [ "$ANSWERED" = "$CONTROL_COMMIT" ] \
+    && noop "handoff ${HANDOFF_TIP:0:7} already answers control ${CONTROL_COMMIT:0:7} — awaiting Product Owner review"
+fi
+
 TASK_BRANCH="claude/${TASK_ID}-work"
 log "AUTHORIZED: task=$TASK_ID status=$STATUS control=${CONTROL_COMMIT:0:7} branch=$TASK_BRANCH"
 
@@ -907,8 +929,11 @@ PROMPT="You are the autonomous implementation worker for FrankensteinCentral.
 9. Commit with a [CLAUDE] $TASK_ID message. Do NOT push — you have no remote.
 10. Stop.
 
-You may NOT push or merge production, run promote.sh, rollback.sh or deploy.sh,
-modify systemd units, force push, use sudo, or issue a directive."
+You may NOT push or merge production, write the control branch, mark your own
+work accepted or deploy-approved, run promote.sh, rollback.sh, deploy.sh or
+release-service.sh, modify systemd units, force push, use sudo, or issue a
+directive. Acceptance is the Product Owner's alone; release is a deterministic
+service's alone."
 
 CLAUDE_RC=0
 if [ "$MODE" = "dry-run" ] || [ -n "$MOCK_CLAUDE" ]; then
@@ -1032,7 +1057,7 @@ if [ "$MODE" = "dry-run" ]; then
   log "DRY RUN — nothing pushed. WOULD publish:"
   log "  task branch:        $TASK_BRANCH at ${EXPORTED_SHA:0:7}"
   log "  implementation SHA: $EXPORTED_SHA"
-  log "  control transition: $STATUS -> awaiting_review on ${CONTROL_COMMIT:0:7}"
+  log "  handoff branch:     $HANDOFF_BRANCH -> awaiting_review (authorized by ${CONTROL_COMMIT:0:7})"
   log "production, control and remote task branches are unchanged."
   exit 0
 fi
@@ -1044,7 +1069,7 @@ install_hook() {
   cat > "$hook" <<'HOOKEOF'
 #!/usr/bin/env bash
 # Installed by claude-worker.sh in a clone the child never had access to.
-#   1. production/main/master may never be pushed from here
+#   1. production/control/main/master may never be pushed from here
 #   2. no push may be a force push (non-fast-forward), detected by ancestry
 ZERO=0000000000000000000000000000000000000000
 status=0
@@ -1052,7 +1077,12 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/production|refs/heads/main|refs/heads/master)
       echo "pre-push: REFUSED — this clone may not push $remote_ref" >&2
-      echo "pre-push: production promotion is a Product Owner action." >&2
+      echo "pre-push: production promotion is the release service's action." >&2
+      status=1; continue ;;
+    refs/heads/control)
+      echo "pre-push: REFUSED — this clone may not push $remote_ref" >&2
+      echo "pre-push: control is Product Owner state. An implementation agent" >&2
+      echo "pre-push: that can write control can accept its own work." >&2
       status=1; continue ;;
   esac
   if [ -n "$remote_sha" ] && [ "$remote_sha" != "$ZERO" ] && [ "$local_sha" != "$ZERO" ]; then
@@ -1149,41 +1179,75 @@ git -C "$PUB_DIR" push --quiet origin "refs/frankenstein/impl:refs/heads/$TASK_B
   || { record_run "push_failed" ""; fail "pushing $TASK_BRANCH failed — no handoff published"; }
 log "pushed $TASK_BRANCH at ${IMPL_COMMIT:0:7} from the clean publisher"
 
-CONTROL_DIR="$AGENT_DIR/control-clone"
-rm -rf "$CONTROL_DIR"
-git clone --quiet --branch "$CONTROL_BRANCH" --single-branch "$REPO_URL" "$CONTROL_DIR" \
-  || { record_run "control_clone_failed" ""; fail "could not clone the control branch"; }
-install_hook "$CONTROL_DIR"
-git -C "$CONTROL_DIR" fetch --quiet origin "$CONTROL_BRANCH" \
-  || { record_run "control_fetch_failed" ""; fail "could not fetch control before publishing"; }
+# ══ THE HANDOFF ZONE — implementation output, never Product Owner state ══
+# The worker publishes to `handoff`. It does NOT write `control`.
+#
+# That is the crux of the whole separation: an implementation agent that can
+# write control can write `status: accepted` and release its own work. Control
+# is read-only to this script — consumed for the directive, never produced.
+HANDOFF_DIR="$AGENT_DIR/handoff-clone"
+rm -rf "$HANDOFF_DIR"
+git init --quiet "$HANDOFF_DIR" \
+  || { record_run "handoff_clone_failed" ""; fail "could not create the handoff clone"; }
+git -C "$HANDOFF_DIR" remote add origin "$REPO_URL" \
+  || { record_run "handoff_clone_failed" ""; fail "could not configure the handoff clone"; }
+install_hook "$HANDOFF_DIR"
 
-# ── concurrency token, stage 2 ───────────────────────────────────────────
-# Between stage 1 and here the Product Owner may have moved control — the task
-# branch push sits in that window. Re-check, and reset to the AUTHORIZING
-# commit explicitly rather than to whatever origin now points at: resetting
-# onto origin would rebase this run's stale state on top of newer Product
-# Owner state and then fast-forward cleanly over it.
-CONTROL_AT_PUBLISH="$(git -C "$CONTROL_DIR" rev-parse --verify --quiet "origin/$CONTROL_BRANCH^{commit}")"
+# ── concurrency token, stage 2 — now a READ, not a push race ─────────────
+# Between stage 1 and here the Product Owner may have moved control: the task
+# branch push sits in that window. The check survives the move to `handoff`,
+# but it is now a read-only comparison, because there is no longer any control
+# write that could rebase stale state onto newer Product Owner state.
+CONTROL_AT_PUBLISH="$(git -C "$HANDOFF_DIR" ls-remote origin "refs/heads/$CONTROL_BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
+[ -n "$CONTROL_AT_PUBLISH" ] || {
+  record_run "control_fetch_failed" ""
+  fail "could not re-read control before publishing the handoff"; }
 [ "$CONTROL_AT_PUBLISH" = "$CONTROL_COMMIT" ] || {
   record_run "control_conflict_late" ""
   fail "control moved to ${CONTROL_AT_PUBLISH:0:7} before publication (authorized ${CONTROL_COMMIT:0:7}). Newer Product Owner state preserved; no handoff published."; }
-git -C "$CONTROL_DIR" reset --hard --quiet "$CONTROL_COMMIT" \
-  || { record_run "control_reset_failed" ""; fail "could not reset the control clone to the authorizing commit"; }
 
-# The handoff content is read from the PUBLISHER's object database, not from
-# the child's workspace.
+# ── the handoff branch is an ORPHAN, for the reason control is ───────────
+# Sharing no history with production, it can never be fast-forwarded into
+# production by accident, and a merge would be unmistakable.
+HANDOFF_BASE=""
+if git -C "$HANDOFF_DIR" fetch --quiet --no-tags origin \
+     "refs/heads/$HANDOFF_BRANCH:refs/remotes/origin/$HANDOFF_BRANCH" 2>/dev/null; then
+  HANDOFF_BASE="$(git -C "$HANDOFF_DIR" rev-parse --verify --quiet \
+    "refs/remotes/origin/$HANDOFF_BRANCH^{commit}")"
+fi
+if [ -n "$HANDOFF_BASE" ]; then
+  git -C "$HANDOFF_DIR" checkout --quiet -B "$HANDOFF_BRANCH" "$HANDOFF_BASE" \
+    || { record_run "handoff_checkout_failed" ""; fail "could not check out the existing handoff branch"; }
+else
+  # An unborn HEAD in a fresh repository: the first commit is a root commit.
+  git -C "$HANDOFF_DIR" checkout --quiet -b "$HANDOFF_BRANCH" \
+    || { record_run "handoff_checkout_failed" ""; fail "could not create the handoff branch"; }
+fi
+
+# ── content comes from the PUBLISHER's object database ───────────────────
+# Not from the child's workspace, which the trusted host never reads through.
+rm -rf "$HANDOFF_DIR/.frankenstein"
+mkdir -p "$HANDOFF_DIR/.frankenstein"
 for f in STATE.json IMPLEMENTATION_HANDOFF.md; do
   git -C "$PUB_DIR" show "refs/frankenstein/impl:.frankenstein/$f" \
-    > "$CONTROL_DIR/.frankenstein/$f" 2>/dev/null
+    > "$HANDOFF_DIR/.frankenstein/$f" 2>/dev/null \
+    || { record_run "state_write_failed" ""; fail "could not read .frankenstein/$f from the verified implementation"; }
 done
-python3 - "$CONTROL_DIR/.frankenstein/STATE.json" "$IMPL_COMMIT" <<'PY'
+# The binding the release service and the Product Owner both rely on: which
+# control commit authorized this run, and which branch carries the work.
+printf '%s\n' "$CONTROL_COMMIT" > "$HANDOFF_DIR/.frankenstein/AUTHORIZING_CONTROL_COMMIT"
+printf '%s\n' "$TASK_BRANCH"    > "$HANDOFF_DIR/.frankenstein/TASK_BRANCH"
+
+python3 - "$HANDOFF_DIR/.frankenstein/STATE.json" "$IMPL_COMMIT" "$TASK_BRANCH" "$CONTROL_COMMIT" <<'PY'
 import json, sys, datetime
-path, impl = sys.argv[1:3]
+path, impl, branch, control = sys.argv[1:5]
 try:
     doc = json.load(open(path))
 except Exception:
     raise SystemExit(1)
 doc["implementation_commit"] = impl      # the publisher is the authority here
+doc["task_branch"] = branch
+doc["authorizing_control_commit"] = control
 doc["turn"] = "product_owner"
 doc["status"] = "awaiting_review"
 doc["last_actor"] = "claude"
@@ -1192,29 +1256,30 @@ doc["updated_at"] = datetime.datetime.now(
 json.dump(doc, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 PY
-[ $? -eq 0 ] || { record_run "state_write_failed" ""; fail "could not stamp the implementation commit into STATE.json"; }
+[ $? -eq 0 ] || { record_run "state_write_failed" ""; fail "could not stamp the implementation commit into the handoff STATE.json"; }
 
 HANDOFF_COMMIT=""
-if git -C "$CONTROL_DIR" diff --quiet -- .frankenstein; then
-  log "control already carries this handoff — nothing to publish"
+git -C "$HANDOFF_DIR" add -A .frankenstein
+if git -C "$HANDOFF_DIR" diff --cached --quiet; then
+  log "handoff already carries this result — nothing to publish"
 else
-  git -C "$CONTROL_DIR" add .frankenstein
-  git -C "$CONTROL_DIR" -c user.name="Claude Worker" -c user.email="noreply@anthropic.com" \
+  git -C "$HANDOFF_DIR" -c user.name="Claude Worker" -c user.email="noreply@anthropic.com" \
       commit --quiet -m "[CLAUDE-HANDOFF] $TASK_ID ready for review
 
 Implementation commit: $IMPL_COMMIT
 Task branch: $TASK_BRANCH
 Authorizing control commit: $CONTROL_COMMIT" \
     || { record_run "handoff_commit_failed" ""; fail "could not commit the handoff"; }
-  # Non-forcing: a race that slipped past both checks still cannot clobber.
-  git -C "$CONTROL_DIR" push --quiet origin "HEAD:$CONTROL_BRANCH" \
-    || { record_run "handoff_push_rejected" ""; fail "publishing the handoff was rejected (control moved). Newer Product Owner state preserved."; }
-  HANDOFF_COMMIT="$(git -C "$CONTROL_DIR" rev-parse HEAD)"
-  log "published handoff ${HANDOFF_COMMIT:0:7} to $CONTROL_BRANCH"
+  # Non-forcing, and the pre-push hook refuses production, control, main and
+  # master from this clone regardless of what is asked of it.
+  git -C "$HANDOFF_DIR" push --quiet origin "HEAD:$HANDOFF_BRANCH" \
+    || { record_run "handoff_push_rejected" ""; fail "publishing the handoff was rejected"; }
+  HANDOFF_COMMIT="$(git -C "$HANDOFF_DIR" rev-parse HEAD)"
+  log "published handoff ${HANDOFF_COMMIT:0:7} to $HANDOFF_BRANCH"
 fi
 
-# ── read back what actually landed on control ────────────────────────────
-PUBLISHED_STATE="$(git -C "$CONTROL_DIR" show "HEAD:.frankenstein/STATE.json" 2>/dev/null \
+# ── read back what actually landed on handoff ────────────────────────────
+PUBLISHED_STATE="$(git -C "$HANDOFF_DIR" show "HEAD:.frankenstein/STATE.json" 2>/dev/null \
   | python3 -c "
 import json, sys
 try:
@@ -1226,8 +1291,9 @@ print('%s|%s|%s|%s' % (d.get('turn'), d.get('status'),
 " 2>/dev/null)"
 [ "$PUBLISHED_STATE" = "product_owner|awaiting_review|$IMPL_COMMIT|claude" ] || {
   record_run "published_state_wrong" ""
-  fail "the control commit that was just written reads '$PUBLISHED_STATE', not 'product_owner|awaiting_review|$IMPL_COMMIT|claude'. Investigate before the next poll."; }
-log "control now reads product_owner/awaiting_review at ${IMPL_COMMIT:0:7}"
+  fail "the handoff commit that was just written reads '$PUBLISHED_STATE', not 'product_owner|awaiting_review|$IMPL_COMMIT|claude'. Investigate before the next poll."; }
+log "handoff now reads product_owner/awaiting_review at ${IMPL_COMMIT:0:7}"
+log "control is unchanged at ${CONTROL_COMMIT:0:7} — acceptance is the Product Owner's to write"
 
 record_run "success" "$HANDOFF_COMMIT"
 log "DONE task=$TASK_ID impl=${IMPL_COMMIT:0:7} handoff=${HANDOFF_COMMIT:0:7} — production untouched"
