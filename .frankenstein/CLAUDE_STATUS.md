@@ -1,109 +1,122 @@
-# Unattended Release Design — Report to the Product Owner
+# Product Owner Write Path — Measured Failure and Revised Design
 
 Written: 2026-09-06
 Author: Claude (protocol agent, OptiPlex)
-Re: "Anthony is NOT the routine production operator"
+Re: ChatGPT's `403 Resource not accessible by integration` on `control`
 
-**Status report. Authorizes nothing.** The full proposal is
-`.frankenstein/RELEASE_AUTOMATION.md`; this is the summary and the
-confirmations. `ENFORCEMENT_PROCEDURE.md` is now marked superseded and must not
-be executed.
+**Status report. Authorizes nothing.** Revised design is in
+`.frankenstein/RELEASE_AUTOMATION.md` §6. Nothing was executed.
 
 ---
 
-## What the correction changed
+## The measurement stands, and it is the useful kind of failure
 
-Rev 2 optimised for "no agent can move production" and reached that by making
-Anthony the only actor who could — which is precisely the wrong end state. The
-new design splits three authorities that rev 2 had collapsed:
+ChatGPT's integration is **read-only for repository contents**. The probe was
+worth running precisely because it failed: the previous design named ChatGPT as
+the `control` write actor on the strength of a stated capability, and the
+capability is not there. Had this been discovered after credentials were
+created and Anthony's token removed from the box, the loop would have been
+half-built and stuck.
 
-    implementation  !=  acceptance  !=  release credential
-    Claude              ChatGPT         fcrelease (deterministic script)
+`control` is unchanged at `d0d97d1`. `PROBE.md` does not exist. **No part of
+this design now assumes ChatGPT can write anything** unless a later measurement
+says otherwise.
 
-Claude implements and can never release. ChatGPT accepts and never touches a
-credential that moves production. A fixed script with no model in it performs
-the mechanical promotion of an already-accepted SHA. Anthony is in none of it.
+## What this does and does not invalidate
 
-**Answers to items 1–13 are in `RELEASE_AUTOMATION.md`.** Three findings from
-the read-only pass are worth surfacing here, because they change decisions:
+It invalidates the **transport**, not the logic. The release condition (§4) only
+requires that *someone the ruleset trusts* wrote acceptance to `control`. The
+deterministic release service, the nine-point fail-closed check, the
+directive → implementation → acceptance binding, the append-only rollback, the
+Unix identity split and the worker's `handoff` change are all unaffected.
 
-**A. The worker currently writes `control` — this is the crux (item 9).**
-`claude-worker.sh` publishes its handoff by pushing `HEAD:$CONTROL_BRANCH`,
-stamping `implementation_commit` and `status: awaiting_review` into
-`STATE.json`. A worker that can write `control` can write `status: accepted`
-and release itself. It must publish to a `handoff` branch instead: ~20–30 lines
-plus tests, plus extending its pre-push hook to refuse `control`. Nothing else
-in the worker changes.
+What changed is who can be that trusted writer.
 
-**B. I cannot determine what actor ChatGPT writes as, and will not guess
-(item 6).** ChatGPT has **never written to this repository** — across every ref
-there are exactly three commit identities: Claude, Anthony's local git, and one
-web commit (the repo's initial commit). And this box cannot enumerate GitHub
-Apps: `/user/installations` returns 403 without an App-authorized token. So the
-question is empirically open. **Proposed measurement: ask ChatGPT to commit one
-throwaway line to `control`**; I read `author.login`, `committer.login` and the
-signature, report which actor type it is, and the bypass list follows from that.
-Cheap, reversible, and it unblocks the whole design. In every outcome, protocol
-Claude gets no `control` write and therefore cannot impersonate the Product
-Owner.
+## Next measurement — three probes, ten minutes
 
-**C. A deploy key can never be the production bypass.** Ruleset bypass by
-`DeployKey` requires `actor_id: null` — it matches *every* deploy key on the
-repo. So the release actor must be a nameable `User` (a machine account) or an
-App. The upside: since no deploy key belongs in any bypass list, **one** deploy
-key now suffices for all Claude lanes, one fewer machine account than rev 2.
+**A GitHub App's `Contents` permission is separate from `Issues`, and separate
+again from gists.** A contents 403 tells us nothing about the others. Ask
+ChatGPT to attempt each and report the exact error:
 
-## The resulting shape
+1. **open an issue** on the repository
+2. **comment on an existing issue** — #10 will do
+3. **create a gist**
 
-| actor | may push | may not |
+This matters more than it sounds: **issues are enabled here and already in
+use** — ten issues exist, all authored by `anthonydagostino`. If issue writes
+are permitted, a Product Owner write channel already exists and needs no new
+credential at all.
+
+## The three paths, in preference order
+
+**Path A — restore write access to ChatGPT. Recommended.** One browser action by
+Anthony: GitHub → Settings → Applications → Installed GitHub Apps → the
+ChatGPT/OpenAI app → Configure → grant **Contents: Read and write** for this
+repository (or re-authorize the connector from ChatGPT's side with write scope).
+If it works, **the design at `d0d97d1` stands unchanged** — no courier, no extra
+machine account, no extra Unix user. This is exactly the class of rare one-time
+account action the Product Owner already allowed as an exception.
+
+**Path B — issues as the channel, plus a deterministic courier.** If contents
+stay read-only but issues are writable: the Product Owner writes a strict fenced
+block in a GitHub issue; `po-courier.sh` runs as Unix user `fcpo`, with no
+Claude and no model in it, and transcribes it into `control` in the two-commit
+order. It requires `issue.user.login` to equal the Product Owner's account
+exactly — the repo is public, so every other author is ignored silently — and
+fails closed on anything malformed. It **transcribes only**: it cannot originate
+a directive and cannot accept an implementation. Acceptance authority stays with
+the Product Owner's GitHub account. Cost: one machine account, one Unix user,
+~150 lines plus tests.
+
+**Path C — the Product Owner function moves onto the box. Not recommended.** A
+separate Claude lane with its own credential. Credential separation would hold;
+judgement independence would not — Claude would be accepting Claude. This is a
+product decision about who the Product Owner *is*, not a technical one, so I am
+flagging it rather than proposing it.
+
+**Rejected: Anthony relays acceptance.** Trivial, and it is what happens today.
+It contradicts the stated goal.
+
+## How the four requirements survive each path
+
+| requirement | Path A | Path B |
 |---|---|---|
-| Claude lanes — one deploy key, users `fcagent` / `fcprotocol` | task branches, `handoff` | `control`, `production` |
-| Product Owner actor (from the §6 probe) | `control` | `production` |
-| `frankenstein-release-bot`, held by Unix user `fcrelease` | `production` | `control` |
-| Anthony (admin) | break-glass only | — routine operations |
+| Anthony does not relay routine messages | ✓ | ✓ |
+| implementation Claude cannot impersonate acceptance | ✓ — no `control` write, ever | ✓ — same, and the courier's credential is under a Unix user Claude lanes cannot read |
+| release automation stays deterministic | ✓ unchanged | ✓ unchanged |
+| zero routine DevOps for Anthony after setup | ✓ | ✓ |
 
-The release service reads `control` anonymously (public repo, no credential
-needed to read), evaluates a nine-point condition, and either pushes one exact
-SHA fast-forward or does nothing. It binds *directive → implementation →
-acceptance* through the worker's authoritative control snapshot, so an accepted
-SHA cannot be swapped for a different descendant. Rollback runs the same gate:
-the Product Owner writes `rollback_to`, the service builds the roll-forward
-commit deterministically, production stays append-only, no human involved.
+## Honest status until one lands
 
-**The rule everything rests on:** no Claude session runs as `antdag3`. That
-account is in the `docker` group, which is root-equivalent — anything there can
-read the release token regardless of file permissions. Claude lanes run as
-users with neither `sudo` nor `docker`.
+Product Owner decisions keep reaching the repository the way this document
+did — through Anthony pasting them. That is the status quo Path A or B removes,
+and it is why the §6a probes are the highest-value next action.
 
 ---
 
 ## Confirmations
 
-| # | item | state |
-|---|---|---|
-| 14 | anything executed | **nothing** — no credential, user, ruleset, service, key, or logout. `gh` still logged in as `anthonydagostino`; `~/.ssh` holds no private key; `rulesets` = `[]`; deploy keys = `[]`; remotes unchanged; no `fcagent`/`fcprotocol`/`fcrelease` user exists |
-| 15 | production health | **healthy** — `origin/production` = `9b96bd0`, `running_commit` = `9b96bd0`, `last_result: success`, 17/17 containers running, gateway HTTP 200, poller timer active |
-| 16 | `STATE.json` | **unchanged** — `turn: product_owner`, `status: awaiting_directive`, all commit fields null |
-| 17 | FC-001 | **unissued** — `PRODUCT_DIRECTIVE.md` untouched |
-| 18 | autonomous worker | **disabled** — no `frankenstein-agent` unit installed, no `ENABLED` flag; only `frankenstein-deploy.timer` runs |
+| item | state |
+|---|---|
+| anything executed | **nothing** — no credential, user, ruleset, service, key, logout, or worker activation. `gh` still logged in as `anthonydagostino`; no SSH private keys; `rulesets` = `[]`; deploy keys = `[]`; no `fcagent`/`fcprotocol`/`fcrelease`/`fcpo` user exists |
+| production | **healthy and unchanged** — `9b96bd0` desired and running, `last_result: success` |
+| `STATE.json` | **unchanged** — `turn: product_owner`, `status: awaiting_directive` |
+| FC-001 | **unissued** |
+| autonomous worker | **disabled** — no unit installed, no `ENABLED` flag |
 
-This commit changes only `CLAUDE_STATUS.md`, `RELEASE_AUTOMATION.md`, and a
-superseded banner on `ENFORCEMENT_PROCEDURE.md`.
+This commit changes only `CLAUDE_STATUS.md` and `RELEASE_AUTOMATION.md` §6, §8
+and §13.
 
 ---
 
-## What I would do next, if you agree
+## What I would do next
 
-1. **The §6 probe** — one ChatGPT commit to `control`. Nothing else can be
-   designed correctly until we know what actor that is.
-2. **Steps 1–4 of the migration**, which need no credentials at all: implement
-   the worker's `handoff` change and `release-service.sh` with tests on a task
-   branch, and hand it to you for review. It is inert without a unit and a
-   token, so it can be written, reviewed and even merged long before any
-   identity exists.
-
-That sequencing puts all the code work before any credential work, and leaves
-Anthony's single sitting of account admin as the last step rather than the
-first.
+1. **Run the §6a probes** — ChatGPT tries issue, issue comment, gist. Ten
+   minutes, and it decides between Path A and Path B.
+2. **In parallel, start the code that needs no credentials:** the worker's
+   `handoff` change and `release-service.sh` with tests. Both are inert without
+   a unit and a token, and neither depends on which path wins. That work is
+   currently blocked only because you told me to stop — say the word and it
+   proceeds while the write path is being settled.
 
 Stopping here for your review.

@@ -123,38 +123,102 @@ trust it without judgement.
 To request changes instead, ChatGPT writes `status: changes_requested` and the
 release service does nothing, forever, silently.
 
-## 6. Can ChatGPT's GitHub integration own `control` writes?
+## 6. The Product Owner write path — MEASURED, and it failed
 
-**Unknown, and I will not guess — it must be measured.** What I established
-read-only:
+**Result (2026-09-06): ChatGPT's GitHub integration is READ-ONLY for repository
+contents.** Its attempt to create `.frankenstein/PROBE.md` on `control` at
+`d0d97d1` returned `403 Resource not accessible by integration`. No commit was
+created; `control` is unchanged. **ChatGPT cannot presently be the Product Owner
+write actor**, and nothing in this design may assume otherwise unless its
+permissions are explicitly changed.
 
-- **ChatGPT has never written to this repository.** Across every ref, there are
-  exactly three commit identities: `Claude <noreply@anthropic.com>`,
-  `Anthony D'Agostino <anthonysdagostino@gmail.com>` (local git), and one commit
-  authored by `anthonydagostino` with committer `GitHub` — the repository's
-  *initial commit*, from the web UI. No integration write exists to inspect.
-- **This box cannot enumerate installed GitHub Apps.** `/user/installations`
-  returns `403 — must authenticate with an access token authorized to a GitHub
-  App`, and the repo-level installation endpoint requires a JWT. So I cannot
-  tell from here whether ChatGPT acts as an App, an OAuth app, or as Anthony.
+That invalidates §5's transport, not §5's logic: the release condition still
+depends only on *someone the ruleset trusts* having written acceptance to
+`control`. What changed is who that someone can be.
 
-**Proposed measurement — cheap, reversible, and it decides the design:**
+### 6a. Next measurement — three probes, because permissions are per-scope
 
-> Ask ChatGPT to commit one throwaway file, e.g. `.frankenstein/PROBE.md`
-> containing a single line, to `control`. I then read
-> `author.login`, `committer.login` and `commit.verification` for that commit
-> and report exactly which actor type it presents as. Then delete the file.
+A GitHub App's `Contents` permission is **separate** from `Issues`, and separate
+again from gists. A contents 403 says nothing about the others. Before choosing
+a path, ask ChatGPT to attempt each of these and report the exact error:
 
-The result maps directly onto the bypass list:
+1. **open an issue** on `anthonydagostino/FrankensteinCentral`
+2. **comment on an existing issue** (e.g. #10)
+3. **create a gist**
 
-| what the probe shows | control ruleset bypass | assessment |
-|---|---|---|
-| a GitHub App (`Integration`) | that app, by id | **best** — a distinct, nameable, revocable actor |
-| `anthonydagostino` (`User`) | Anthony's account | **acceptable** — but only because his credential is being removed from the box, so no agent can borrow it |
-| unsigned pushes from an unclear actor | — | stop; use a dedicated PO machine account instead |
+Issues are enabled on this repository and already in use — ten issues exist,
+all authored by `anthonydagostino` — so if issue writes are permitted, a usable
+channel already exists with no new credential at all.
 
-In every outcome, **protocol Claude is never given `control` write**, so it can
-never impersonate the Product Owner. That is the point of §9's worker change.
+### 6b. Path A — restore write access to ChatGPT (smallest; preserves everything)
+
+A one-time browser action by Anthony: GitHub → Settings → Applications →
+Installed GitHub Apps → the ChatGPT/OpenAI app → Configure, and grant
+**Contents: Read and write** for this repository (or re-authorize the connector
+from ChatGPT's side with write scope).
+
+If this works, **the design at `d0d97d1` stands unchanged**: ChatGPT writes
+`control` directly, its App is the named `Integration` bypass actor, and no
+courier, no extra machine account and no extra Unix user are needed.
+
+This is precisely the class of exception the Product Owner already allowed —
+a rare, one-time account action that GitHub requires the account owner to
+perform. **It is the recommended path.**
+
+### 6c. Path B — issues as the write channel, plus a deterministic courier
+
+If Path A is unavailable but issue writes are permitted:
+
+**The Product Owner writes a GitHub issue** containing a strict fenced block —
+a directive, a changes-requested, or an acceptance — in a fixed machine-readable
+schema.
+
+**`scripts/po-courier.sh`** runs as Unix user `fcpo` on a systemd timer. Like
+the release service, it contains **no Claude, no model and no judgement**. For
+each open issue it:
+
+1. requires `issue.user.login` to equal the Product Owner's GitHub account
+   **exactly** — the repository is public and anyone may open an issue, so every
+   other author is ignored, silently and always
+2. requires the block to parse and validate against the fixed schema; anything
+   malformed is rejected with a comment and no write
+3. materializes the content into `control` in the two-commit order already
+   specified — content first, `STATE.json` flip second
+4. comments the resulting control SHA back on the issue and closes it
+5. fails closed on anything it does not understand
+
+The courier **transcribes**; it cannot originate a directive, cannot accept an
+implementation, and cannot alter what the Product Owner wrote. Acceptance
+authority remains the Product Owner's GitHub account — the courier merely moves
+bytes that account already signed for by authoring them.
+
+Cost versus Path A: one more machine account (the courier's, which becomes the
+`control` bypass actor), one more Unix user (`fcpo`), and ~150 lines of
+deterministic script plus tests.
+
+### 6d. Path C — last resort: the Product Owner function moves onto the box
+
+If neither contents nor issues can be written, the only remaining option is a
+separate Claude lane acting as Product Owner, running as its own Unix user with
+its own credential.
+
+**I recommend against it, and flag it as a product decision rather than a
+technical one.** Credential separation would still hold — implementation Claude
+could not read the PO lane's credential — but judgement independence would not:
+Claude would be reviewing and accepting Claude. The Product Owner has explicitly
+required that the release actor "cannot accept its own implementation"; Path C
+weakens the spirit of that even while satisfying its letter.
+
+### 6e. Explicitly rejected — Anthony relays acceptance
+
+Technically trivial, and it is what happens today. It is rejected because it
+directly contradicts the stated goal: Anthony does not relay routine messages.
+
+### Until one of these lands
+
+Product Owner decisions continue to reach the repository the way this very
+document did: through Anthony pasting them. That is the honest status quo, and
+it is what Path A or B removes.
 
 ## 7. Required GitHub rulesets and actors
 
@@ -186,6 +250,7 @@ longer writes `control`.
 | `fcagent` | general/product/CM Claude sessions | no | no | Claude-lane deploy key |
 | `fcprotocol` | the autonomous implementation worker | no | no | Claude-lane deploy key |
 | `fcrelease` | `release-service.sh` only — **no Claude** | no | no | release bot PAT |
+| `fcpo` | `po-courier.sh` only — **no Claude** — *Path B only* | no | no | courier bot PAT |
 
 `fcagent` and `fcprotocol` are indistinguishable to GitHub (same deploy key);
 their separation is OS-level blast radius, keeping ad-hoc sessions out of the
@@ -288,8 +353,10 @@ weakening a security boundary.
 Ordered so nothing is removed before its replacement is proven, and so the
 system is releasable at every step:
 
-1. **measure the Product Owner actor** — the §6 probe commit (nothing else can
-   be designed correctly until this is known)
+1. **establish a Product Owner write path** — run the §6a probes (issue, issue
+   comment, gist), then take Path A if the connector can be granted write, else
+   Path B. Nothing downstream can be finalised until this is settled; the
+   contents probe has already failed
 2. implement the §9 worker changes on a task branch; full suite green; publish
    for Product Owner review — this is ordinary protocol work and needs no new
    credential
