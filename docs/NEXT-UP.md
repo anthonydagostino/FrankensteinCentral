@@ -57,7 +57,24 @@ otherwise move the `production` branch by any other means"). To its credit the
 CM agent flagged its own action, asking whether to "route future docs to task
 branch". The answer is yes.
 
-## The blocker before any of this
+## The owner has issued scope
+
+On 2026-09-06 he asked, directly and unprompted, for two things "ASAP": everything
+the Firefly sub-app shows except recent transactions, on the main dashboard, and
+his calendar there too, preferably at the top. That is FC-001. It displaces my
+recommended ordering below, which is correct — a roadmap I inferred from an ideas
+document loses to the owner naming what he wants.
+
+Drafted in `docs/PROPOSED-FC-001.md`; he chose the protocol agent to commit it to
+`control` and referred the Deployment Authorization call there too. Two verified
+defects are inside it rather than deferred, because the calendar cannot ship
+correct without them: `/events` has no time bound so `next_event` is the *oldest*
+event on record (issue #3), and `build_home` drops pending and countered holds.
+
+The urgent deployment-boundary finding from the last review is **closed** —
+`9b96bd0` is promoted and `deploy.yml` is gone from production.
+
+## The blocker that remains
 
 `d1af4e7` put 1,524 lines of money layer on
 `claude/financial-import-spending-nzhx02` with no directive authorizing it.
@@ -71,7 +88,8 @@ around unruled work is fiction.
 
 | task | what | why here | effort |
 |---|---|---|---|
-| **FC-001** | Rule on the money layer | clears the only unruled work; built and green, so this is a review, not a build | — |
+| **FC-001** | **Firefly + calendar on the main dashboard** — the owner's own ask, 2026-09-06 | he named both and called them priorities; drafted in `docs/PROPOSED-FC-001.md`, protocol agent to commit | M |
+| **FC-001a** | Rule on the money layer | still unruled, and now collides with FC-001 requirement A | — |
 | **FC-002** | Correctness pass: wave 2 #13–16, #19, and filed issues #1–#10 | the screen states things it doesn't know, and a second agent has now filed the specific bugs | S–M |
 | **FC-003** | Wave 2 #17 — unwired inventory + consumer test | nine already-built features reachable by nobody | M |
 | **FC-004** | Wave 1 #2 — infra card + restore-test age | makes the unrecoverable risk visible | M |
