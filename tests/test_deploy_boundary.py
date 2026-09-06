@@ -760,3 +760,43 @@ def test_the_collision_gate_applies_to_the_dry_run_too(rollback_world):
     r = roll(rollback_world, "--dry-run", rollback_world["good"])
     assert r.returncode != 0
     assert "legacy.txt" in r.stdout + r.stderr
+
+
+# ══ there is exactly ONE deployer ══════════════════════════════════════════
+#
+# WHY: .github/workflows/deploy.yml deployed on every push to the task branch
+# and to main, handing GITHUB_REF_NAME straight to deploy.sh — the boundary
+# reopened, in a second mechanism nobody was watching. It was inert only
+# because no self-hosted runner happened to be registered, which is a fact
+# about the host, not a safety property. An autonomous worker pushes task
+# branches on its own, so a dormant deployer is a live risk.
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def test_no_github_workflow_can_deploy():
+    """Any workflow that invokes deploy.sh, or registers a self-hosted runner,
+    is a second deployment path. There must not be one."""
+    for wf in WORKFLOWS.glob("*.yml"):
+        text = wf.read_text()
+        assert "deploy.sh" not in text, f"{wf.name} invokes the deployer"
+        assert "self-hosted" not in text, f"{wf.name} targets a self-hosted runner"
+
+
+def test_the_actions_deploy_workflow_is_gone_and_tests_remain():
+    assert not (WORKFLOWS / "deploy.yml").exists(), \
+        "the GitHub Actions deploy path must not come back"
+    assert (WORKFLOWS / "tests.yml").exists(), \
+        "the test workflow is not a deployer and must stay"
+
+
+def test_setup_doc_names_the_poller_as_the_only_deploy_path():
+    text = DEPLOY_DOC.read_text().replace("*", "")   # ignore markdown emphasis
+    assert "only supported deployment mechanism" in text
+    assert "git checkout production" in text, \
+        "the deployment checkout must be pointed at production, not a task branch"
+    # the removed option must not read as an available choice
+    assert "Option A" not in text and "Option B" not in text, \
+        "the two-deployer choice is gone; do not present it"
+    assert "sudo ./svc.sh install" not in text, \
+        "self-hosted runner install must not be an instruction any more"

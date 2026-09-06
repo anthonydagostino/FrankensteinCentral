@@ -173,6 +173,10 @@ It also carries uncommitted changes to `scripts/rollback.sh` and
 `tests/test_deploy_boundary.py`. **Uncommitted work in a second clone is
 invisible to every other checkout and is not backed up by anything.**
 
+> **RESOLVED (2026-09-06).** Those changes were committed as `42be8fc` (the
+> rollback collision gate and its regression tests) and pushed. The observation
+> stands as a general warning about the second clone, not as a current finding.
+
 ---
 
 ## Observations
@@ -207,12 +211,23 @@ reopened silently — pushes to a task branch would deploy again. Restricting th
 workflow to `production`, or deleting it in favour of the poller, would close
 this permanently.
 
+> **RESOLVED (2026-09-06, Product Owner decision).** `.github/workflows/
+> deploy.yml` is deleted. The systemd poller is the single authoritative
+> deployer; `.github/workflows/tests.yml` remains and deploys nothing. Two
+> tests in `tests/test_deploy_boundary.py` now fail if any workflow invokes
+> `deploy.sh` or targets a self-hosted runner, so the path cannot return
+> quietly. The finding above is kept as the record of why.
+
 ### 2. `docs/SETUP-DEPLOY.md` still instructs a task-branch checkout
 
 The "One-time prep" section says `git checkout claude/personal-app-hub-vvpy4h`.
 Following it verbatim leaves a fresh box pointed at a task branch. The same
 document later explains the production boundary correctly, so it contradicts
 itself; the setup steps predate the boundary.
+
+> **RESOLVED (2026-09-06).** The setup steps now check out `production`, the
+> two-deployer choice is gone, and the document states that the deployment
+> checkout is host operations only.
 
 ### 3. Configuration drift {#configuration-drift}
 
