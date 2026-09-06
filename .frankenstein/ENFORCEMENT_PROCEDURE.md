@@ -1,3 +1,12 @@
+> # SUPERSEDED — DO NOT EXECUTE
+>
+> Superseded 2026-09-06 by `.frankenstein/RELEASE_AUTOMATION.md`, on Product
+> Owner decision. This procedure made Anthony the only actor able to move
+> production, which is explicitly not the desired end state: he is a product
+> stakeholder, not the routine release operator. The two-lane credential work
+> below is largely reusable, but the model it serves has changed — read the
+> replacement first, and execute nothing from this file.
+
 # Production + Control Write Enforcement — Human-Run Procedure
 
 Written: 2026-09-06 (rev 2 — two-lane model)
