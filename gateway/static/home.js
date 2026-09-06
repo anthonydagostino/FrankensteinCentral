@@ -55,6 +55,7 @@
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
     renderSince(d);
+    renderCalendar(d);
     renderDoNext(d.do_next, d);
     renderInbox(d.inbox);
     renderMoney(d.money, d.budget);
@@ -108,6 +109,50 @@
     el.innerHTML = `<span class="lbl">Since you last checked</span>${bits.join("")}<button class="x" title="dismiss">✕</button>`;
     el.querySelector(".x").onclick = () => (el.hidden = true);
     el.hidden = false;
+  }
+
+  // ---- schedule -------------------------------------------------------------
+  // Pending and countered holds are shown, not filtered. Bones proposes slots
+  // from your sent mail and writes them to the real calendar; a slot awaiting
+  // a reply is the single most actionable thing the pipeline produces, and it
+  // used to be dropped before it ever reached the page.
+  const CAL_STATUS = {
+    confirmed: { dot: "🟢", label: "confirmed" },
+    pending:   { dot: "🟡", label: "offered — awaiting reply" },
+    countered: { dot: "🟠", label: "they countered — needs your yes" },
+  };
+  function evWhen(raw) {
+    if (!raw) return "";
+    const d = new Date(String(raw).replace(" ", "T"));
+    if (isNaN(d.getTime())) return String(raw);
+    const now = new Date();
+    const tmr = new Date(now); tmr.setDate(now.getDate() + 1);
+    const t = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (d.toDateString() === now.toDateString()) return "Today " + t;
+    if (d.toDateString() === tmr.toDateString()) return "Tomorrow " + t;
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + t;
+  }
+  function renderCalendar(d) {
+    const items = d.calendar || [];
+    if (!items.length) {
+      q("#cc-calendar").innerHTML = `<h3>Schedule</h3><p class="att-empty">Nothing coming up.</p>`;
+      return;
+    }
+    const rows = items.map((e) => {
+      const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
+      const needsYou = e.status === "countered";
+      const tag = (e.status && e.status !== "confirmed")
+        ? `<span class="cal-tag">${esch(st.label)}</span>` : "";
+      return `<div class="cal-row${needsYou ? " needs-you" : ""}">
+        <span class="cal-dot" title="${esch(st.label)}">${st.dot}</span>
+        <span class="cal-t mono">${esch(evWhen(e.starts_at))}</span>
+        <span class="cal-title">${esch(e.title || "Untitled")}</span>${tag}
+      </div>`;
+    }).join("");
+    q("#cc-calendar").innerHTML = `<h3>Schedule</h3><div class="cal-rows">${rows}</div>
+      <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="cal-open">Open schedule →</button></div>`;
+    const b = q("#cal-open");
+    if (b) b.onclick = () => openAppKey("schedule");
   }
 
   function renderDoNext(dn, d) {
@@ -223,6 +268,13 @@
 
   function renderMoney(m, bud) {
     m = m || {}; bud = bud || {};
+    // Unreachable and unconfigured are different problems with different
+    // fixes. Telling you to set FIREFLY_URL because a container blinked sends
+    // you to repair something that isn't broken.
+    if (m.state === "unreachable") {
+      q("#cc-money").innerHTML = `<h3>Money</h3><p class="att-empty">Couldn't reach Firefly just now — a connection problem, not a setup one. Figures are hidden rather than guessed at.</p>`;
+      return;
+    }
     if (!m.connected) {
       q("#cc-money").innerHTML = `<h3>Money</h3><p class="att-empty">Firefly not connected — set FIREFLY_URL/FIREFLY_TOKEN to see live spending.</p>`;
       return;
@@ -265,6 +317,30 @@
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
       `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
     const obs = (m.observations || []).slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");
+
+    // The Firefly sub-app's headline figures, here so they cost no clicks.
+    // A missing value renders as an em dash, never as $0 — unknown is not zero.
+    const ffTiles = [
+      ["Net worth", m.net_worth],
+      ["Earned (mo)", m.earned],
+      ["Spent (mo)", m.spent],
+      ["Left to spend", m.left_to_spend],
+    ].map(([l, v]) => `<div class="mny-stat"><div class="v mono">${v ? esch(v) : "—"}</div><div class="l">${esch(l)}</div></div>`).join("");
+
+    // Spending by category, last 30 days — the sub-app's donut as bars, which
+    // read better at this width and stay legible in both themes.
+    const cats = (m.categories || []).slice(0, 6);
+    const catMax = cats.reduce((mx, c) => Math.max(mx, Number(c.amount) || 0), 0);
+    const catRows = cats.map((c) => {
+      const amt = Number(c.amount) || 0;
+      const pct = catMax > 0 ? Math.round((amt / catMax) * 100) : 0;
+      return `<div class="cat-row"><span class="cat-n">${esch(c.name)}</span>` +
+        `<span class="cat-bar"><i style="width:${pct}%"></i></span>` +
+        `<span class="cat-v mono">${money(amt)}</span></div>`;
+    }).join("");
+
+    const accts = (m.accounts || []).map((a) =>
+      `<div class="pos"><span>${esch(a.name)}</span><span class="mono">${a.balance != null ? money(a.balance, 2) : "—"}</span></div>`).join("");
     q("#cc-money").innerHTML = `
       <h3>Money</h3>
       ${staleLine}
@@ -276,7 +352,13 @@
       ${budLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
-      ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}`;
+      <div class="mny-hero mny-ff">${ffTiles}</div>
+      ${catRows ? `<h3 style="margin-top:12px">Spending by category<span class="mny-sub"> · last 30 days</span></h3><div class="cat-rows">${catRows}</div>` : ""}
+      ${accts ? `<h3 style="margin-top:12px">Accounts</h3>${accts}` : ""}
+      ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}
+      <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="money-firefly">Recent transactions →</button></div>`;
+    const ffBtn = q("#money-firefly");
+    if (ffBtn) ffBtn.onclick = () => openAppKey("firefly");
     q("#money-budget").onclick = () => openAppKey("budget");
     const setup = q("#bud-setup");
     if (setup) setup.onclick = () => openSettings();
