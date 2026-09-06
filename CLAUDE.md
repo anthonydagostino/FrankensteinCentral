@@ -25,6 +25,12 @@ points at it.
 Reading the repo, answering questions, and explaining existing behavior are
 always allowed. The restriction is on changing the product.
 
+**Claude never writes the `control` branch.** It is Product Owner state, and an
+implementation agent that can write it can mark its own work accepted. Publish
+handoffs to the `handoff` branch instead. Claude also never pushes
+`production`: a deterministic release service does that, after the Product
+Owner accepts. `AGENTS.md` is the Product Owner's side of the same contract.
+
 ## Working conventions
 
 - Run `bash scripts/test.sh` before handing anything off. `scripts/deploy.sh`

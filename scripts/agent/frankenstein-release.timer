@@ -1,0 +1,11 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED. See frankenstein-release.service.
+[Unit]
+Description=Poll control for Product Owner accepted work to release
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
