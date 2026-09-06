@@ -1,0 +1,11 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED. See frankenstein-status.service.
+[Unit]
+Description=Publish the release and deployment record for the Product Owner
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

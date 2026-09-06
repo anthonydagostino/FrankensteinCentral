@@ -44,6 +44,8 @@ Owner accepts. `AGENTS.md` is the Product Owner's side of the same contract.
   bodies, or tokens — keep it that way.
 - Deployment: **pushing is not deploying.** Task branches
   (`claude/FC-###-<slug>`) are always safe to push for review; only the
-  `production` branch is deployed by the OptiPlex, and only
-  `scripts/promote.sh` moves it — after acceptance, when the directive says
-  `deploy-approved`. See the protocol's deployment sections.
+  `production` branch is deployed by the OptiPlex, and only the deterministic
+  release service moves it — after the Product Owner accepts and the directive
+  says `deploy-approved`. `scripts/promote.sh` is a manual operator tool for
+  bootstrap and emergencies, not part of the loop. Routine releases need no
+  human approval. See the protocol's deployment sections.

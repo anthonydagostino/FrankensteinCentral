@@ -717,8 +717,40 @@ git clone --quiet "$REPO_URL" "$AGENT_CLONE" || fail "clone failed"
 agit() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c uploadpack.packObjectsHook= \
              -C "$AGENT_CLONE" "$@"; }
 
-CONTROL_COMMIT="$(agit rev-parse --verify --quiet "origin/$CONTROL_BRANCH^{commit}")"
-[ -n "$CONTROL_COMMIT" ] || noop "control branch 'origin/$CONTROL_BRANCH' not found"
+CONTROL_TIP="$(agit rev-parse --verify --quiet "origin/$CONTROL_BRANCH^{commit}")"
+[ -n "$CONTROL_TIP" ] || noop "control branch 'origin/$CONTROL_BRANCH' not found"
+
+# ── the authorization epoch, NOT the control tip ─────────────────────────
+# Authorization changes only when STATE.json changes. The Product Owner writes
+# content first and flips state last, so between those two commits control's
+# tip has moved while the authorization has not. Keying on the tip makes the
+# worker wake on that intermediate commit and implement a half-written
+# correction against the PREVIOUS cycle's still-authorizing state -- and the
+# "already answered" token below would not stop it, because the tip SHA is new.
+#
+# So everything below reads control at the last commit that touched
+# STATE.json. A content-only commit is invisible to the worker until the
+# Product Owner flips state, which is exactly when the work becomes authorized.
+CONTROL_COMMIT="$(agit rev-list -1 "$CONTROL_TIP" -- .frankenstein/STATE.json 2>/dev/null)"
+[ -n "$CONTROL_COMMIT" ] \
+  || noop "no commit on control has ever written .frankenstein/STATE.json"
+
+# Re-resolve the epoch straight from the remote, in a throwaway bare git dir.
+# It must not use the agent clone: by the time this is called the child has run
+# there, and nothing the child could touch may influence an authorization
+# decision. Control is tiny, so this costs almost nothing.
+remote_control_epoch() {
+  local tmp epoch=""
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/fc-ctl.XXXXXX")" || return 1
+  if git init --quiet --bare "$tmp" 2>/dev/null && \
+     git -C "$tmp" fetch --quiet --no-tags "$REPO_URL" \
+         "refs/heads/$CONTROL_BRANCH:refs/heads/ctl" 2>/dev/null; then
+    epoch="$(git -C "$tmp" rev-list -1 refs/heads/ctl -- .frankenstein/STATE.json 2>/dev/null)"
+  fi
+  rm -rf "$tmp"
+  [ -n "$epoch" ] || return 1
+  printf '%s' "$epoch"
+}
 
 ctl_file() { agit show "$CONTROL_COMMIT:.frankenstein/$1" 2>/dev/null; }
 STATE_JSON="$(ctl_file STATE.json)"
@@ -1047,9 +1079,17 @@ log "exported ${EXPORTED_SHA:0:7} as an inert bundle"
 # ── concurrency token, stage 1 ───────────────────────────────────────────
 CONTROL_NOW="$(git ls-remote "$REPO_URL" "refs/heads/$CONTROL_BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
 [ -n "$CONTROL_NOW" ] || { record_run "fetch_failed" ""; fail "could not re-read control before publishing"; }
-[ "$CONTROL_NOW" = "$CONTROL_COMMIT" ] || {
-  record_run "control_conflict" ""
-  fail "control moved ${CONTROL_COMMIT:0:7} -> ${CONTROL_NOW:0:7} during the run. NOT overwriting newer Product Owner state; the work stays in the export locally."; }
+if [ "$CONTROL_NOW" != "$CONTROL_TIP" ]; then
+  # The tip moved. That is only a conflict if the AUTHORIZATION moved with it;
+  # the Product Owner writing correction content mid-run must not discard an
+  # hour of work that its own still-current authorization asked for.
+  EPOCH_NOW="$(remote_control_epoch)" || { record_run "fetch_failed" ""
+    fail "control moved to ${CONTROL_NOW:0:7} and the new authorization epoch could not be resolved — publishing nothing"; }
+  [ "$EPOCH_NOW" = "$CONTROL_COMMIT" ] || {
+    record_run "control_conflict" ""
+    fail "authorization changed ${CONTROL_COMMIT:0:7} -> ${EPOCH_NOW:0:7} during the run. NOT overwriting newer Product Owner state; the work stays in the export locally."; }
+  log "control tip moved to ${CONTROL_NOW:0:7} but authorization is unchanged (${CONTROL_COMMIT:0:7}) — continuing"
+fi
 
 # ── dry run stops HERE: nothing is ever pushed ───────────────────────────
 if [ "$MODE" = "dry-run" ]; then
@@ -1202,9 +1242,13 @@ CONTROL_AT_PUBLISH="$(git -C "$HANDOFF_DIR" ls-remote origin "refs/heads/$CONTRO
 [ -n "$CONTROL_AT_PUBLISH" ] || {
   record_run "control_fetch_failed" ""
   fail "could not re-read control before publishing the handoff"; }
-[ "$CONTROL_AT_PUBLISH" = "$CONTROL_COMMIT" ] || {
-  record_run "control_conflict_late" ""
-  fail "control moved to ${CONTROL_AT_PUBLISH:0:7} before publication (authorized ${CONTROL_COMMIT:0:7}). Newer Product Owner state preserved; no handoff published."; }
+if [ "$CONTROL_AT_PUBLISH" != "$CONTROL_TIP" ]; then
+  EPOCH_AT_PUBLISH="$(remote_control_epoch)" || { record_run "control_fetch_failed" ""
+    fail "control moved to ${CONTROL_AT_PUBLISH:0:7} and its authorization epoch could not be resolved — no handoff published"; }
+  [ "$EPOCH_AT_PUBLISH" = "$CONTROL_COMMIT" ] || {
+    record_run "control_conflict_late" ""
+    fail "authorization changed to ${EPOCH_AT_PUBLISH:0:7} before publication (authorized ${CONTROL_COMMIT:0:7}). Newer Product Owner state preserved; no handoff published."; }
+fi
 
 # ── the handoff branch is an ORPHAN, for the reason control is ───────────
 # Sharing no history with production, it can never be fast-forwarded into
