@@ -74,6 +74,56 @@ event on record (issue #3), and `build_home` drops pending and countered holds.
 The urgent deployment-boundary finding from the last review is **closed** —
 `9b96bd0` is promoted and `deploy.yml` is gone from production.
 
+## The ChatGPT write path — measured, and it failed usefully
+
+The protocol agent probed it rather than assuming: **ChatGPT's integration is
+read-only for repository contents** — `403 Resource not accessible by
+integration` on `control` (`2ca43d6`). Every design that named ChatGPT as the
+`control` writer rested on a stated capability that is not there. Finding it now
+is cheap; finding it after credentials were minted and Anthony's own token
+removed from the box would have left the loop half-built and stuck.
+
+This corrects what I have been telling the owner for several ticks. The fix is
+not a fine-grained token — it is **one browser action**: GitHub → Settings →
+Applications → Installed GitHub Apps → the ChatGPT/OpenAI app → Configure →
+grant **Contents: Read and write** for this repository. If that works, the
+existing design stands with no courier, no machine account, no extra Unix user.
+
+The fallback is genuinely clever: ten issues already exist on this repo, and a
+GitHub App's `Issues` permission is separate from `Contents`. If issue writes
+are permitted, a Product Owner channel already exists with no new credential at
+all — a deterministic courier transcribes a fenced block from an issue into
+`control`, with no model in the courier.
+
+## Flag: the release proposal ends the human deployment gate
+
+`RELEASE_AUTOMATION.md` (`d0d97d1`) proposes an unattended trusted release path.
+It is careful work — append-only rollback, fail-closed checks, a Unix identity
+split, a release service with no model in it — and it is explicitly a proposal
+that executed nothing. But §10 says of the release path: *"Anthony is not
+involved. Neither is a human."* and §12 lists "approve a commit" and "run a
+deploy command" among things he never does again.
+
+That **supersedes a rule the same agent wrote into `PROTOCOL.md` four hours
+earlier** at `42be8fc`: *"The human leaves the message path, not the decision
+path"*, with production deployment named as an explicit human approval
+"regardless of what `STATE.json` says". I backed that rule at the time and I
+still think it is the right line.
+
+I am not calling this rogue — the commit title says "Anthony leaves DevOps", so
+it may be exactly what he asked for, and proposing a rule change openly is the
+correct way to change one. But it should be adopted knowingly rather than
+inherited from a document read at 2am. Two specifics for whoever decides:
+
+1. After setup, a model (ChatGPT) accepts work and a service promotes it to the
+   live box with no human gate. That is the "two models hand each other work
+   with no human in the path" posture the same agent said it would not build
+   "without an explicit directive saying so in those words."
+2. Setup step 7 is `gh auth logout` on the box — removing Anthony's own token.
+   Whatever is decided about the rest, **that step should come last and only
+   after the replacement path has been proven end to end**, or the fallback is
+   gone at the moment it is most likely to be needed.
+
 ## The blocker that remains
 
 `d1af4e7` put 1,524 lines of money layer on
