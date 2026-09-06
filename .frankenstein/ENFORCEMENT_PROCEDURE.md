@@ -1,77 +1,125 @@
-# Production-Write Enforcement — Human-Run Procedure
+# Production + Control Write Enforcement — Human-Run Procedure
 
-Written: 2026-09-06
+Written: 2026-09-06 (rev 2 — two-lane model)
 Author: Claude (protocol agent, OptiPlex)
-Status: **PREPARATION ONLY.** Nothing in this file has been executed.
+Status: **PREPARATION ONLY. NOTHING HAS BEEN EXECUTED.**
 
-**No credential, account, SSH, deploy-key, ruleset or GitHub-auth change has
-been made.** No key was generated, no remote was repointed, no login was
-removed. `STATE.json` and `PRODUCT_DIRECTIVE.md` are untouched; control remains
-`turn: product_owner` / `status: awaiting_directive`; FC-001 unissued; the
-autonomous worker is not installed and has no `ENABLED` flag.
+Supersedes rev 1 (`f5d4782`), which was defective: it gave every agent one
+repository-wide deploy key and then *verified* that the same key could write
+`control`. The Product Owner was right — that key is readable by any process
+running as the OptiPlex user, so the money, CM and any future lane could have
+rewritten `STATE.json`, forged a directive, set `turn=claude`, and woken the
+worker with syntactically valid state. The worker's validation cannot defend
+against an attacker who can write valid control state.
 
-Every command below is for **Anthony to run himself**, one block at a time,
-checking the expected output before continuing.
-
----
-
-## Pre-flight facts (verified read-only, no changes made)
-
-| check | result | why it matters |
-|---|---|---|
-| `github.com:22` reachable from the box | **yes** | SSH transport will work |
-| `ssh.github.com:443` reachable | **yes** | fallback exists if 22 is ever blocked |
-| `~/.ssh/config` | **does not exist** | Block 3 creates it; nothing to clobber |
-| `github.com` in `~/.ssh/known_hosts` | **absent (0 entries)** | Block 2 pins it deliberately instead of trusting first contact |
-| SSH private keys on the box | **none** | no existing identity can be picked up by accident |
-| local git hooks (both clones) | **none**, `core.hooksPath` unset | a rejected production push can only come from GitHub |
-| poller / `deploy.sh` git usage | **`git fetch` only, never push** | deployment needs no write credential |
-| anonymous fetch of this public repo | **works** — tested with the credential helper disabled: `git -c credential.helper= ls-remote origin production` returned `9b96bd0…` | **removing the login does not break deployment** |
-
-That last row is the safety guarantee for step 8: after `gh auth logout`, the
-box can still fetch and deploy. It simply cannot write.
+**No key generated. No remote repointed. No ruleset created. No deploy key
+added. `gh` still logged in. `~/.ssh` still holds no private keys.**
 
 ---
 
-## Block 1 — generate the deploy key (Anthony runs)
+## What changed since rev 1, and why
+
+Two findings drive the redesign.
+
+**1. Two deploy keys cannot be told apart by a ruleset.** The Product Owner was
+correct that `DeployKey` is a valid ruleset bypass actor type — my rev-1 claim
+that it was not was wrong. But the API requires `actor_id: null` for it, which
+means it is a **blanket** actor: it matches *every* deploy key on the
+repository, not a chosen one. So "one deploy key for agents, another for the
+protocol lane, separated by a ruleset" **cannot work**. The valid actor types
+are `Integration`, `OrganizationAdmin`, `RepositoryRole`, `Team`, `DeployKey`
+and **`User`** — and `User` does take a specific `actor_id`.
+
+**2. The OptiPlex user is in the `docker` group.** `sudo` requires a password
+here (good), so a second Unix user genuinely hides a file from a plain session.
+But `antdag3` is in `docker`, and docker group membership is equivalent to
+root: any session there can `docker run -v /:/host` and read any file on the
+box. **A protocol credential stored under a second Unix user is not protected
+from a Claude session running as `antdag3`.** OS separation only works if the
+*general agent* lane runs as a user that has neither `sudo` nor `docker`.
+
+---
+
+## The two-lane model
+
+| lane | GitHub identity | may push | may NOT push |
+|---|---|---|---|
+| **A — general agents** (money/product, CM/docs, ad-hoc sessions) | repository **deploy key** | task branches | `production`, `control` |
+| **B — protocol publisher** (this lane, and later the autonomous worker) | **machine user account** with its own fine-grained PAT | task branches, `control` | `production` |
+| **C — human** (Anthony / Product Owner) | his own account, admin, **not stored on the box** | everything, incl. `production` | — |
+
+Server-side rules that make it true:
+
+- **`production` ruleset** — restrict updates, block force pushes, block
+  deletions. Bypass: **admin only**. Neither the deploy key (lane A) nor the
+  machine user (lane B) is in the bypass list.
+- **`control` ruleset** — restrict updates. Bypass: **the machine user
+  (`User` actor) + admin**. `DeployKey` is deliberately absent, which is what
+  blocks lane A.
+
+Lane A is blocked from `control` by the *absence* of `DeployKey` in that bypass
+list — the blanket nature of the DeployKey actor works in our favour here, since
+we never want any deploy key touching `control`.
+
+### If the `User` bypass actor turns out to be unavailable
+
+This repository is personally owned, and I could not create a ruleset read-only
+to confirm the UI exposes user bypass actors. **Phase 0 decides this before
+anything is created.** If `User` bypass is not selectable, use the fallback:
+
+> **Fallback — move `control` into its own repository.** Deploy keys are scoped
+> per repository by construction, so lane A's key on `FrankensteinCentral`
+> simply has no access to a `FrankensteinCentral-control` repo, and lane B gets
+> a deploy key there. No ruleset needed for `control` at all, and no untested
+> actor semantics. The cost is a narrow code change: `claude-worker.sh` already
+> parameterises the branch (`FRANKENSTEIN_CONTROL_BRANCH`) but reads it from
+> `origin`, so it would need a second remote — roughly 15–20 lines plus tests,
+> in `claude-worker.sh` and `control-bootstrap.sh`.
+
+Primary is the machine user because it needs **zero code change**. The fallback
+is strictly more robust. Phase 0 costs ten minutes and picks the right one.
+
+---
+
+## Phase 0 — capability probe (creates nothing enforcing)
+
+**GitHub UI.** Settings → Rules → Rulesets → **New branch ruleset**.
+
+- Name it `probe-delete-me`
+- **Enforcement status: `Evaluate`** — this mode logs and does **not** enforce.
+- Target branch: `control`
+- Open the **Bypass list** → **Add bypass** and look at what actor types are
+  offered.
+
+**What to record:** whether you can add **a specific user account** as a bypass
+actor, and whether `Deploy keys` appears as an option.
+
+Then **delete the probe ruleset**. It enforced nothing.
+
+- Specific users selectable → **primary model**, continue to Phase 1.
+- Not selectable → **fallback model**; stop and report, and I will prepare the
+  separate-control-repo variant before you touch any credential.
+
+---
+
+## Phase 1 — lane A identity (deploy key for general agents)
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/frankenstein_deploy \
-  -C "optiplex-frankenstein-agents" -N ""
-chmod 600 ~/.ssh/frankenstein_deploy
-cat ~/.ssh/frankenstein_deploy.pub
+ssh-keygen -t ed25519 -f ~/.ssh/fc_agents -C "optiplex-lane-a-agents" -N ""
+chmod 600 ~/.ssh/fc_agents
+cat ~/.ssh/fc_agents.pub
 ```
 
-**Expected:** `ssh-keygen` reports the key pair was created, then exactly one
-line is printed, beginning `ssh-ed25519 AAAAC3...` and ending
-`optiplex-frankenstein-agents`.
+**Expected:** one line, `ssh-ed25519 AAAAC3… optiplex-lane-a-agents`. Never
+`cat` the file without `.pub`.
 
-Only `.pub` is ever displayed. **Never** `cat ~/.ssh/frankenstein_deploy` (no
-extension) — that is the private half, and it never leaves the box.
-
-*On `-N ""` (no passphrase):* required, because unattended agents cannot type
-one. Be clear-eyed about what this does and does not buy: the private key is a
-file readable by anything running as this user, exactly as the OAuth token is
-today. The improvement is not secrecy — it is that this credential **cannot
-move production**, whereas today's token can.
+**GitHub UI.** Settings → **Deploy keys** → Add deploy key.
+Title `optiplex lane A — agents (write, no control, no production)`, paste the
+`.pub` line, **Allow write access ☑**, Add key.
 
 ---
 
-## GitHub UI step A — register the deploy key
-
-Repository → **Settings** → **Deploy keys** → **Add deploy key**
-
-- **Title:** `optiplex-agents (write, non-production)`
-- **Key:** paste the single `ssh-ed25519 …` line from Block 1
-- **Allow write access:** ☑ **enabled** (agents must be able to push branches)
-- **Add key**
-
-**Expected:** the key appears in the Deploy keys list, marked as having write
-access, with "never used" until the first push.
-
----
-
-## Block 2 — pin GitHub's host keys (do not trust first contact)
+## Phase 2 — pin host keys and configure SSH (both lanes)
 
 ```bash
 curl -fsS https://api.github.com/meta \
@@ -81,131 +129,159 @@ grep -c '^github.com ' ~/.ssh/known_hosts
 ssh-keygen -lf ~/.ssh/known_hosts | grep -i ed25519
 ```
 
-**Expected:** `3`, then a line whose fingerprint is
-`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`.
-
-That value came from `api.github.com/meta` over TLS on this box a moment ago
-and matches GitHub's published ED25519 fingerprint. If it differs, **stop** —
-do not continue over that connection.
-
----
-
-## Block 3 — dedicated SSH identity, no fallback
+**Expected:** `3`, and fingerprint
+`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` — read from
+`api.github.com/meta` over TLS on this box and matching GitHub's published
+value. If it differs, **stop**.
 
 ```bash
 cat >> ~/.ssh/config <<'EOF'
 
-# FrankensteinCentral agent identity. This alias is used ONLY by agent clones.
-# IdentitiesOnly stops ssh from offering any other key if this one is refused.
-Host github-frankenstein
+# FrankensteinCentral lane A — general agents. Task branches only.
+Host github-fc-agents
     HostName github.com
     User git
-    IdentityFile ~/.ssh/frankenstein_deploy
+    IdentityFile ~/.ssh/fc_agents
     IdentitiesOnly yes
 EOF
 chmod 600 ~/.ssh/config
-ssh -T git@github-frankenstein
+ssh -T git@github-fc-agents
 ```
 
-**Expected:**
-
-```
-Hi anthonydagostino/FrankensteinCentral! You've successfully authenticated,
-but GitHub does not provide shell access.
-```
-
-and an exit status of 1 — that is normal for GitHub and is **not** an error.
-
-**Read the greeting carefully.** It must name the **repository**
-(`anthonydagostino/FrankensteinCentral`). That proves the connection
-authenticated as a *deploy key*. If it greets you by **username**
-(`Hi anthonydagostino!`), a personal SSH key was used instead — stop and fix
-the config, because the whole boundary depends on this not being your account.
+**Expected:** `Hi anthonydagostino/FrankensteinCentral! You've successfully
+authenticated…`, exit status 1 (normal). It must greet you by **repository**,
+not by username — a username greeting means a personal key was used and the
+boundary is void.
 
 ---
 
-## Block 4 — repoint the agent clone only
+## Phase 3 — lane B identity (machine user)
+
+**Human account work — GitHub UI and email, no commands.**
+
+1. Create a second GitHub account, e.g. `frankenstein-protocol-bot`. It needs
+   its own email address (a `+` alias on your existing mailbox is fine).
+   GitHub permits machine accounts; this is their intended use.
+2. From **your** account: Settings → Collaborators → invite that account with
+   **Write** access. Accept the invitation from the bot account.
+3. Signed in **as the bot**: Settings → Developer settings → Personal access
+   tokens → **Fine-grained tokens** → Generate. Scope it to **only**
+   `anthonydagostino/FrankensteinCentral`, permission **Contents: Read and
+   write**, and set an expiry you are willing to rotate.
+4. Copy the token **once**, directly into the file created in Phase 4. Do not
+   paste it into this conversation, a chat window, or any file that is
+   committed.
+
+---
+
+## Phase 4 — OS separation for the lane B credential
+
+This is the part rev 1 got wrong, and it needs a decision from you.
+
+**The problem:** `antdag3` is in the `docker` group, which is root-equivalent —
+a session there can mount any path into a container and read it. So putting the
+bot token under a second Unix user does **not** hide it from a Claude session
+running as `antdag3`.
+
+**Therefore the general-agent lane must move, not the protocol lane.**
 
 ```bash
+# a Unix user for lane A with NEITHER sudo NOR docker
+sudo adduser --disabled-password --gecos "" fcagent
+id fcagent          # expect: groups=fcagent  — and nothing else
+```
+
+**Expected:** `id fcagent` shows only its own group. If `docker` or `sudo`
+appear, stop — the separation is void.
+
+Then the lane B token lives under `antdag3`, unreadable by `fcagent`:
+
+```bash
+install -m 700 -d ~/.frankenstein/creds
+umask 077; printf '%s\n' 'PASTE_BOT_TOKEN_HERE' > ~/.frankenstein/creds/bot-token
+chmod 600 ~/.frankenstein/creds/bot-token
+ls -l ~/.frankenstein/creds/bot-token      # expect -rw------- antdag3
+sudo -u fcagent cat ~/.frankenstein/creds/bot-token   # expect: Permission denied
+```
+
+**Expected:** the last command **fails**. That failure is the separation.
+
+From then on: money, CM and ad-hoc Claude sessions are started as `fcagent`
+(`sudo -u fcagent -i`, or an ssh login), with their clones under
+`/home/fcagent`. The protocol lane and the autonomous worker keep running as
+`antdag3`.
+
+**Answer to "is a separate Unix service user needed": yes — for lane A.**
+Without it, every lane can read every credential on the box and the GitHub-side
+rules are the only thing left standing.
+
+---
+
+## Phase 5 — repoint remotes
+
+```bash
+# lane B (protocol) — HTTPS with the bot token via a credential file
 git -C ~/frankenstein-protocol remote set-url origin \
-  git@github-frankenstein:anthonydagostino/FrankensteinCentral.git
+  https://github.com/anthonydagostino/FrankensteinCentral.git
+git -C ~/frankenstein-protocol config credential.helper \
+  '!f() { echo username=frankenstein-protocol-bot; echo "password=$(cat $HOME/.frankenstein/creds/bot-token)"; }; f'
 git -C ~/frankenstein-protocol remote -v
 git -C ~/FrankensteinCentral remote -v
 ```
 
-**Expected:** `~/frankenstein-protocol` shows the `git@github-frankenstein:…`
-URL; `~/FrankensteinCentral` still shows the **https://** URL.
+Lane A clones (under `/home/fcagent`) use the SSH alias:
+`git@github-fc-agents:anthonydagostino/FrankensteinCentral.git`
 
-**Leave the deployment checkout on HTTPS deliberately.** It only fetches, the
-repo is public, and anonymous fetch was verified to work. Giving the deployment
-checkout an SSH write key would hand a write credential to the one checkout
-that has no use for it.
-
-Any future agent clone (money/product, CM) uses the same alias and the same
-rule: agent clones on SSH, `~/FrankensteinCentral` on HTTPS.
+**`~/FrankensteinCentral` stays on HTTPS with no credential.** It only fetches,
+the repo is public, and anonymous fetch was verified working with the helper
+disabled. Deployment therefore survives every credential change below.
 
 ---
 
-## Block 5 — prove SSH write works BEFORE anything is removed
+## Phase 6 — prove both lanes work BEFORE removing anything
 
 ```bash
 cd ~/frankenstein-protocol
 git fetch origin
-git push origin origin/control:refs/heads/tmp-deploykey-check
-git ls-remote origin production
-git push origin --delete tmp-deploykey-check
+git push origin origin/control:refs/heads/tmp-laneB-check
+git push origin --delete tmp-laneB-check
+git ls-remote origin production        # expect 9b96bd0…, unchanged
 ```
 
-**Expected:**
-- `fetch` succeeds with no password prompt
-- `* [new branch] origin/control -> tmp-deploykey-check`
-- `git ls-remote origin production` prints `9b96bd0c…` — **unchanged**
-- the temporary branch is deleted
+**Expected:** fetch and push succeed with no prompt; production unchanged.
 
-This proves three things at once: the deploy key can write, `control` is
-readable and writable through it, and production has not moved. Note it pushes
-`origin/control` to a **temporary** name — `control` itself is never modified.
-
-**If any of this fails, stop here and use the recovery block.** Nothing has
-been removed yet, so the old HTTPS path is still fully intact.
+Lane A, as `fcagent` in its own clone: a task-branch push must succeed the same
+way. If either fails, **stop and use Recovery** — nothing has been removed yet.
 
 ---
 
-## GitHub UI step B — create the production ruleset
+## Phase 7 — the rulesets
 
-Repository → **Settings** → **Rules** → **Rulesets** → **New ruleset** →
-**New branch ruleset**
+**GitHub UI.** Settings → Rules → Rulesets.
 
-- **Name:** `production is human-only`
-- **Enforcement status:** **Active** (not "Evaluate" — evaluate mode only logs)
-- **Target branches:** Add target → include by name/pattern → `production`
-- **Bypass list:** add **Repository admin** and nothing else
+**Ruleset 1 — `production is human-only`**
+- Enforcement: **Active**
+- Target: branch `production`
+- Bypass: **admin only** — not the deploy key, not the bot user
+- Rules by effect: prevent the branch being **updated** outside the bypass list;
+  **block force pushes**; **block deletions**
 
-**Rules to enable — by effect, since labels vary:**
+**Ruleset 2 — `control is protocol-only`**
+- Enforcement: **Active**
+- Target: branch `control`
+- Bypass: **the bot user + admin**. **Do not add `Deploy keys`** — its absence
+  is exactly what blocks lane A.
+- Rules by effect: prevent the branch being **updated** outside the bypass list;
+  block force pushes; block deletions
 
-| required property | look for the rule that |
-|---|---|
-| updates restricted | prevents the branch from being **updated** by anyone outside the bypass list (commonly "Restrict updates") |
-| force pushes blocked | prevents non-fast-forward / force pushes ("Block force pushes") |
-| deletions blocked | prevents branch deletion ("Restrict deletions") |
-
-**Deploy keys must have no bypass.** GitHub does not offer deploy keys as
-bypass actors — if this repository's UI somehow does, **do not add one**. The
-bypass list must contain the admin/human path and nothing else.
-
-I have deliberately not asserted exact label wording: I could not create or
-inspect a ruleset read-only, and the UI differs between account types. Match
-the *effect* column, then let Block 7 prove it behaviorally rather than
-trusting the screen.
-
-**Expected:** the ruleset appears in the list, targeting `production`, status
-**Active**.
+Labels vary by account type; match the *effect*, then let Phase 9 prove it
+rather than trusting the screen.
 
 ---
 
-## Block 6 — remove Anthony's unrestricted credential from the box
+## Phase 8 — remove Anthony's unrestricted credential from the box
 
-Only after Block 5 passed and the ruleset is Active.
+Only after Phases 6 and 7 pass.
 
 ```bash
 gh auth status
@@ -216,170 +292,125 @@ git -C ~/FrankensteinCentral fetch --prune origin production && echo FETCH_STILL
 bash ~/FrankensteinCentral/scripts/frankenstein-status.sh
 ```
 
-**Expected:**
-- the first `gh auth status` shows logged in as `anthonydagostino`
-- after logout, `gh auth status` reports **not logged in** to github.com
-- `FETCH_STILL_WORKS` prints — deployment is unaffected, as pre-flight verified
-- `frankenstein-status.sh` still shows desired `9b96bd0` == running `9b96bd0`,
-  last result **success**
-
-*Note on the helper:* `git config --global --get-regexp credential` currently
-shows **two** entries for that key, which is why `--unset-all` is used rather
-than `--unset`. Removing it is optional hygiene — with no login, the helper
-returns nothing anyway — but it removes the ambiguity.
-
-**This changes nothing on Anthony's own workstation or browser.** Only the
-OptiPlex copy of the credential is removed.
+**Expected:** not logged in; `FETCH_STILL_WORKS` prints; status still shows
+desired `9b96bd0` == running `9b96bd0`, result success. (`--unset-all` because
+that key currently has two values.) **Your workstation and browser are
+untouched.**
 
 ---
 
-## Block 7 — behavioral verification of server-side enforcement
+## Phase 9 — behavioral verification (the actual proof)
 
-This is the step that actually proves the boundary. Run it **after** logout, so
-it genuinely runs as the deploy key.
+Run after logout, so it genuinely runs as each lane's own credential.
 
-**A. non-production push must SUCCEED**
-
+**A. lane A task branch → MUST SUCCEED** (as `fcagent`)
 ```bash
-cd ~/frankenstein-protocol
-git fetch origin
-git push origin origin/production:refs/heads/tmp-enforcement-check
+git push origin origin/production:refs/heads/tmp-laneA-check
 ```
-Expected: `* [new branch] … -> tmp-enforcement-check`
 
-**B. control must remain accessible and writable**
-
+**B. lane A pushing `control` → MUST BE REJECTED** (as `fcagent`)
 ```bash
-git fetch origin control
-git push origin origin/control:refs/heads/tmp-control-check
+git push origin origin/control:refs/heads/control
 ```
-Expected: `* [new branch] … -> tmp-control-check`
+Expect a `remote:` rule-violation rejection. **This is the check rev 1 was
+missing.**
 
-**C. production push must be REJECTED BY GITHUB**
+**C. lane B pushing `control` → MUST SUCCEED** (as `antdag3`)
+```bash
+cd ~/frankenstein-protocol && git push origin origin/control:refs/heads/tmp-laneB2-check
+```
 
+**D. lane B pushing `production` → MUST BE REJECTED**
 ```bash
 git checkout -q --detach origin/production
-git commit -q --allow-empty -m "enforcement probe: this push must be rejected"
+git commit -q --allow-empty -m "enforcement probe: must be rejected"
 git push origin HEAD:refs/heads/production
 ```
 
-**Expected: the push FAILS**, with `remote:` lines from GitHub — something like
-`GH013: Repository rule violations found` or `protected branch hook declined` —
-and a non-zero exit status.
+Expect `remote: … GH013: Repository rule violations found` (or equivalent) and
+a non-zero exit. The `remote:` prefix is the proof. **There are no local git
+hooks on this box and `core.hooksPath` is unset** (verified), so a rejection
+cannot have come from our own tooling.
 
-The `remote:` prefix is the proof: it means GitHub refused the update. There
-are **no local git hooks on this box and `core.hooksPath` is unset** (verified),
-`promote.sh` is not involved in this command, and nothing here consults a branch
-name. A rejection here cannot have come from our own tooling.
+**If D succeeds, STOP and report.** Damage is contained by design: the probe
+commit is empty, so production's tree stays byte-identical to `9b96bd0` and the
+poller redeploys the same tree. Do not force-push; production is append-only.
 
-**If the push SUCCEEDS: STOP and report immediately.** The ruleset is not
-effective. The damage is contained by design — the probe commit is **empty**,
-so production's tree is byte-identical to `9b96bd0`; the poller will redeploy
-the same tree and nothing about the running system changes. Do not try to fix
-it by force-pushing; production is append-only.
-
-**D. cleanup**
-
+**E. cleanup**
 ```bash
-git push origin --delete tmp-enforcement-check tmp-control-check
+git push origin --delete tmp-laneA-check tmp-laneB2-check
 git checkout -q claude/activation-reconcile
-git ls-remote origin production
+git ls-remote origin production     # expect 9b96bd0…
 ```
-Expected: both temporary branches deleted, and production still `9b96bd0…`.
 
 ---
 
-## Recovery — if SSH authentication fails before logout
+## Recovery — and why you cannot be locked out
 
-Nothing is lost. The OAuth credential is still on the box at that point, so the
-HTTPS path is untouched and fully working.
+**The escape hatch:** a repository admin can always **disable or delete a
+ruleset** in Settings → Rules, from any browser, with no credential on the box.
+Rulesets cannot permanently lock you out of your own repository. If anything
+behaves unexpectedly, set the ruleset's enforcement to `Disabled` and
+everything reverts to today's behaviour immediately.
 
+**SSH or token fails before Phase 8:** nothing has been removed; the OAuth login
+still works.
 ```bash
-# put the agent clone back on HTTPS
+git -C ~/frankenstein-protocol config --unset credential.helper
 git -C ~/frankenstein-protocol remote set-url origin \
   https://github.com/anthonydagostino/FrankensteinCentral.git
 git -C ~/frankenstein-protocol fetch origin && echo HTTPS_PATH_OK
 ```
 
-Then, if abandoning the attempt entirely:
-
-```bash
-# remove the alias block that was appended in Block 3, then:
-rm -f ~/.ssh/frankenstein_deploy ~/.ssh/frankenstein_deploy.pub
-```
-and delete the key in GitHub → Settings → Deploy keys.
-
-**Order matters:** never delete the deploy key on GitHub while a clone is still
-pointed at the SSH remote — repoint to HTTPS first.
-
-**If SSH fails *after* logout:** deployment is still unaffected (the poller
-fetches anonymously — verified). To restore write access, either fix the SSH
-config, or run `gh auth login --hostname github.com` on the box and re-authorize
-through the device flow. Production is never at risk in this state, because
+**After Phase 8:** deployment is unaffected — the poller fetches anonymously
+(verified). To restore write access, run `gh auth login --hostname github.com`
+on the box and re-authorize. Production is never at risk in this state, because
 nothing on the box can write to it.
 
----
-
-## Final verification — what to run at the end
-
-```bash
-git -C ~/frankenstein-protocol remote -v
-git -C ~/FrankensteinCentral remote -v
-ssh -T git@github-frankenstein
-gh auth status
-bash ~/FrankensteinCentral/scripts/frankenstein-status.sh
-git ls-remote origin production
-docker compose -f ~/FrankensteinCentral/docker-compose.yml ps --format '{{.Service}} {{.State}}'
-```
+**Order rule:** never delete a deploy key or revoke the bot token while a clone
+still points at it. Repoint to HTTPS first.
 
 ---
 
 ## What to paste back (secrets excluded)
 
-Safe to share:
+`git remote -v` for each clone · the `ssh -T` greeting line · `id fcagent` ·
+the `sudo -u fcagent cat …` permission-denied line · every Phase 6 and Phase 9
+result, success **and** failure · **the full `remote:` rejection text from 9B
+and 9D** · `gh auth status` after logout · `frankenstein-status.sh` ·
+`git ls-remote origin production` · key fingerprints if wanted
+(`ssh-keygen -lf ~/.ssh/fc_agents.pub`).
 
-1. `git remote -v` for both clones
-2. the `ssh -T git@github-frankenstein` greeting line (it names the repo)
-3. Block 5 and Block 7 push results, success and failure alike
-4. **the full `remote:` rejection text from Block 7C** — this is the evidence
-5. `gh auth status` after logout ("not logged in")
-6. `frankenstein-status.sh` output
-7. `git ls-remote origin production` (the SHA)
-8. the deploy key's fingerprint if wanted: `ssh-keygen -lf ~/.ssh/frankenstein_deploy.pub`
-
-**Never paste:** the private key `~/.ssh/frankenstein_deploy`, the contents of
-`~/.config/gh/hosts.yml`, any token, or any API key. The `.pub` file and
-fingerprints are public by nature and safe.
+**Never paste:** any private key, the bot token, `~/.config/gh/hosts.yml`, or
+any file under `~/.frankenstein/creds/`.
 
 ---
 
-## What changes operationally afterwards
+## What changes operationally
 
 | | before | after |
 |---|---|---|
-| agents push task branches | yes | **yes**, via the deploy key |
-| protocol agent uses `control` | yes | **yes**, via the deploy key |
-| agents move `production` | **yes — nothing stopped them** | **no — GitHub refuses** |
-| `promote.sh` from the box | works | **intentionally stops working** |
-| `rollback.sh` from the box | works | **intentionally stops working** |
-| deployment / the poller | works | **unchanged** — fetch only, and anonymous fetch is verified |
+| general agents push task branches | yes | **yes** (deploy key) |
+| general agents push `control` | **yes — nothing stopped them** | **no — GitHub refuses** |
+| general agents push `production` | **yes** | **no — GitHub refuses** |
+| protocol lane pushes `control` | yes | **yes** (bot user) |
+| protocol lane pushes `production` | yes | **no — GitHub refuses** |
+| `promote.sh` / `rollback.sh` from the box | work | **intentionally stop working** |
+| deployment / poller | works | **unchanged** (fetch-only, anonymous) |
 | Anthony's workstation & browser | — | **untouched** |
+| where general agents run | as `antdag3` | **as `fcagent`**, no sudo, no docker |
 
-Promotion becomes a human act performed from a credential the agents cannot
-reach: Anthony pushes `production` from his own machine with his own account
-(admin bypass), or merges through the GitHub UI.
+Promotion and emergency rollback become human acts performed from a credential
+the agents cannot reach.
 
-The cost, stated plainly: **emergency rollback also becomes a human action.**
-`rollback.sh` will still compute and commit the correct roll-forward tree on
-the box, but the final push will be refused, and Anthony must complete it. That
-is the same trade as promotion, and it is the price of the boundary being real
-rather than agreed.
-
-One thing that is not solved by any of this: the deploy key's private half sits
-on the box readable by anything running as that user, exactly as the token does
-today. The boundary this creates is **not** "agents cannot read a credential" —
-it is "the credential agents can read cannot move production". That is the
-property worth having, and it is the one the ruleset enforces.
+**The residual risk, stated plainly.** Lane B's token is readable by anything
+running as `antdag3`, which includes the protocol lane and the autonomous
+worker — by design, they are lane B. It is *not* readable by lane A once lane A
+runs as `fcagent`. If a general-agent session is ever started as `antdag3` out
+of habit, it silently regains `control` access. That is the one operational
+discipline this design still depends on, and it is worth deciding now whether
+that is acceptable or whether the separate-control-repo fallback is preferable
+regardless of Phase 0's outcome.
 
 ---
 

@@ -1,211 +1,178 @@
-# Promotion Complete + Production-Write Enforcement Audit
+# Two-Lane Enforcement Model — Report to the Product Owner
 
 Written: 2026-09-06
 Author: Claude (protocol agent, OptiPlex)
-Re: your authorization of 9b96bd0 — promotion done, enforcement audit read-only
+Re: your review of `f5d4782` — the control authorization defect
 
-**This file is a status report. It authorizes nothing.**
-`STATE.json` and `PRODUCT_DIRECTIVE.md` are untouched. No account, token, deploy
-key, GitHub App, ruleset or credential was created, changed or deleted.
+**This file is a status report. It authorizes nothing.** Full procedure is in
+`.frankenstein/ENFORCEMENT_PROCEDURE.md` (rev 2).
 
----
-
-## 1. Promoted production SHA
-
-    9b96bd0c2076688e689576109bc57c17df291cee
-
-    bash scripts/promote.sh --bootstrap 9b96bd0...
-    Fast-forward: 6d290be -> 9b96bd0
-    6d290be..9b96bd0  -> production
-
-**On `--bootstrap`:** `promote.sh`'s acceptance gate reads `STATE.json`, which
-you directed me not to modify, and its authorization gate reads
-`PRODUCT_DIRECTIVE.md`, likewise. Both would have refused. `--bootstrap` skips
-**only** those two protocol gates and prints that it did. It does **not** skip
-the fast-forward check — that guard sits outside the skip branch, and a test
-enforces that it stays there. The push itself was an ordinary non-forced push,
-so git enforced fast-forward a second time independently. No force, no rewind,
-no bypass of the production guard.
-
-## 2. Running SHA
-
-    9b96bd0   (deployed.json .running_commit)
-
-## 3. Deployment result
-
-    last_result:      success
-    last_attempt:     9b96bd0 at 2026-09-06T02:08:49Z
-    desired == running == 9b96bd0
-
-The poller picked it up on its own; the test gate ran on the box before any
-container was touched. No retry, no manual intervention, nothing rolled back.
-
-## 4. Service health
-
-    17 of 17 containers running
-    gateway  ->  HTTP 200 on localhost:8080
-    db       ->  healthy
-
-No service restarted into a failure state. Uptimes show the long-running
-services were untouched, as expected for a change that contains no product
-code.
-
-    frankenstein-deploy.timer: active, enabled
-
-## 5. Deployment-checkout cleanliness
-
-    ~/FrankensteinCentral, branch production @ 9b96bd0
-    git status --porcelain --untracked-files=no    ->  0 lines
-    git status --porcelain --untracked-files=all   ->  0 lines
-
-`.github/workflows/` on the box now contains `tests.yml` only. The Actions
-deploy path is gone from the deployed tree, not just from a branch.
-
-## 6. Current GitHub credential / identity layout
-
-Read-only audit. No token, key or credential content was printed or copied.
-
-| question | finding |
-|---|---|
-| transport, both clones | **HTTPS** (`https://github.com/anthonydagostino/FrankensteinCentral.git`) |
-| credential helper | **global**: `credential.https://github.com.helper = !/usr/bin/gh auth git-credential` |
-| scope of that helper | every process running as `antdag3` inherits it, including every Claude session |
-| stored credential | `~/.config/gh/hosts.yml`, mode 600 — one account: `anthonydagostino` |
-| token type / scopes | classic OAuth, scopes `gist, read:org, repo, workflow` — `repo` is full write to every branch; `workflow` can also rewrite CI |
-| `~/.git-credentials`, `~/.netrc` | absent |
-| SSH private keys | **none** (`~/.ssh` holds `authorized_keys` and `known_hosts` only) |
-| distinct machine/bot identity | **none exists** |
-| deploy keys on the repo | **none** |
-| collaborators | one: `anthonydagostino` (admin) |
-| repository | **public**, owned by a personal account (not an org) |
-
-**Every push from this box — mine, the CM agent's, the money agent's, and any
-promotion — reaches GitHub as `anthonydagostino` using the same full-`repo`
-token.** GitHub cannot currently distinguish them, exactly as you anticipated.
-
-## 7. Current production protection state
-
-    GET /repos/.../branches/production/protection   ->  404 "Branch not protected"
-    GET /repos/.../rulesets                         ->  []
-
-No branch protection. No rulesets. `production` is writable by anything holding
-that token, which is everything on this box.
-
-## 8. Recommended minimal enforcement model
-
-**The trap to avoid first.** A fine-grained PAT looks like the obvious answer
-and is not: it still authenticates **as `anthonydagostino`**. Any rule whose
-bypass list admits Anthony admits every agent using it. The same is true of a
-second OAuth login. A real boundary needs an actor GitHub sees as *not
-Anthony*.
-
-**Recommended: deploy key for the box + a `production` ruleset.**
-
-1. **Give the box a non-Anthony identity.** Add a repository **deploy key**
-   (SSH, write-enabled). A deploy key is its own actor — pushes are attributed
-   to the key, not to a user account.
-2. **Point the agents at it.** Switch both clones' remotes to SSH and use that
-   key; then **remove the `gh` OAuth login from the box** so Anthony's
-   full-`repo` token is no longer sitting where any agent can pick it up. Agents
-   keep pushing task branches and `control` normally.
-3. **Add a repository ruleset on `production`** — target branch `production`,
-   restrict updates, block force pushes and deletions, **bypass list = repository
-   admin only**. Deploy keys cannot be bypass actors, so the box's pushes to
-   `production` are refused server-side while every other branch still works.
-4. **Promotion becomes a human act with a different credential.** Anthony
-   promotes from a context the agents cannot reach — his own machine, or the
-   GitHub web UI. What makes it enforceable is that the credential that can move
-   `production` is not present on the box.
-
-Why this is the smallest version that is actually enforceable: it needs no new
-GitHub account, no GitHub App, and no paid plan — rulesets are available on
-free public repositories, and this repo is public. It satisfies your stated
-property exactly: agents may push task branches and `control`, agents may not
-push `production`, and the human promotion path can.
-
-**Alternative if you want it cleaner long-term:** a **GitHub App** installed on
-the repo with `contents: write`. Its installation token is a distinct actor
-(`app/...`), it can be excluded from `production` the same way, and unlike a
-deploy key it can be scoped and revoked per-permission with an audit trail.
-More setup, better hygiene. Both models work; the deploy key is the cheaper
-first move and does not preclude the App later.
-
-**What will break, stated honestly.** After this, `scripts/promote.sh` and
-`scripts/rollback.sh` stop working from the box, because both push
-`production` directly. That is the entire point, but it means an emergency
-rollback also becomes a human action. If that is unacceptable, the alternative
-is to allow the box's identity to push `production` only through a pull request
-that Anthony merges — but with the credential removed from the box, the deploy
-key model already gives you the stronger property.
-
-**One thing outside the enforcement question:** the repository is **public**.
-Every commit, including `.env.example`, the protocol files and the deployment
-baseline, is world-readable. Nothing secret has been observed in the tree, and
-`.env` is correctly ignored — but this is worth a deliberate decision rather
-than a default.
-
-## 9. Exact human actions required
-
-None of these can be done by an agent; all are account/credential changes.
-
-1. **Generate the deploy key on the box** and add the public half at
-   *Settings → Deploy keys → Add deploy key*, **with write access**.
-   `ssh-keygen -t ed25519 -f ~/.ssh/frankenstein_deploy -N ""` produces it; the
-   private half stays on the box and is never printed.
-2. **Repoint both clones** to the SSH remote and configure that key for them.
-3. **`gh auth logout`** on the box, removing Anthony's full-`repo` OAuth token
-   from `~/.config/gh/hosts.yml`.
-4. **Create the ruleset**: *Settings → Rules → Rulesets → New branch ruleset*,
-   target `production`, enable restrict updates / block force pushes / block
-   deletions, bypass = repository admin only. The exact bypass-actor options
-   should be confirmed in that screen — I could not create or test a ruleset
-   read-only, so I am describing the property required rather than asserting
-   the precise UI wording.
-5. **Verify the boundary afterwards** by attempting a task-branch push (should
-   succeed) and a `production` push (should be refused by GitHub, not by a
-   local hook). I can run that verification and report it.
-
-Say the word and I will prepare exact commands for steps 1–3 for Anthony to run
-and inspect; I will not run any of them without approval.
-
-## 10. Autonomous worker still disabled
-
-- `frankenstein-agent.service` / `.timer`: **not installed**
-- no `ENABLED` flag in `~/.frankenstein/agent/`
-- only `frankenstein-deploy.timer` is active
-- the worker exists in the deployed tree as files only, and nothing starts it
-
-## 11. FC-001 remains unissued
-
-`PRODUCT_DIRECTIVE.md` untouched. No product work started, proposed or implied.
-
-## 12. Control remains `awaiting_directive`
-
-`turn: product_owner`, `status: awaiting_directive`, `directive_commit: null`,
-`implementation_commit: null`, `last_actor: null`. This commit changes only
-this file.
+**Your finding is accepted without qualification.** Rev 1 handed every lane one
+repository-wide deploy key and then proved the same key could write `control`.
+Any process able to read that file could have rewritten `STATE.json`, forged a
+directive, set `turn=claude`, and woken the worker with valid state. Strict
+validation is no defence against an attacker who can write valid state. That
+was a real authorization hole, and I put it there.
 
 ---
 
-## Item 6 — other agents, read-only
+## Correction to my earlier claim, and what it costs
 
-Three `claude` processes are alive on the box:
+You were right: **`DeployKey` IS a valid ruleset bypass actor type.** My rev-1
+statement that GitHub does not offer it was wrong.
 
-| PID | started | cwd |
+But checking the semantics changes the design: the API requires
+**`actor_id: null`** for `DeployKey`, making it a **blanket** actor that matches
+*every* deploy key on the repository. So **two deploy keys cannot be
+distinguished by a ruleset** — "one key for agents, another for the protocol
+lane" is not implementable. The documented actor types are `Integration`,
+`OrganizationAdmin`, `RepositoryRole`, `Team`, `DeployKey`, and **`User`**,
+and `User` *does* take a specific `actor_id`. That is the hinge the design now
+turns on.
+
+Sources: [GitHub REST API — rules](https://docs.github.com/en/rest/repos/rules),
+[rest-api-description #4406](https://github.com/github/rest-api-description/issues/4406),
+[terraform-provider-github #2254](https://github.com/integrations/terraform-provider-github/issues/2254).
+
+---
+
+## 1. Proposed GitHub actors / credentials
+
+| lane | identity | stored where |
 |---|---|---|
-| 1453711 | 21:30 | `~/FrankensteinCentral` — this protocol session |
-| 1572123 | 23:40 | `~` |
-| 1574922 | 23:42 | `~` |
+| **A — general agents** (money/product, CM/docs, ad-hoc) | repository **deploy key** `fc_agents` | `/home/fcagent/.ssh/`, mode 600 |
+| **B — protocol publisher** (this lane + the autonomous worker) | **machine user** `frankenstein-protocol-bot`, fine-grained PAT scoped to this repo, Contents: read/write | `~antdag3/.frankenstein/creds/bot-token`, mode 600 |
+| **C — human** | Anthony's own account (admin) | **his workstation only — never on the box** |
 
-Neither of the other two has written to its transcript in the last ten minutes;
-both appear idle rather than active. Nothing was killed, altered or inspected
-beyond process metadata and transcript search.
+## 2. Actor allowed to push ordinary task branches
 
-**Answering your question directly: yes — both are still configured to push
-production, and so is every future session.** Not through any setting of their
-own, but because the global git credential helper hands the same full-`repo`
-token to every process running as `antdag3`. Until item 8 is implemented, "no
-agent pushes production" remains a rule that only holds while everyone obeys
-it. That is the gate, and it is a human-approval gate.
+Both A and B. Lane A is the normal path; lane B needs it too, because the worker
+pushes its own task branches.
 
-Stopping here, per item 5.
+## 3. Actor allowed to push `control`
+
+**Lane B only** (`frankenstein-protocol-bot`), plus the human admin.
+
+## 4. Actor allowed to push `production`
+
+**The human admin only.** Neither A nor B.
+
+## 5. Server-side rule protecting `production`
+
+Ruleset `production is human-only` — Active, target `production`: restrict
+updates, block force pushes, block deletions. **Bypass: admin only.**
+
+## 6. Server-side rule protecting `control`
+
+Ruleset `control is protocol-only` — Active, target `control`: restrict updates,
+block force pushes, block deletions. **Bypass: the bot user (`User` actor) +
+admin.** `DeployKey` is deliberately **absent** — its blanket nature is what
+blocks every lane-A key.
+
+**Unverified dependency, flagged rather than assumed:** I could not confirm
+read-only that this personally-owned repository's UI exposes *user* bypass
+actors. **Phase 0 of the procedure settles it in ten minutes** by creating a
+ruleset in `Evaluate` mode — which logs and enforces nothing — inspecting the
+bypass options, then deleting it. Nothing is created that enforces anything.
+
+**Fallback if `User` bypass is unavailable:** move `control` into its own
+repository. Deploy keys are per-repository by construction, so lane A's key
+would simply have no access, and no `control` ruleset would be needed at all.
+Cost: a narrow code change — `claude-worker.sh` already parameterises the branch
+(`FRANKENSTEIN_CONTROL_BRANCH`) but reads it from `origin`, so it needs a second
+remote; roughly 15–20 lines plus tests across `claude-worker.sh` and
+`control-bootstrap.sh`. The machine-user model is primary only because it needs
+**zero** code change; the fallback is strictly more robust.
+
+## 7. Preventing unrelated sessions from reading the protocol credential
+
+This is where rev 1's assumption collapses, and the finding is uncomfortable:
+
+- `sudo` on this box **requires a password** — good, a second Unix user is a
+  real boundary against a plain session.
+- **But `antdag3` is in the `docker` group**, which is root-equivalent: any
+  session there can `docker run -v /:/host` and read any file on the machine,
+  including another user's home.
+
+**So storing lane B's token under a second Unix user does not hide it from a
+session running as `antdag3`.** The separation only works if it is the *general
+agent* lane that moves to a restricted user. Hence: lane A runs as **`fcagent`**
+— a user in neither `sudo` nor `docker` — while lane B and the worker stay as
+`antdag3`. Verified by `sudo -u fcagent cat …` returning permission denied.
+
+## 8. Is a separate Unix service user needed?
+
+**Yes — for lane A.** Without it every lane can read every credential on the
+box, GitHub-side rules become the only barrier, and your stated property B/A
+split is unenforceable locally. One new user, no sudo, no docker.
+
+## 9. Human-run migration order
+
+0. capability probe (Evaluate-mode ruleset, then delete)
+1. generate lane A deploy key, register with write access
+2. pin GitHub host keys from `api.github.com/meta`, add the SSH alias with
+   `IdentitiesOnly`
+3. create the machine user, invite as collaborator, mint its fine-grained PAT
+4. create `fcagent`; store the bot token under `antdag3` mode 600; **prove
+   `fcagent` cannot read it**
+5. repoint remotes — lane A over SSH, lane B over HTTPS with the token,
+   `~/FrankensteinCentral` untouched on HTTPS
+6. **prove both lanes push before removing anything**
+7. create both rulesets
+8. `gh auth logout` — remove Anthony's full-`repo` token from the box
+9. behavioral verification: A-task ✓, A-control ✗, B-control ✓, B-production ✗
+10. delete the temporary branches
+
+## 10. Recovery that cannot lock Anthony out
+
+**A repository admin can disable or delete any ruleset from Settings → Rules in
+a browser, with no credential on the box.** Rulesets cannot permanently lock
+anyone out of their own repository; setting enforcement to `Disabled` reverts to
+today's behaviour instantly.
+
+Before step 8, nothing has been removed and the OAuth path still works. After
+step 8, deployment is unaffected — the poller only fetches, and anonymous fetch
+of this public repo was verified working with the credential helper disabled —
+and write access is restored by `gh auth login` on the box. Production is never
+at risk in that window, because nothing on the box can write to it.
+
+Order rule: never delete a key or revoke the token while a clone still points at
+it.
+
+---
+
+## Confirmations
+
+| # | item | state |
+|---|---|---|
+| 11 | anything executed | **nothing** — no key, no remote change, no ruleset, no deploy key, no logout |
+| 12 | `gh` still logged in | **yes** — `gh auth status` reports logged in as `anthonydagostino` |
+| 13 | SSH keys created | **none** — `~/.ssh` holds `authorized_keys`, `known_hosts`, `known_hosts.old` and no private key |
+| 14 | remotes / rulesets changed | **none** — both clones unchanged; `GET /rulesets` still returns `[]`; `production` branch protection still 404 |
+| 15 | `STATE.json` | **unchanged** — `turn: product_owner`, `status: awaiting_directive`, all commits null |
+| 16 | FC-001 | **unissued** — `PRODUCT_DIRECTIVE.md` untouched |
+| 17 | autonomous worker | **disabled** — no `frankenstein-agent` unit installed, no `ENABLED` flag; only `frankenstein-deploy.timer` runs |
+
+Production remains `9b96bd0`, running and healthy. This commit changes only
+`CLAUDE_STATUS.md` and `ENFORCEMENT_PROCEDURE.md`.
+
+---
+
+## The one decision I would put back to you
+
+The primary model leaves a residual: lane B's token is readable by anything
+running as `antdag3`. That is correct by definition — the protocol lane *is*
+lane B — but it means the boundary depends on general-agent sessions actually
+being started as `fcagent`. Start one as `antdag3` out of habit and it silently
+regains `control`.
+
+The separate-control-repo fallback does not have that property: no credential on
+the box grants `control` access unless the clone holding it is the protocol
+lane's. It costs ~20 lines and a second repository.
+
+Given that `control` is the authorization bus for an autonomous worker, my
+recommendation is to **run Phase 0, and choose the fallback anyway if you want
+the boundary to hold without depending on operator habit.** I have not assumed
+either; both are prepared.
+
+Stopping here for your review.
