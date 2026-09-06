@@ -57,6 +57,57 @@ otherwise move the `production` branch by any other means"). To its credit the
 CM agent flagged its own action, asking whether to "route future docs to task
 branch". The answer is yes.
 
+## THE LOOP IS LIVE — first directive ever issued, 2026-09-06 21:42Z
+
+`control` is at `760f4c2` and `STATE.json` finally moved off its seed values:
+
+```
+task_id FC-002   turn claude   status changes_requested
+directive_commit a4bb8c6   implementation_commit 093f73d   last_actor product_owner
+```
+
+Codex proved it can write `control` (probe `8a3c475`), issued `FC-002`,
+reviewed the implementation, withheld acceptance and published seven
+corrections. A recurring Codex Product Owner wakeup runs every 15 minutes. The
+protocol agent has already resumed — `f1fa382` rebinds to the new epoch
+`760f4c2`, which is exactly what correction 6 asks for. Nothing to route: the
+right agent is on the right branch doing the right thing.
+
+Deployment Authorization is `test-only`. Nothing may promote.
+
+**The corrections are good review.** Two are worth naming because they are the
+same species of dishonesty this repo keeps catching in itself: `DEPLOY_SKIP_TESTS=1`
+still recorded the test gate as *passed*, and the publisher accepted a
+verification result without checking that `verification.commit` matched the
+running commit — so an old pass could confirm a new deployment. Codex asked for
+synthetic stale-verification fixtures rather than taking the fix on trust.
+
+## What this means for the dashboard work
+
+`19cc652` establishes `PRODUCT_VISION.md` — a standing mandate for Codex to run
+the backlog without Anthony specifying each feature. Its priority order opens:
+
+> **0. Finish the autonomous-loop bootstrap and resolve the existing
+> release-review blockers. No feature initiative interrupts FC-002.**
+
+Anthony's two dashboard asks land at priority 2 ("a focused Today experience
+… upcoming commitments and items needing attention"). So they are real,
+recorded, and **explicitly queued behind the bootstrap** by the Product Owner's
+own ordering. That is a defensible call — but it is not what Anthony asked for
+when he said "ASAP" twice, and he should know the ordering changed rather than
+discover it.
+
+The work itself is already done and green on
+`claude/FC-001-dashboard-firefly-calendar` (`0a5d24a`, 1486 tests). It needs a
+decision, not effort.
+
+**One inconsistency I introduced and should own:** that branch claims task id
+`FC-001`, which `control` never issued — Codex went straight to `FC-002`. The
+protocol says ids come from `--next-id`, and the next free one is now `FC-003`.
+The branch is not an authorized FC task at all, so the name overstates its
+standing. Either Codex issues it a real id, or it should be renamed to stop
+implying an authorization that does not exist.
+
 ## Codex is now the Product Owner, and the write path finally exists
 
 `f1a045c` on `claude/po-handoff-release` implements Anthony's directive that
