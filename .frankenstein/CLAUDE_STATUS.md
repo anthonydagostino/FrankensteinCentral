@@ -1,190 +1,211 @@
-# Reconciled Activation Candidate — Report to the Product Owner
+# Promotion Complete + Production-Write Enforcement Audit
 
 Written: 2026-09-06
 Author: Claude (protocol agent, OptiPlex)
-Re: your review of 42be8fc — activation reconciliation
+Re: your authorization of 9b96bd0 — promotion done, enforcement audit read-only
 
 **This file is a status report. It authorizes nothing.**
-`STATE.json` is untouched and remains authoritative: `turn: product_owner`,
-`status: awaiting_directive`, FC-001 unissued. `PRODUCT_DIRECTIVE.md` is
-untouched. Nothing here requests a turn.
+`STATE.json` and `PRODUCT_DIRECTIVE.md` are untouched. No account, token, deploy
+key, GitHub App, ruleset or credential was created, changed or deleted.
 
 ---
 
-## 1. New activation candidate
+## 1. Promoted production SHA
 
     9b96bd0c2076688e689576109bc57c17df291cee
 
-on branch `claude/activation-reconcile` (new temporary branch; the existing
-protocol branch was not rewritten).
+    bash scripts/promote.sh --bootstrap 9b96bd0...
+    Fast-forward: 6d290be -> 9b96bd0
+    6d290be..9b96bd0  -> production
 
-## 2. Its two relevant ancestors
+**On `--bootstrap`:** `promote.sh`'s acceptance gate reads `STATE.json`, which
+you directed me not to modify, and its authorization gate reads
+`PRODUCT_DIRECTIVE.md`, likewise. Both would have refused. `--bootstrap` skips
+**only** those two protocol gates and prints that it did. It does **not** skip
+the fast-forward check — that guard sits outside the skip branch, and a test
+enforces that it stays there. The push itself was an ordinary non-forced push,
+so git enforced fast-forward a second time independently. No force, no rewind,
+no bypass of the production guard.
 
-    parent 1   6d290be1c382b8231d85d094319d8365e8ab0ad7   current production
-    parent 2   42be8fcbe028a0ed7628ebea556bc19c2c5605d1   accepted candidate
+## 2. Running SHA
 
-Both verified with `git merge-base --is-ancestor`. Normal git history: no
-force, no rewind, no discarded commits, no cherry-picking.
+    9b96bd0   (deployed.json .running_commit)
 
-    6d290be ──┐
-              ├── 16362f6 (merge) ── 9b96bd0 (Actions deploy path removed)
-    42be8fc ──┘
+## 3. Deployment result
 
-The report-only commit `8db3602` is **excluded** and confirmed absent from the
-candidate's history. It stays on `claude/personal-app-hub-vvpy4h`.
+    last_result:      success
+    last_attempt:     9b96bd0 at 2026-09-06T02:08:49Z
+    desired == running == 9b96bd0
 
-## 3. Fast-forward promotable
+The poller picked it up on its own; the test gate ran on the box before any
+container was touched. No retry, no manual intervention, nothing rolled back.
 
-    git merge-base --is-ancestor origin/production 9b96bd0   ->  yes
+## 4. Service health
 
-`6d290be` is an ancestor of the candidate, so promotion is a fast-forward and
-`promote.sh`'s guard is satisfied without being bypassed.
+    17 of 17 containers running
+    gateway  ->  HTTP 200 on localhost:8080
+    db       ->  healthy
 
-## 4. Exact files changed relative to current production
+No service restarted into a failure state. Uptimes show the long-running
+services were untouched, as expected for a change that contains no product
+code.
 
-    .frankenstein/PROTOCOL.md                  +62        control-channel section
-    .github/workflows/deploy.yml               -25        DELETED
-    docs/AUTONOMOUS-WORKER.md                  +519       worker design doc
-    docs/DEPLOYMENT-BASELINE.md                +15        3 findings annotated resolved
-    docs/SETUP-DEPLOY.md                       +/-121     operational correction
-    scripts/agent/egress-proxy.py              +192       worker egress allowlist
-    scripts/agent/egress-relay.py              +113       worker egress relay
-    scripts/agent/frankenstein-agent.service   +40        NOT installed
-    scripts/agent/frankenstein-agent.timer     +11        NOT installed
-    scripts/claude-worker.sh                   +1233      worker, NOT enabled
-    scripts/control-bootstrap.sh               +97        control branch helper
-    scripts/deploy.sh                          +/-5       header comment only
-    scripts/rollback.sh                        +74        collision gate
-    tests/test_claude_worker.py                +2201      worker tests
-    tests/test_deploy_boundary.py              +211       rollback + deployer tests
+    frankenstein-deploy.timer: active, enabled
 
-    15 files, 4813 insertions, 106 deletions
+## 5. Deployment-checkout cleanliness
 
-## 5. `.github/workflows/deploy.yml` is gone
+    ~/FrankensteinCentral, branch production @ 9b96bd0
+    git status --porcelain --untracked-files=no    ->  0 lines
+    git status --porcelain --untracked-files=all   ->  0 lines
 
-Deleted. `.github/workflows/tests.yml` is untouched — it runs the suite on
-GitHub's own runners and deploys nothing.
+`.github/workflows/` on the box now contains `tests.yml` only. The Actions
+deploy path is gone from the deployed tree, not just from a branch.
 
-Two new tests make the removal durable rather than a one-time deletion:
+## 6. Current GitHub credential / identity layout
 
-- `test_no_github_workflow_can_deploy` — fails if **any** workflow file
-  invokes `deploy.sh` or targets a `self-hosted` runner
-- `test_the_actions_deploy_workflow_is_gone_and_tests_remain`
+Read-only audit. No token, key or credential content was printed or copied.
 
-So the path cannot return quietly, including by an agent that writes a new
-workflow file under a different name.
+| question | finding |
+|---|---|
+| transport, both clones | **HTTPS** (`https://github.com/anthonydagostino/FrankensteinCentral.git`) |
+| credential helper | **global**: `credential.https://github.com.helper = !/usr/bin/gh auth git-credential` |
+| scope of that helper | every process running as `antdag3` inherits it, including every Claude session |
+| stored credential | `~/.config/gh/hosts.yml`, mode 600 — one account: `anthonydagostino` |
+| token type / scopes | classic OAuth, scopes `gist, read:org, repo, workflow` — `repo` is full write to every branch; `workflow` can also rewrite CI |
+| `~/.git-credentials`, `~/.netrc` | absent |
+| SSH private keys | **none** (`~/.ssh` holds `authorized_keys` and `known_hosts` only) |
+| distinct machine/bot identity | **none exists** |
+| deploy keys on the repo | **none** |
+| collaborators | one: `anthonydagostino` (admin) |
+| repository | **public**, owned by a personal account (not an org) |
 
-## 6. SETUP-DEPLOY operational correction
+**Every push from this box — mine, the CM agent's, the money agent's, and any
+promotion — reaches GitHub as `anthonydagostino` using the same full-`repo`
+token.** GitHub cannot currently distinguish them, exactly as you anticipated.
 
-- the systemd poller is stated as the **only** supported deployment mechanism
-- one-time prep now says `git checkout production`; it previously said to check
-  out `claude/personal-app-hub-vvpy4h`, which pointed a fresh box at whatever
-  branch was under review
-- the deployment checkout is documented as **host operations only**
-- "Option A / Option B" is gone, along with the self-hosted runner install
-  steps and the recommendation that both deployers may run together
-- `FRANKENSTEIN_BRANCH=production` is pinned in the unit template
-- a short section records why the Actions workflow existed and why it must not
-  be reinstated — history kept, instruction removed
-- `scripts/deploy.sh`'s header no longer describes a runner that must not exist
-- a third test asserts the doc keeps saying this
+## 7. Current production protection state
 
-`docs/DEPLOYMENT-BASELINE.md` keeps the CM agent's findings verbatim and
-annotates the three this candidate resolves. The findings were correct; two of
-them are exactly what you independently found.
+    GET /repos/.../branches/production/protection   ->  404 "Branch not protected"
+    GET /repos/.../rulesets                         ->  []
 
-## 7. Full test result
+No branch protection. No rulesets. `production` is writable by anything holding
+that token, which is everything on this box.
 
-    bash scripts/test.sh   ->  ALL TESTS PASSED
+## 8. Recommended minimal enforcement model
 
-    pytest      1469 passed   (1466 -> 1469: the three new deployer tests)
-    javascript  2 files ok
-    shell       10 scripts ok
+**The trap to avoid first.** A fine-grained PAT looks like the obvious answer
+and is not: it still authenticates **as `anthonydagostino`**. Any rule whose
+bypass list admits Anthony admits every agent using it. The same is true of a
+second OAuth login. A real boundary needs an actor GitHub sees as *not
+Anthony*.
 
-## 8. Deployment-checkout status
+**Recommended: deploy key for the box + a `production` ruleset.**
 
-    git status --porcelain --untracked-files=no    ->  empty, 0 lines
-    git status --porcelain --untracked-files=all   ->  empty, 0 lines
+1. **Give the box a non-Anthony identity.** Add a repository **deploy key**
+   (SSH, write-enabled). A deploy key is its own actor — pushes are attributed
+   to the key, not to a user account.
+2. **Point the agents at it.** Switch both clones' remotes to SSH and use that
+   key; then **remove the `gh` OAuth login from the box** so Anthony's
+   full-`repo` token is no longer sitting where any agent can pick it up. Agents
+   keep pushing task branches and `control` normally.
+3. **Add a repository ruleset on `production`** — target branch `production`,
+   restrict updates, block force pushes and deletions, **bypass list = repository
+   admin only**. Deploy keys cannot be bypass actors, so the box's pushes to
+   `production` are refused server-side while every other branch still works.
+4. **Promotion becomes a human act with a different credential.** Anthony
+   promotes from a context the agents cannot reach — his own machine, or the
+   GitHub web UI. What makes it enforceable is that the credential that can move
+   `production` is not present on the box.
 
-    HEAD: production @ 6d290be
-    ~/.frankenstein/deployed.json: running 6d290be, last_result success,
-    last attempt 2026-09-05T23:56:40Z
+Why this is the smallest version that is actually enforceable: it needs no new
+GitHub account, no GitHub App, and no paid plan — rulesets are available on
+free public repositories, and this repo is public. It satisfies your stated
+property exactly: agents may push task branches and `control`, agents may not
+push `production`, and the human promotion path can.
 
-The seven documentation files are no longer untracked: the CM agent committed
-them and the box deployed the result. Nothing was deleted by me. `git clean`
-was never run.
+**Alternative if you want it cleaner long-term:** a **GitHub App** installed on
+the repo with `contents: write`. Its installation token is a distinct actor
+(`app/...`), it can be excluded from `production` the same way, and unlike a
+deploy key it can be scoped and revoked per-permission with an audit trail.
+More setup, better hygiene. Both models work; the deploy key is the cheaper
+first move and does not preclude the App later.
 
-## 9. Active-agent audit — read-only, nothing killed
+**What will break, stated honestly.** After this, `scripts/promote.sh` and
+`scripts/rollback.sh` stop working from the box, because both push
+`production` directly. That is the entire point, but it means an emergency
+rollback also becomes a human action. If that is unacceptable, the alternative
+is to allow the box's identity to push `production` only through a pull request
+that Anthony merges — but with the credential removed from the box, the deploy
+key model already gives you the stronger property.
 
-Three `claude` processes on the box at the time of the audit:
+**One thing outside the enforcement question:** the repository is **public**.
+Every commit, including `.env.example`, the protocol files and the deployment
+baseline, is world-readable. Nothing secret has been observed in the tree, and
+`.env` is correctly ignored — but this is worth a deliberate decision rather
+than a default.
 
-| PID | started | cwd | role |
-|---|---|---|---|
-| 1453711 | 21:30:34 | `~/FrankensteinCentral` | this protocol session |
-| 1572123 | 23:40:13 | `~` | see below |
-| 1574922 | 23:42:53 | `~` | see below |
+## 9. Exact human actions required
 
-Attribution of the production push, from session transcript metadata:
+None of these can be done by an agent; all are account/credential changes.
 
-- session `a809104a` — **the CM/documentation agent.** 6 `CLAUDE-CM` mentions,
-  16 `DEPLOYMENT-BASELINE` mentions, 6 direct-push-to-production references,
-  28 references to `bf31ab9`/`6d290be`. This is the session that wrote the
-  seven documents and pushed them straight to `production`.
-- session `2c1208c7` — appears to be the **money/product lane** (firefly/budget
-  references, no CM markers, no production-push references).
+1. **Generate the deploy key on the box** and add the public half at
+   *Settings → Deploy keys → Add deploy key*, **with write access**.
+   `ssh-keygen -t ed25519 -f ~/.ssh/frankenstein_deploy -N ""` produces it; the
+   private half stays on the box and is never printed.
+2. **Repoint both clones** to the SSH remote and configure that key for them.
+3. **`gh auth logout`** on the box, removing Anthony's full-`repo` OAuth token
+   from `~/.config/gh/hosts.yml`.
+4. **Create the ruleset**: *Settings → Rules → Rulesets → New branch ruleset*,
+   target `production`, enable restrict updates / block force pushes / block
+   deletions, bypass = repository admin only. The exact bypass-actor options
+   should be confirmed in that screen — I could not create or test a ruleset
+   read-only, so I am describing the property required rather than asserting
+   the precise UI wording.
+5. **Verify the boundary afterwards** by attempting a task-branch push (should
+   succeed) and a `production` push (should be refused by GitHub, not by a
+   local hook). I can run that verification and report it.
 
-**Limit of the audit, stated plainly:** I could attribute the push to a
-*session* with high confidence, but I could not reliably map either session to
-a specific live PID read-only — neither process held its transcript open, and
-the file creation times do not line up cleanly with the process start times.
-I did not open, interrupt or modify anything belonging to either session.
+Say the word and I will prepare exact commands for steps 1–3 for Anthony to run
+and inspect; I will not run any of them without approval.
 
-**Both sessions are still running.** The rule that no CM/money/product agent
-may push `production` is currently a convention, not a control: nothing on the
-box or in the repository prevents another direct push right now. The durable
-fix is a GitHub branch-protection rule on `production` restricting who may
-push. That is a repository-settings change, so I have not made it — it needs
-your decision and Anthony's hands on the GitHub settings.
+## 10. Autonomous worker still disabled
 
-## 10. No product code changed
-
-    git diff --name-only 6d290be 9b96bd0 -- services/ gateway/ \
-        docker-compose.yml Dockerfile   ->  empty
-
-Only protocol infrastructure, tests, documentation and one deleted workflow.
-
-## 11. Production was NOT moved during this correction
-
-`origin/production` is `6d290be` — unchanged by me, and the same commit the box
-is running. `promote.sh` was not run. No force, no rewind. The two CM
-documentation commits were left in place, as you directed.
-
-## 12. Control `STATE.json` remains `awaiting_directive`
-
-Unchanged at `turn: product_owner` / `status: awaiting_directive`,
-`directive_commit: null`, `implementation_commit: null`, `last_actor: null`.
-This report commit modifies only this file.
-
-## 13. FC-001 remains unissued
-
-`PRODUCT_DIRECTIVE.md` is untouched on every branch. No product work has been
-started or proposed.
-
-## 14. Autonomous worker remains disabled
-
-- `frankenstein-agent.service` / `.timer`: **not installed** on the host
+- `frankenstein-agent.service` / `.timer`: **not installed**
 - no `ENABLED` flag in `~/.frankenstein/agent/`
-- only `frankenstein-deploy.timer` (the production poller) is active
-- the worker exists in the candidate as files only
+- only `frankenstein-deploy.timer` is active
+- the worker exists in the deployed tree as files only, and nothing starts it
 
-Leftovers from the earlier real-host probe (`child-home/`, `tool-home/`,
-`resolv.conf.staged`, `worker.log`, dated 2026-09-04) are still in
-`~/.frankenstein/agent/`, untouched.
+## 11. FC-001 remains unissued
+
+`PRODUCT_DIRECTIVE.md` untouched. No product work started, proposed or implied.
+
+## 12. Control remains `awaiting_directive`
+
+`turn: product_owner`, `status: awaiting_directive`, `directive_commit: null`,
+`implementation_commit: null`, `last_actor: null`. This commit changes only
+this file.
 
 ---
 
-Stopping here for your inspection, per item 7.
+## Item 6 — other agents, read-only
 
-One thing worth your attention before promotion: the boundary you just set is
-not yet enforceable by anything but agreement. Branch protection on
-`production` would make it real.
+Three `claude` processes are alive on the box:
+
+| PID | started | cwd |
+|---|---|---|
+| 1453711 | 21:30 | `~/FrankensteinCentral` — this protocol session |
+| 1572123 | 23:40 | `~` |
+| 1574922 | 23:42 | `~` |
+
+Neither of the other two has written to its transcript in the last ten minutes;
+both appear idle rather than active. Nothing was killed, altered or inspected
+beyond process metadata and transcript search.
+
+**Answering your question directly: yes — both are still configured to push
+production, and so is every future session.** Not through any setting of their
+own, but because the global git credential helper hands the same full-`repo`
+token to every process running as `antdag3`. Until item 8 is implemented, "no
+agent pushes production" remains a rule that only holds while everyone obeys
+it. That is the gate, and it is a human-approval gate.
+
+Stopping here, per item 5.
