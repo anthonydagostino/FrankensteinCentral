@@ -76,12 +76,54 @@ def test_protocol_states_the_core_rules():
 
 # ---- initialized neutral, with nothing fabricated ----------------------
 
-def test_initial_state_cannot_start_product_work():
+AUTHORIZATIONS = {"none", "test-only", "deploy-approved"}
+
+
+def test_state_and_directive_identify_the_same_task():
+    """The committed protocol files must agree with each other.
+
+    This replaces an assertion that the state was still the BOOTSTRAP state.
+    The worker materializes the real control directive and STATE.json into
+    every task branch, so a live task legitimately says turn=claude with a
+    real authorization -- and scripts/test.sh is the deploy gate, so asserting
+    the idle state here would block every real task from ever deploying.
+    What must hold is that the two files tell the same story.
+    """
+    state = json.loads(STATE.read_text())
+    text = DIRECTIVE.read_text()
+
+    ids = re.findall(r"(?mi)^[ \t]*Task[ \t]*ID[ \t]*:[ \t]*(\S+)[ \t]*$", text)
+    assert len(ids) == 1, f"expected exactly one Task ID line, found {ids}"
+    assert ids[0] == state["task_id"], (
+        f"PRODUCT_DIRECTIVE.md names {ids[0]} but STATE.json says "
+        f"{state['task_id']}")
+
+
+def test_the_directive_carries_exactly_one_known_authorization():
+    """A missing or unrecognized value is treated as `none` by the protocol,
+    so an ambiguous directive must never reach the branch in the first place.
+    """
+    text = DIRECTIVE.read_text()
+    auth = re.findall(
+        r"(?mi)^[ \t]*Deployment Authorization[ \t]*:[ \t]*(\S+)[ \t]*$", text)
+    assert len(auth) == 1, (
+        f"expected exactly one Deployment Authorization line, found {auth}")
+    assert auth[0] in AUTHORIZATIONS, (
+        f"{auth[0]!r} is not one of {sorted(AUTHORIZATIONS)}")
+
+
+def test_an_unauthorized_state_cannot_start_product_work():
+    """Whatever the committed state is, the helper's verdict must match it."""
     state = json.loads(STATE.read_text())
     claude_may_work = (state["turn"] == "claude" and
                        state["status"] in ("ready_for_implementation",
                                            "changes_requested"))
-    assert not claude_may_work, "initial state would authorize product work"
+    out = helper().stdout
+    if claude_may_work:
+        assert "Claude MAY implement" in out, out
+    else:
+        assert "Claude MAY implement" not in out, (
+            "the helper authorized work the state does not permit:\n" + out)
 
 
 def test_no_fabricated_handoff():
@@ -113,10 +155,60 @@ def test_no_fabricated_handoff():
             "the bootstrap placeholder")
 
 
-def test_directive_is_a_placeholder_not_an_authorized_task():
-    text = DIRECTIVE.read_text().lower()
-    assert "placeholder" in text
-    assert "deployment authorization: none" in text
+def a_real_commit():
+    """The helper verifies that a recorded SHA exists in this repository, so a
+    made-up one is reported as a problem rather than exercising the state."""
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                          capture_output=True, text=True,
+                          timeout=60).stdout.strip()
+
+
+REAL_SHA = a_real_commit()
+
+
+@pytest.mark.parametrize("turn,status,extra,verdict", [
+    ("claude", "ready_for_implementation", {}, "Claude MAY implement"),
+    ("claude", "changes_requested", {"implementation_commit": REAL_SHA},
+     "Claude MAY implement"),
+    ("claude", "blocked", {}, "BLOCKED"),
+    ("claude", "implementing", {}, "Not Claude's turn"),
+    ("product_owner", "awaiting_review", {"implementation_commit": REAL_SHA},
+     "Not Claude's turn"),
+    ("product_owner", "awaiting_directive", {}, "Not Claude's turn"),
+    ("none", "accepted", {"implementation_commit": REAL_SHA},
+     "Accepted; no task in flight"),
+])
+def test_the_helper_verdict_matches_every_realistic_state(turn, status, extra,
+                                                          verdict):
+    """Exercise the real protocol states, not just the bootstrap one.
+
+    These are the states a live task actually passes through, each supplied
+    COHERENTLY -- an incoherent state is a separate case below, and the helper
+    is required to block on it rather than render a verdict.
+    """
+    state = json.loads(STATE.read_text())
+    state.update(turn=turn, status=status, **extra)
+    r = helper(state_text=json.dumps(state, indent=2))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert verdict in r.stdout, f"{turn}/{status} gave:\n{r.stdout}"
+    if verdict != "Claude MAY implement":
+        assert "Claude MAY implement" not in r.stdout
+
+
+@pytest.mark.parametrize("turn,status,extra,why", [
+    ("product_owner", "awaiting_review", {"implementation_commit": None},
+     "awaiting review with nothing implemented"),
+    ("claude", "accepted", {"implementation_commit": REAL_SHA},
+     "accepted while still Claude's turn"),
+    ("claude", "ready_for_implementation", {"implementation_commit": "b" * 40},
+     "a recorded SHA that is not a commit in this repository"),
+])
+def test_an_incoherent_state_blocks_instead_of_guessing(turn, status, extra, why):
+    """The protocol's rule is "do not guess -- block"."""
+    state = json.loads(STATE.read_text())
+    state.update(turn=turn, status=status, **extra)
+    r = helper(state_text=json.dumps(state, indent=2))
+    assert r.returncode != 0, f"{why} was tolerated:\n{r.stdout}"
 
 
 # ---- the helper ---------------------------------------------------------
@@ -125,7 +217,10 @@ def test_helper_reports_status_and_succeeds():
     r = helper()
     assert r.returncode == 0, r.stderr
     assert "Frankenstein Development Protocol" in r.stdout
-    assert "Do not start product work" in r.stdout
+    # The verdict depends on the committed state and is asserted against it in
+    # test_an_unauthorized_state_cannot_start_product_work; what must always
+    # hold here is that the helper renders a verdict at all.
+    assert "  => " in r.stdout, r.stdout
 
 
 def test_helper_check_passes_on_the_committed_state():

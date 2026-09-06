@@ -19,12 +19,34 @@ shell access to the box and no credentials:
 | `handoff` | `.frankenstein/TASK_BRANCH` | where the code is |
 | `status`  | `.frankenstein/RELEASE_STATUS.json` | what was promoted, what is running, what failed |
 
-`RELEASE_STATUS.json` has a stable `schema` field and separates **promotion**
-from **deployment**: `promotion.production_commit` is what the release service
-pushed; `deployment.running_commit` is what the box actually has running;
-`deployment.promoted_but_not_running` is true when those disagree. It contains
-SHAs, protocol state, timestamps and result codes only — never credentials,
-command output, file contents, or personal data.
+**Branch on `attention_required`, not on a list of conditions you have to
+remember.** It is true whenever anything needs the Product Owner: a failure, a
+promoted commit that is not running, a failed verification, or deployment
+evidence that is missing, unreadable or malformed. That last case matters —
+"the record is gone" must never be indistinguishable from "all clear", so
+`deployment_evidence` is reported explicitly and an unknown running commit is
+never treated as a match.
+
+`RELEASE_STATUS.json` (currently `schema: 2`) keeps four different facts
+apart, because collapsing them is how a stale success comes to stand in for
+present health:
+
+| field | means |
+|---|---|
+| `test_gate.result` | did `scripts/test.sh` pass for that commit |
+| `promotion.production_commit` | what the release service pushed |
+| `deployment.running_commit` | what the box actually has running |
+| `verification.result` | post-deploy health of the running stack |
+
+`deployment.promoted_but_not_running` is true when production holds a commit
+that is not confirmed running — **including when nothing confirms anything**.
+
+`verification.result` is `not_run` today, honestly: no post-deploy health
+check exists yet, and a successful deploy proves only that containers started.
+It will never be reported as `pass` on the strength of a deploy result.
+
+It contains SHAs, protocol state, timestamps and result codes only — never
+credentials, command output, file contents, or personal data.
 
 **A single poll of those two refs is sufficient.** No webhook, no API token,
 and no write access is required to read them; the repository is public.
@@ -42,9 +64,8 @@ woken on a recurring basis and, on each wake, perform this check:
    and control still says turn=claude:
        -> a handoff is waiting for review. Review it.
 4. Read .frankenstein/RELEASE_STATUS.json on `status`.
-   If deployment.promoted_but_not_running is true, or
-   verification.result is "fail", or failures[] is non-empty:
-       -> a release needs attention.
+   If attention_required is true:
+       -> a release needs attention. failures[] says why.
 5. Otherwise: nothing to do. Do not message Anthony.
 ```
 

@@ -77,7 +77,11 @@ def world(tmp_path):
     (state_dir / "deployed.json").write_text(json.dumps({
         "production_branch": "production", "last_attempt_commit": prod,
         "last_attempt_at": "2026-09-06T02:00:00+00:00", "last_result": "success",
-        "running_commit": prod, "last_success_at": "2026-09-06T02:00:00+00:00"}))
+        "running_commit": prod, "last_success_at": "2026-09-06T02:00:00+00:00",
+        "test_gate": {"result": "passed", "commit": prod,
+                      "at": "2026-09-06T02:00:00+00:00"},
+        "verification": {"result": "not_run", "commit": prod,
+                         "at": "2026-09-06T02:00:00+00:00"}}))
     return {"remote": remote, "tmp": tmp_path, "state": state_dir,
             "prod": prod, "ctl": ctl}
 
@@ -103,7 +107,7 @@ def test_it_publishes_the_record_to_the_status_branch(world):
     r = run_publisher(world)
     assert r.returncode == 0, r.stderr
     doc = published(world)
-    assert doc["schema"] == 1
+    assert doc["schema"] == 2
     assert doc["control"]["task_id"] == "FC-001"
     assert doc["control"]["status"] == "accepted"
     assert doc["control"]["deployment_authorization"] == "deploy-approved"
@@ -111,7 +115,10 @@ def test_it_publishes_the_record_to_the_status_branch(world):
     assert doc["promotion"]["production_commit"] == world["prod"]
     assert doc["deployment"]["running_commit"] == world["prod"]
     assert doc["deployment"]["in_sync"] is True
-    assert doc["verification"]["result"] == "pass"
+    # A deploy started containers; it did not prove the app is healthy.
+    assert doc["test_gate"]["result"] == "passed"
+    assert doc["test_gate"]["commit"] == world["prod"]
+    assert doc["verification"]["result"] == "not_run"
 
 
 def test_promotion_and_deployment_are_distinguished(world):
@@ -121,14 +128,17 @@ def test_promotion_and_deployment_are_distinguished(world):
         "last_attempt_at": "2026-09-06T02:00:00+00:00",
         "last_result": "tests_failed",
         "running_commit": "0" * 40,
-        "last_success_at": "2026-09-05T00:00:00+00:00"}))
+        "last_success_at": "2026-09-05T00:00:00+00:00",
+        "test_gate": {"result": "failed", "commit": world["prod"],
+                      "at": "2026-09-06T02:00:00+00:00"}}))
     assert run_publisher(world).returncode == 0
     doc = published(world)
     assert doc["promotion"]["production_commit"] == world["prod"]
     assert doc["deployment"]["running_commit"] == "0" * 40
     assert doc["deployment"]["in_sync"] is False
     assert doc["deployment"]["promoted_but_not_running"] is True
-    assert doc["verification"]["result"] == "fail"
+    assert doc["test_gate"]["result"] == "failed"
+    assert doc["attention_required"] is True
     assert any("deploy" in (f["result"] or "") for f in doc["failures"])
 
 
@@ -239,3 +249,61 @@ def test_it_never_promotes_or_deploys():
 
 def test_it_reads_control_at_the_authorization_epoch():
     assert "rev-list -1" in code() and ".frankenstein/STATE.json" in code()
+
+
+# ══ absence of evidence must be actionable ════════════════════════════
+#
+# Codex review finding 2: a missing deployment record produced
+# running_commit=null, failures=[], verification=unknown and
+# promoted_but_not_running=false -- so every check in docs/CODEX-WAKEUP.md
+# fell through and the Product Owner saw nothing wrong.
+
+
+@pytest.mark.parametrize("state,expected", [
+    ("missing", "deployment_evidence_missing"),
+    ("malformed", "deployment_evidence_malformed"),
+])
+def test_unusable_deployment_evidence_demands_attention(world, state, expected):
+    rec = world["state"] / "deployed.json"
+    if state == "missing":
+        rec.unlink()
+    else:
+        rec.write_text("{not json at all")
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["deployment_evidence"] == state
+    assert doc["attention_required"] is True, \
+        "unusable deployment evidence was reported as nothing to see"
+    assert any(f["result"] == expected for f in doc["failures"]), doc["failures"]
+    assert doc["verification"]["result"] == "unknown"
+    assert doc["verification"]["source"] == "no usable deployment record"
+
+
+def test_a_promoted_commit_with_no_confirmed_deployment_demands_attention(world):
+    """An unknown running commit must never read as 'in sync'."""
+    (world["state"] / "deployed.json").write_text(json.dumps({
+        "production_branch": "production", "last_attempt_commit": None,
+        "last_attempt_at": None, "last_result": None,
+        "running_commit": None, "last_success_at": None}))
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["deployment"]["running_commit"] is None
+    assert doc["deployment"]["in_sync"] is False
+    assert doc["deployment"]["promoted_but_not_running"] is True, \
+        "production holds a commit that nothing confirms is running"
+    assert doc["attention_required"] is True
+    assert any(f["result"] == "no_confirmed_deployment" for f in doc["failures"])
+
+
+def test_a_healthy_deployment_needs_no_attention(world):
+    """The flag must not be permanently on, or it means nothing."""
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["deployment_evidence"] == "ok"
+    assert doc["test_gate"]["result"] == "passed"
+    # "not_run" is the truth: nothing performs a post-deploy health check yet.
+    # It must NOT hold attention_required on forever, and must NOT be dressed
+    # up as a pass.
+    assert doc["verification"]["result"] == "not_run"
+    assert doc["failures"] == []
+    assert doc["attention_required"] is False

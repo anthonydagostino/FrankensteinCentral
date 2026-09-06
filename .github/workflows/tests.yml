@@ -1,6 +1,7 @@
 name: tests
 
-# Every push and every PR. The suite is fast (~15s) and gates the deploy.
+# Every push and every PR. The suite gates the deploy, so CI must exercise the
+# SAME code paths the box does — including the worker's containment boundary.
 on:
   push:
   pull_request:
@@ -10,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The status helper compares the running commit against the desired
+          # one, so it needs real refs. A single-branch shallow checkout made
+          # that comparison silently unreachable in CI while it worked on the
+          # box.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -18,5 +25,29 @@ jobs:
           node-version: "20"
       - name: Install deps
         run: pip install pytest fastapi httpx uvicorn
+
+      # The worker refuses to run a child unconfined, so without working
+      # unprivileged user namespaces the entire containment suite cannot run.
+      # Enable them at the RUNNER level. This is deliberately not
+      # FRANKENSTEIN_ALLOW_UNSANDBOXED=1: that would drop the child boundary to
+      # make tests pass, which is the one thing this suite exists to prevent.
+      - name: Enable unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
+      # Fail here, loudly and early, rather than as 24 confusing test failures.
+      - name: Verify the sandbox is actually available
+        run: |
+          unshare --user --mount --pid --fork true \
+            || { echo "::error::this runner cannot create user+mount+PID namespaces;"\
+                      " the containment suite would be skipped, which is not acceptable in CI"; \
+                 exit 1; }
+
       - name: Run all tests
+        # Containment coverage must never be silently skipped in CI.
+        env:
+          FRANKENSTEIN_REQUIRE_SANDBOX: "1"
         run: bash scripts/test.sh
