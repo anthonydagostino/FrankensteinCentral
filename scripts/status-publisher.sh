@@ -115,12 +115,26 @@ def scrub(text, cap=200):
     t = re.sub(r'\s+', ' ', t).strip()
     return t[:cap]
 
-def load_json(path):
+def load_deployment(path):
+    """Deployment evidence is either PRESENT or explicitly ACTIONABLE.
+
+    Returning {} for a missing or corrupt record made "we have no idea what is
+    running" indistinguishable from "nothing is wrong": running_commit came
+    out null, failures came out empty, and every check in docs/CODEX-WAKEUP.md
+    fell through. Absence of evidence is now evidence that needs attention.
+    """
+    if not os.path.exists(path):
+        return {}, "missing"
     try:
         with open(path) as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
+            doc = json.load(fh)
+    except (OSError, PermissionError):
+        return {}, "unreadable"
+    except ValueError:
+        return {}, "malformed"
+    if not isinstance(doc, dict):
+        return {}, "malformed"
+    return doc, "ok"
 
 def sha_or_none(v):
     return v if isinstance(v, str) and re.fullmatch(r'[0-9a-f]{40}', v) else None
@@ -139,7 +153,7 @@ if ctl_directive:
     found = re.findall(r'(?mi)^\s*Deployment Authorization:\s*(\S+)\s*$', ctl_directive)
     auth = found[0] if len(found) == 1 else None
 
-deployed = load_json(deployed_path)
+deployed, evidence = load_deployment(deployed_path)
 
 releases = []
 try:
@@ -164,8 +178,12 @@ prod = sha_or_none(prod)
 
 # PROMOTION and DEPLOYMENT are different facts and are never collapsed:
 # production may hold a commit that has not deployed, or that failed to deploy.
-promoted_not_deployed = bool(prod and running and prod != running)
+# An unknown running commit is NOT the same as a matching one. If production
+# holds a commit and nothing confirms it is running, that needs attention.
+promoted_not_deployed = bool(prod and (not running or prod != running))
 deploy_result = deployed.get("last_result")
+if evidence == "ok" and not isinstance(deploy_result, (str, type(None))):
+    evidence = "malformed"
 
 failures = []
 for r in real[-10:]:
@@ -176,9 +194,36 @@ if deploy_result and deploy_result != "success":
     failures.append({"at": deployed.get("last_attempt_at"),
                      "result": "deploy_" + scrub(str(deploy_result), 60),
                      "detail": "deploy of %s did not succeed" % ((attempted or "?")[:7])})
+if evidence != "ok":
+    failures.append({
+        "at": None,
+        "result": "deployment_evidence_" + evidence,
+        "detail": "the deployment record is %s; what is running cannot be "
+                  "confirmed from this box" % evidence})
+elif prod and not running:
+    failures.append({
+        "at": None, "result": "no_confirmed_deployment",
+        "detail": "production holds %s but no successful deployment is "
+                  "recorded" % prod[:7]})
+
+test_gate = deployed.get("test_gate") if isinstance(deployed.get("test_gate"), dict) else None
+post_verify = deployed.get("verification") if isinstance(deployed.get("verification"), dict) else None
+
+# Post-deploy verification is reported ONLY if something actually performed
+# one. Inferring health from a deploy result is how a stale success came to
+# stand in for present health.
+if evidence != "ok":
+    verification_result, verification_source = "unknown", "no usable deployment record"
+elif post_verify and post_verify.get("result") in ("pass", "fail"):
+    verification_result = post_verify["result"]
+    verification_source = "post-deploy health check"
+else:
+    verification_result = "not_run"
+    verification_source = ("no post-deploy health check is performed; the "
+                           "deploy gate is the only evidence")
 
 doc = {
-  "schema": 1,
+  "schema": 2,
   "generated_at": datetime.datetime.now(datetime.timezone.utc)
                     .isoformat(timespec="seconds").replace("+00:00", "Z"),
   "control": {
@@ -210,18 +255,33 @@ doc = {
     "last_result": scrub(str(deploy_result), 60) if deploy_result else None,
     "last_success_at": deployed.get("last_success_at"),
   },
+  "deployment_evidence": evidence,
+  # THREE DIFFERENT FACTS, never collapsed. A passing test gate says the code
+  # was good enough to deploy; a successful deploy says the containers were
+  # started; neither says the application is healthy right now.
+  "test_gate": {
+    "result": (test_gate.get("result") if isinstance(test_gate, dict)
+               else None),
+    "commit": sha_or_none((test_gate or {}).get("commit")),
+    "at": (test_gate or {}).get("at"),
+  },
   "verification": {
-    # scripts/test.sh runs inside deploy.sh and ABORTS the deploy on failure,
-    # so a successful deployment is itself the verification signal. A separate
-    # verdict is only meaningful once a post-deploy check publishes one.
-    "result": ("pass" if deploy_result == "success"
-               else ("fail" if deploy_result in ("tests_failed", "compose_failed")
-                     else "unknown")),
-    "source": "deploy gate (scripts/test.sh inside deploy.sh)",
-    "at": deployed.get("last_attempt_at"),
+    "result": verification_result,
+    "source": verification_source,
+    "commit": sha_or_none((post_verify or {}).get("commit")),
+    "at": (post_verify or {}).get("at"),
   },
   "failures": failures[-10:],
 }
+
+# One field the Product Owner can branch on, so a missing check in a prompt
+# cannot silently mean "all clear".
+doc["attention_required"] = bool(
+    doc["failures"]
+    or doc["deployment"]["promoted_but_not_running"]
+    or doc["deployment_evidence"] != "ok"
+    or doc["verification"]["result"] == "fail"
+    or doc["test_gate"]["result"] == "failed")
 
 with open(out, "w") as fh:
     fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")

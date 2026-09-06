@@ -147,8 +147,30 @@ def run_worker(world, *args, mock=None, extra_env=None):
         env["FRANKENSTEIN_MOCK_CLAUDE"] = mock
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(["bash", str(WORKER), *args], capture_output=True,
-                          text=True, timeout=300, env=env)
+    r = subprocess.run(["bash", str(WORKER), *args], capture_output=True,
+                       text=True, timeout=300, env=env)
+    _guard_sandbox(r)
+    return r
+
+
+# The worker REFUSES to run a child unconfined, which is correct -- but it
+# means every behavioural test here needs working user+mount+PID namespaces.
+# Where they are unavailable (a Mac, a restricted runner) the honest outcome
+# is a visible SKIP, not a failure and never FRANKENSTEIN_ALLOW_UNSANDBOXED=1:
+# that flag would drop the child boundary to make tests green, which is the
+# one thing this suite exists to prevent.
+#
+# CI sets FRANKENSTEIN_REQUIRE_SANDBOX=1, so a runner that cannot sandbox
+# FAILS loudly instead of quietly skipping the containment coverage.
+NO_SANDBOX = "cannot create the required user+mount+PID namespaces"
+REQUIRE_SANDBOX = os.environ.get("FRANKENSTEIN_REQUIRE_SANDBOX") == "1"
+
+
+def _guard_sandbox(r):
+    if NO_SANDBOX in (r.stderr or "") and not REQUIRE_SANDBOX:
+        pytest.skip("unprivileged user+mount+PID namespaces are unavailable on "
+                    "this host, so the worker cannot run a contained child. "
+                    "Set FRANKENSTEIN_REQUIRE_SANDBOX=1 to make this a failure.")
 
 
 # A mock that RECORDS what it was actually handed before doing its work.

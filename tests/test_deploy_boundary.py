@@ -544,12 +544,22 @@ def test_fetch_is_a_gate_not_a_best_effort():
 STATUS = ROOT / "scripts" / "frankenstein-status.sh"
 
 
-def status_with(tmp_path, record: dict | None):
+def status_with(tmp_path, record: dict | None, branch=None):
+    """Run the status helper against a controlled deployment record.
+
+    `branch` pins which ref counts as production. Without it the helper
+    resolves origin/production from whatever the ambient checkout happens to
+    have -- which exists on the box and does NOT exist on a CI runner that
+    checked out a single branch, so a test relying on it passes locally and
+    fails in CI.
+    """
     state = tmp_path / "st"
     state.mkdir(exist_ok=True)
     if record is not None:
         (state / "deployed.json").write_text(json.dumps(record))
     env = dict(os.environ, FRANKENSTEIN_STATE_DIR=str(state))
+    if branch is not None:
+        env["FRANKENSTEIN_BRANCH"] = branch
     return subprocess.run(["bash", str(STATUS)], capture_output=True, text=True,
                           cwd=ROOT, env=env, timeout=60).stdout
 
@@ -573,10 +583,24 @@ def test_null_running_status_does_not_claim_containers_are_down(tmp_path):
 
 
 def test_mismatched_running_commit_reports_pending(tmp_path):
+    # HEAD always resolves, so the desired commit is known in every
+    # environment and the MISMATCH is what is being exercised here.
     out = status_with(tmp_path, {
         "production_branch": "production", "running_commit": "c" * 40,
-        "last_attempt_commit": "d" * 40, "last_result": "tests_failed"})
+        "last_attempt_commit": "d" * 40, "last_result": "tests_failed"},
+        branch="HEAD")
     assert "DEPLOYMENT PENDING" in out
+    assert "is not the running commit" in out
+
+
+def test_an_undeterminable_desired_commit_reports_pending(tmp_path):
+    """Silence would read as health. It must not."""
+    out = status_with(tmp_path, {
+        "production_branch": "production", "running_commit": "c" * 40,
+        "last_attempt_commit": "c" * 40, "last_result": "success"},
+        branch="no-such-branch-anywhere")
+    assert "DEPLOYMENT PENDING" in out
+    assert "cannot be determined" in out
 
 
 def test_status_does_not_truncate_placeholder_text(tmp_path):

@@ -1,10 +1,10 @@
 {
   "protocol_version": 1,
-  "task_id": "FC-001",
-  "turn": "product_owner",
-  "status": "awaiting_directive",
-  "directive_commit": null,
+  "task_id": "FC-002",
+  "turn": "claude",
+  "status": "ready_for_implementation",
+  "directive_commit": "fc5f3404c28f11c55a1a8cbc2b7edf86fd2f6874",
   "implementation_commit": null,
-  "last_actor": null,
-  "updated_at": "2026-09-01T00:00:00Z"
+  "last_actor": "product_owner",
+  "updated_at": "2026-09-06T21:12:18Z"
 }

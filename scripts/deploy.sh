@@ -41,8 +41,21 @@ now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 doc.update({"production_branch": branch, "last_attempt_commit": sha,
             "last_attempt_at": now, "last_result": result,
             "running_commit": running or None})
+# Three DIFFERENT facts, each tied to the commit it is about:
+#   test_gate     did scripts/test.sh pass for this commit
+#   last_result   what the deploy attempt itself did
+#   verification  post-deploy health of the running stack
+# Collapsing them let an old "success" stand in for present health.
+doc["test_gate"] = {"result": {"tests_failed": "failed"}.get(result, "passed")
+                    if result != "tests_skipped" else "skipped",
+                    "commit": sha, "at": now}
+doc.setdefault("verification", {"result": "not_run", "commit": None, "at": None})
 if result == "success":
     doc["last_success_at"] = now
+    # A deploy proves the containers were started, NOT that the app is
+    # healthy. No post-deploy health check runs yet, so this stays explicitly
+    # unknown rather than inheriting the deploy result.
+    doc["verification"] = {"result": "not_run", "commit": sha, "at": now}
 json.dump(doc, open(path, "w"), indent=2)
 PY
 }
@@ -91,7 +104,15 @@ fi
 
 # Build changed images and (re)start everything. --remove-orphans cleans up
 # any services that were removed from the compose file.
-$DC up -d --build --remove-orphans
+# set -euo pipefail would abort here WITHOUT recording anything, leaving the
+# record showing the previous success — so a failed deploy looked healthy to
+# anything reading deployed.json. Capture the status and record it.
+if ! $DC up -d --build --remove-orphans; then
+  echo "!! COMPOSE FAILED — the stack was not brought up cleanly."
+  echo "!! Commit under test: $(git rev-parse --short HEAD)"
+  record "compose_failed" "$(git rev-parse HEAD)"
+  exit 1
+fi
 
 # Keep disk tidy — drop dangling images from old builds.
 docker image prune -f >/dev/null 2>&1 || true

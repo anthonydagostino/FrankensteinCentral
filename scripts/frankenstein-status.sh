@@ -187,6 +187,11 @@ try:
     # A null/absent running_commit is PENDING too: no successfully deployed SHA
     # is confirmed in the record. That says nothing about whether containers
     # happen to be up — only that no deployment has been confirmed.
+    if not prod_sha:
+        # Desired unknown means the comparison below cannot be made at all.
+        # Saying nothing would read as "nothing is wrong".
+        print("  ! DEPLOYMENT PENDING — the desired commit cannot be "
+              "determined, so the running commit cannot be confirmed")
     if not running:
         print(f"  ! DEPLOYMENT PENDING — desired {prod_sha or '(unknown)'} has no "
               f"confirmed running deployment")
