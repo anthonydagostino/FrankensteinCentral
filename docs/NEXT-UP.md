@@ -57,6 +57,42 @@ otherwise move the `production` branch by any other means"). To its credit the
 CM agent flagged its own action, asking whether to "route future docs to task
 branch". The answer is yes.
 
+## Codex is now the Product Owner, and the write path finally exists
+
+`f1a045c` on `claude/po-handoff-release` implements Anthony's directive that
+Codex replaces ChatGPT as Product Owner. `AGENTS.md` is Codex's operating
+contract: **Codex writes directives to `control`**, Claude implements and
+publishes to a new orphan `handoff` branch, Codex accepts on `control`, and the
+release service promotes. 1,846 lines, 48 new release-service tests, nothing
+activated, `STATE.json` untouched everywhere.
+
+This is the answer to the 403 from the last review — the channel no longer
+depends on ChatGPT's read-only integration, because the Product Owner changed.
+
+**It also partly addresses my flag.** The worker can no longer write `control`:
+it published its handoff to the same branch that carries `status: accepted`,
+which was self-authorization. Splitting `handoff` from `control` closes that,
+and it is a real improvement I did not ask for and should credit.
+
+**The rest of the flag stands.** Acceptance still comes from a model and the
+release service still promotes to the live box with no human in that decision.
+Privilege separation between two agents is not the same as a human gate. Worth
+deciding deliberately, per the earlier note — and `gh auth logout` on the box
+should still come last.
+
+## FC-001 is 18 hours old and has not started
+
+The owner asked for the Firefly card and the calendar "ASAP" at roughly
+02:00 UTC. It is drafted in `docs/PROPOSED-FC-001.md` and has not been
+committed to `control`, so no agent is authorized to build it. The whole day
+went to autonomy and release plumbing.
+
+That plumbing was itself directed by the owner, so this is not an agent going
+off-task. It is a queueing problem: the machinery for delivering directives has
+been built repeatedly while the one directive that exists sits undelivered.
+**Codex can now commit it** — that is precisely its role under `AGENTS.md`, and
+`docs/PROPOSED-FC-001.md` is written to be lifted straight in.
+
 ## The owner has issued scope
 
 On 2026-09-06 he asked, directly and unprompted, for two things "ASAP": everything
