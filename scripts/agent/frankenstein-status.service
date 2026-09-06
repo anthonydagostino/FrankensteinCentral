@@ -1,0 +1,31 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED.
+# Publishes the release/deployment record to the `status` branch so the
+# Product Owner can see what happened without shell access to the box.
+#
+# DELIBERATELY separate from frankenstein-release.*: the release service's
+# entire guarantee is that its only effect on the world is one fast-forward
+# push to production. Giving it a second ref to write would destroy that.
+# This unit therefore holds NO production credential, and its clone's pre-push
+# hook permits exactly one ref: refs/heads/status.
+[Unit]
+Description=FrankensteinCentral status publisher (one poll)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fcstatus
+Environment=FRANKENSTEIN_STATE_DIR=/home/fcstatus/.frankenstein
+Environment=FRANKENSTEIN_REPO_URL=https://github.com/anthonydagostino/FrankensteinCentral.git
+# It must READ the deploy record the poller writes, and the release record the
+# release service writes. Read-only in both cases; it never writes either.
+Environment=FRANKENSTEIN_DEPLOYED=/home/antdag3/.frankenstein/deployed.json
+Environment=FRANKENSTEIN_RELEASE_DIR=/home/fcrelease/.frankenstein/release
+TimeoutStartSec=300
+ExecStart=/usr/bin/env bash /home/fcstatus/FrankensteinCentral/scripts/status-publisher.sh
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/fcstatus/.frankenstein

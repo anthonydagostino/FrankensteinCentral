@@ -122,8 +122,18 @@ git -C "$WORK" fetch --quiet --no-tags origin \
 git -C "$WORK" fetch --quiet --no-tags origin \
       "+$TASK_REF_GLOB:refs/remotes/task/*" 2>/dev/null
 
-CONTROL_COMMIT="$(git -C "$WORK" rev-parse --verify --quiet "refs/remotes/origin/$CONTROL_BRANCH^{commit}")"
-[ -n "$CONTROL_COMMIT" ] || noop "no control branch — nothing authorizes a release"
+CONTROL_TIP="$(git -C "$WORK" rev-parse --verify --quiet "refs/remotes/origin/$CONTROL_BRANCH^{commit}")"
+[ -n "$CONTROL_TIP" ] || noop "no control branch — nothing authorizes a release"
+
+# ── the authorization epoch, NOT the control tip ─────────────────────────
+# The Product Owner writes content first and flips STATE.json last. Between
+# those two commits the tip has moved but nothing has been authorized, and
+# reading a directive from the tip while reading state from an older commit is
+# exactly how a half-written authorization gets acted on. Read everything at
+# the last commit that touched STATE.json, so a content-only commit is inert.
+CONTROL_COMMIT="$(git -C "$WORK" rev-list -1 "$CONTROL_TIP" -- .frankenstein/STATE.json 2>/dev/null)"
+[ -n "$CONTROL_COMMIT" ] \
+  || noop "no commit on control has ever written .frankenstein/STATE.json"
 PROD_COMMIT="$(git -C "$WORK" rev-parse --verify --quiet "refs/remotes/origin/$PROD_BRANCH^{commit}")"
 [ -n "$PROD_COMMIT" ] || fail "no $PROD_BRANCH branch on the remote"
 
@@ -210,13 +220,51 @@ case "$AUTH_CHECK" in
               fail "deployment authorization could not be validated" ;;
 esac
 
+# ── revocation: the epoch authorizes, but the TIP must not have withdrawn it ──
+# State is read at the epoch so a half-written cycle cannot be acted on. That
+# alone would make a content-only revocation invisible, because withdrawing
+# `deploy-approved` edits the directive without touching STATE.json. So the
+# authorization must ALSO still stand at the tip. Disagreement is never
+# resolved in favour of releasing.
+if [ "$CONTROL_TIP" != "$CONTROL_COMMIT" ]; then
+  TIP_DIRECTIVE="$(cfile "$CONTROL_TIP" PRODUCT_DIRECTIVE.md)"
+  TIP_AUTH="$(printf '%s' "$TIP_DIRECTIVE" | python3 -c "
+import re, sys
+text = sys.stdin.read()
+auth = re.findall(r'(?mi)^\s*Deployment Authorization:\s*(\S+)\s*\$', text)
+ids  = re.findall(r'(?m)^\s*Task ID:\s*(\S+)\s*\$', text)
+print('%s|%s' % (auth[0] if len(auth) == 1 else '<none>',
+                 ids[0] if len(ids) == 1 else '<none>'))
+" 2>/dev/null)"
+  case "$TIP_AUTH" in
+    "deploy-approved|$TASK_ID") ;;
+    *) noop "authorization no longer stands at the control tip ${CONTROL_TIP:0:7} (found '${TIP_AUTH}') — releasing nothing" ;;
+  esac
+fi
+
 # ══ ROLLBACK — append-only, and authorized by the same gate ══════════════
 if [ -n "$ROLLBACK_TO" ]; then
   git -C "$WORK" rev-parse --verify --quiet "$ROLLBACK_TO^{commit}" >/dev/null \
     || { record "rollback_unknown" "" "$ROLLBACK_TO"
          fail "rollback_to ${ROLLBACK_TO:0:7} is not a commit in this repository"; }
-  [ "$ROLLBACK_TO" != "$PROD_COMMIT" ] \
-    || noop "rollback_to is already what production runs (${PROD_COMMIT:0:7})"
+  # ── idempotence ────────────────────────────────────────────────────────
+  # A rollback moves production FORWARD to a new commit carrying an OLDER
+  # tree, so production never becomes equal to rollback_to. Comparing commits
+  # would therefore be true on every subsequent poll and build a fresh
+  # rollback commit every cycle, forever -- and a service restart would not
+  # clear it, because the authorization on control has not changed.
+  #
+  # What a rollback actually asserts is "production should be running this
+  # tree". That IS satisfied after the first one, so compare trees. This is
+  # derived entirely from the repository, so it holds across restarts and
+  # across a rebuilt work clone.
+  WANT_TREE="$(git -C "$WORK" rev-parse --verify --quiet "$ROLLBACK_TO^{tree}")"
+  HAVE_TREE="$(git -C "$WORK" rev-parse --verify --quiet "$PROD_COMMIT^{tree}")"
+  [ -n "$WANT_TREE" ] && [ -n "$HAVE_TREE" ] \
+    || { record "rollback_tree_unreadable" "" "$ROLLBACK_TO"
+         fail "could not read the trees for the rollback comparison"; }
+  [ "$WANT_TREE" != "$HAVE_TREE" ] \
+    || noop "production already carries the tree of ${ROLLBACK_TO:0:7} — rollback already applied, doing nothing"
   git -C "$WORK" merge-base --is-ancestor "$ROLLBACK_TO" "$PROD_COMMIT" \
     || { record "rollback_not_released" "" "$ROLLBACK_TO"
          fail "rollback_to ${ROLLBACK_TO:0:7} is not an ancestor of production — you can only roll back to something that was actually released"; }

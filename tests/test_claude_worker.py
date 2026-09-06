@@ -363,7 +363,10 @@ def test_control_change_during_run_blocks_the_handoff(world):
     r = run_worker(world, mock=HIJACK_SIGNAL + MOCK_GOOD)
     watcher.join(timeout=10)
     assert r.returncode != 0, "stale worker published over newer control state"
-    assert "control moved" in r.stderr
+    # The hijack rewrites STATE.json, so the authorization epoch itself moves.
+    # (A content-only commit does NOT, and must not abort the run -- see
+    # test_a_content_only_control_commit_does_not_retrigger_the_worker.)
+    assert "authorization changed" in r.stderr
     assert "NOT overwriting" in r.stderr
 
     ctl = world["tmp"] / "check-f"
@@ -2354,3 +2357,84 @@ def test_a_new_control_commit_authorizes_a_new_run(world):
     assert sh("git", "merge-base", "--is-ancestor", first, second,
               cwd=probe, check=False).returncode == 0, \
         "the handoff branch was rewritten rather than appended to"
+
+
+# ══ N. the authorization epoch ════════════════════════════════════════
+#
+# The Product Owner writes content first and flips STATE.json last, so there
+# is always a window in which control's tip has moved but nothing new has
+# been authorized. The worker's "have I already answered this?" token used to
+# be the control TIP, which made every such intermediate commit look like a
+# fresh authorization -- and the worker would re-run, implementing a
+# half-written correction against the previous cycle's state.
+
+
+def control_content_only(world, *, note="touch", tag="c"):
+    """A control commit that changes content but never STATE.json."""
+    ctl = world["tmp"] / f"ctl-content-{tag}"
+    if ctl.exists():
+        sh("rm", "-rf", str(ctl))
+    sh("git", "clone", "-q", str(world["remote"]), str(ctl))
+    sh("git", "config", "user.email", "t@t", cwd=ctl)
+    sh("git", "config", "user.name", "t", cwd=ctl)
+    sh("git", "checkout", "-q", "-B", "control", "origin/control", cwd=ctl)
+    state_file = ctl / ".frankenstein" / "STATE.json"
+    before = state_file.read_text()
+    doc = ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md"
+    doc.write_text(doc.read_text() + f"\n<!-- {note} -->\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "commit", "-qm", f"[PO] content only: {note}", cwd=ctl)
+    sh("git", "push", "-q", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    assert state_file.read_text() == before, "fixture must not touch STATE.json"
+    return git("rev-parse", "HEAD", cwd=ctl)
+
+
+def test_a_content_only_control_commit_does_not_retrigger_the_worker(world):
+    """THE RACE: control stays implementation-authorizing after a handoff.
+
+    Nothing flips control when a run finishes -- the Product Owner does that
+    after reviewing. So the only thing stopping an endless re-run is the
+    "already answered" token. Keying it on the control tip meant the Product
+    Owner merely starting to write a correction re-armed the worker.
+    """
+    set_control_directive(world, turn="claude",
+                          status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    first = run_worker(world, mock=MOCK_GOOD)
+    assert first.returncode == 0, first.stderr
+    assert "published handoff" in first.stderr, first.stderr
+
+    control_content_only(world, note="Product Owner begins a correction")
+
+    again = run_worker(world, "--status")
+    assert again.returncode == 0, again.stderr
+    assert "already answers control" in again.stderr, (
+        "a content-only control commit re-armed the worker:\n" + again.stderr)
+    assert "AUTHORIZED" not in again.stderr
+
+
+def test_the_state_flip_after_a_correction_does_retrigger_the_worker(world):
+    """The epoch must still MOVE when authorization genuinely changes."""
+    set_control_directive(world, turn="claude",
+                          status="ready_for_implementation",
+                          task_id="FC-001", objective="work")
+    assert run_worker(world, mock=MOCK_GOOD).returncode == 0
+
+    control_content_only(world, note="correction text")
+    still = run_worker(world, "--status")
+    assert "already answers control" in still.stderr
+
+    # Now the Product Owner completes the transition by flipping state.
+    set_control_directive(world, turn="claude", status="changes_requested",
+                          task_id="FC-001", objective="corrected work")
+    now = run_worker(world, "--status")
+    assert now.returncode == 0, now.stderr
+    assert "AUTHORIZED" in now.stderr, (
+        "the state flip did not re-authorize the worker:\n" + now.stderr)
+
+
+def test_the_worker_resolves_control_at_the_state_epoch():
+    """The property, asserted in the code itself."""
+    src = code(WORKER)
+    assert "rev-list -1" in src and ".frankenstein/STATE.json" in src, \
+        "the worker must resolve control at the last commit that wrote STATE.json"

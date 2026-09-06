@@ -597,3 +597,131 @@ def test_systemd_templates_exist_but_are_not_enabled():
         assert "NOT INSTALLED" in t.read_text()
     unit = (ROOT / "scripts" / "agent" / "frankenstein-release.service").read_text()
     assert "User=fcrelease" in unit, "the release service must not run as the human"
+
+
+# ══ 10. rollback idempotence and the authorization epoch ═══════════════
+#
+# Both of these are about the SAME hazard: an authorization on control that
+# has not changed must not cause repeated or premature action. A rollback
+# authorization stays valid indefinitely, and the Product Owner's two-commit
+# write order means control's tip moves before the authorization does.
+
+
+def control_content_only(world, *, authorization=None, task_id="FC-001",
+                         note="touch"):
+    """A control commit that changes content but never STATE.json.
+
+    This is exactly what the Product Owner produces between "write the
+    content" and "flip the state" -- the window in which control's tip has
+    moved but nothing new has been authorized.
+    """
+    ctl = world["tmp"] / "ctl"
+    doc = ctl / ".frankenstein" / "PRODUCT_DIRECTIVE.md"
+    before = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    if authorization is not None:
+        doc.write_text(f"# Product Directive\n\nTask ID: {task_id}\n"
+                       f"Deployment Authorization: {authorization}\n\n"
+                       f"## Objective\n{note}\n")
+    else:
+        doc.write_text(doc.read_text() + f"\n<!-- {note} -->\n")
+    sh("git", "add", "-f", ".frankenstein", cwd=ctl)
+    sh("git", "commit", "-qm", f"[PO] content only: {note}", cwd=ctl)
+    sh("git", "push", "-q", "origin", "HEAD:refs/heads/control", cwd=ctl)
+    after = json.loads((ctl / ".frankenstein" / "STATE.json").read_text())
+    assert before == after, "the fixture must not have changed STATE.json"
+    return git("rev-parse", "HEAD", cwd=ctl)
+
+
+def test_rollback_executes_at_most_once(world):
+    """The regression: rollback used to re-fire on every single poll.
+
+    A rollback creates a NEW commit carrying an OLDER tree, so production
+    never becomes equal to rollback_to. Comparing commits made the guard
+    true forever, and the 2-minute timer appended a rollback commit every
+    2 minutes.
+    """
+    _, impl, _ = accepted_release(world)
+    good = prod_tip(world)
+    assert run_release(world).returncode == 0
+    set_control(world, status="accepted", rollback_to=good, impl=None)
+
+    assert run_release(world).returncode == 0
+    after_first = prod_tip(world)
+
+    for _ in range(3):
+        r = run_release(world)
+        assert r.returncode == 0, r.stderr
+        assert "already carries the tree" in r.stderr, r.stderr
+
+    assert prod_tip(world) == after_first, \
+        "a repeated poll of an unchanged rollback authorization moved production again"
+
+
+def test_rollback_stays_idempotent_after_the_work_clone_is_destroyed(world):
+    """Idempotence must be derived from the repository, not from local state.
+
+    A service restart, a wiped box, or the work clone being rebuilt must not
+    make an already-applied rollback run a second time.
+    """
+    _, impl, _ = accepted_release(world)
+    good = prod_tip(world)
+    assert run_release(world).returncode == 0
+    set_control(world, status="accepted", rollback_to=good, impl=None)
+    assert run_release(world).returncode == 0
+    after_first = prod_tip(world)
+
+    import shutil
+    shutil.rmtree(world["release_dir"] / "work", ignore_errors=True)
+    (world["release_dir"] / "releases.jsonl").unlink(missing_ok=True)
+
+    r = run_release(world)
+    assert r.returncode == 0, r.stderr
+    assert prod_tip(world) == after_first
+
+
+def test_a_content_only_commit_does_not_make_an_idle_control_authorize(world):
+    """Control's tip moving is not an authorization."""
+    set_control(world, status="awaiting_directive", turn="product_owner",
+                last_actor=None)
+    before = prod_tip(world)
+    control_content_only(world, authorization="deploy-approved",
+                         note="half-written acceptance")
+    r = run_release(world)
+    assert r.returncode == 0, r.stderr
+    assert "NO-OP" in r.stderr
+    assert prod_tip(world) == before, \
+        "a content-only control commit released work that was never accepted"
+
+
+def test_revoking_deploy_approval_after_acceptance_blocks_the_release(world):
+    """A withdrawn authorization must stop a release that had not run yet.
+
+    Revocation edits the directive without touching STATE.json, so it does
+    not move the authorization epoch. Reading only at the epoch would make
+    the revocation invisible.
+    """
+    accepted_release(world)
+    before = prod_tip(world)
+    control_content_only(world, authorization="none", note="withdrawn")
+    r = run_release(world)
+    assert r.returncode == 0, r.stderr
+    assert "no longer stands at the control tip" in r.stderr, r.stderr
+    assert prod_tip(world) == before, "a revoked authorization still released"
+
+
+def test_a_cosmetic_content_commit_does_not_block_a_real_release(world):
+    """The revocation guard must not become a general veto on any edit."""
+    _, impl, _ = accepted_release(world)
+    control_content_only(world, note="typo fix in the objective text")
+    r = run_release(world)
+    assert r.returncode == 0, r.stderr
+    assert prod_tip(world) == impl, \
+        "an unrelated content edit blocked a properly accepted release"
+
+
+def test_the_release_service_reads_state_at_the_epoch_not_the_tip():
+    """The property, asserted in the code itself."""
+    src = code()
+    assert "rev-list -1" in src and ".frankenstein/STATE.json" in src, \
+        "the release service must resolve control state at the last commit " \
+        "that wrote STATE.json"

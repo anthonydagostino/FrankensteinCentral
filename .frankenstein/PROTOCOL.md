@@ -281,7 +281,6 @@ therefore deploys nothing, by construction rather than by promise.
 **The human leaves the message path, not the decision path.** These remain
 explicit human approvals regardless of what `STATE.json` says:
 
-- production deployment
 - credential creation, rotation or disclosure
 - actions that spend money
 - destructive deletion of meaningful data
@@ -290,6 +289,13 @@ explicit human approvals regardless of what `STATE.json` says:
 - widening autonomous egress
 - high-risk host changes
 - irreversible operations
+
+**Routine production deployment is NOT on that list.** It is the Product
+Owner's authority, recorded as `deploy-approved` on `control`, and carried out
+by the deterministic release service. Asking Anthony to approve an ordinary
+release would put him back in the message path, which is precisely what this
+protocol exists to end. A release that would do one of the things above is not
+a routine release, and the exception applies to the *action*, not the deploy.
 
 `turn: claude` authorizes implementation. It has never authorized any of the
 above, and direct messaging does not change that.
@@ -439,19 +445,34 @@ Claude implements
             → the OptiPlex deploys it
 ```
 
-| | branch | who moves it | effect |
+| | branch | who writes it | effect |
 |---|---|---|---|
-| review | `claude/FC-###-<slug>` | Claude, freely | nothing runs; code is visible on GitHub |
-| production | `production` | `scripts/promote.sh` only | the OptiPlex deploys within ~60s |
+| review | `claude/FC-###-<slug>` | the Claude worker, freely | nothing runs; code is visible on GitHub |
+| directives | `control` | the Product Owner, **only** | nothing runs |
+| handoffs | `handoff` | the Claude worker, **only** | nothing runs |
+| reporting | `status` | the status publisher, **only** | nothing runs |
+| production | `production` | the **release service**, only | the OptiPlex deploys within ~60s |
+
+Claude writes neither `control` nor `production`. The Product Owner writes
+neither `handoff` nor `production`, and never holds the production credential.
+`control`, `handoff` and `status` are orphan branches: they share no history
+with `production` and can never be fast-forwarded into it.
 
 The poller (`scripts/autopull.sh`) watches **only** the production branch. It
 never falls back to whatever branch happens to be checked out — that fallback
 is exactly what made every review push a production deploy. If the production
 branch is missing it deploys **nothing** and says so.
 
-`scripts/promote.sh` is the only promotion path. It is fast-forward only, and
-refuses unless protocol status is `accepted` **and** Deployment Authorization
-is `deploy-approved`.
+`scripts/release-service.sh` is the routine promotion path, and the only one
+that runs unattended. It re-derives the whole chain — directive →
+implementation → acceptance — from `control`, and fails closed on any
+mismatch. It is fast-forward only, pushes exactly one ref, and contains no
+model and no product logic.
+
+`scripts/promote.sh` remains as a **manual operator tool** for bootstrap and
+emergencies. It enforces the same acceptance and authorization gates, but it
+is not part of the autonomous loop and must not appear in one. If a routine
+release requires a human to run it, the design has a hole in it.
 
 ## Deployment authorization
 
