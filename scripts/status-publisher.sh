@@ -185,6 +185,33 @@ deploy_result = deployed.get("last_result")
 if evidence == "ok" and not isinstance(deploy_result, (str, type(None))):
     evidence = "malformed"
 
+test_gate = deployed.get("test_gate") if isinstance(deployed.get("test_gate"), dict) else None
+post_verify = deployed.get("verification") if isinstance(deployed.get("verification"), dict) else None
+
+# Post-deploy verification is reported ONLY if something actually performed
+# one, AND only if it was performed on the commit whose health is in question.
+# A verdict is about ONE commit; carrying it forward is how an old pass came
+# to confirm a new deployment.
+verify_commit = sha_or_none((post_verify or {}).get("commit"))
+subject = running or attempted        # the commit whose health is being asked about
+
+if evidence != "ok":
+    verification_result, verification_source = "unknown", "no usable deployment record"
+elif not post_verify or post_verify.get("result") not in ("pass", "fail"):
+    verification_result = "not_run"
+    verification_source = "no post-deploy readiness result was recorded"
+elif not verify_commit:
+    verification_result = "unknown"
+    verification_source = "a readiness result was recorded without a commit"
+elif subject and verify_commit != subject:
+    # Distinguishable and actionable: something IS verified, just not this.
+    verification_result = "stale"
+    verification_source = ("the readiness result is for %s, but %s is the "
+                           "commit in question" % (verify_commit[:7], subject[:7]))
+else:
+    verification_result = post_verify["result"]
+    verification_source = "post-deploy readiness check"
+
 failures = []
 for r in real[-10:]:
     if r.get("result") not in ("released", "dry_run", None):
@@ -200,27 +227,16 @@ if evidence != "ok":
         "result": "deployment_evidence_" + evidence,
         "detail": "the deployment record is %s; what is running cannot be "
                   "confirmed from this box" % evidence})
+elif verification_result in ("fail", "stale"):
+    failures.append({
+        "at": (post_verify or {}).get("at"),
+        "result": "verification_" + verification_result,
+        "detail": verification_source})
 elif prod and not running:
     failures.append({
         "at": None, "result": "no_confirmed_deployment",
         "detail": "production holds %s but no successful deployment is "
                   "recorded" % prod[:7]})
-
-test_gate = deployed.get("test_gate") if isinstance(deployed.get("test_gate"), dict) else None
-post_verify = deployed.get("verification") if isinstance(deployed.get("verification"), dict) else None
-
-# Post-deploy verification is reported ONLY if something actually performed
-# one. Inferring health from a deploy result is how a stale success came to
-# stand in for present health.
-if evidence != "ok":
-    verification_result, verification_source = "unknown", "no usable deployment record"
-elif post_verify and post_verify.get("result") in ("pass", "fail"):
-    verification_result = post_verify["result"]
-    verification_source = "post-deploy health check"
-else:
-    verification_result = "not_run"
-    verification_source = ("no post-deploy health check is performed; the "
-                           "deploy gate is the only evidence")
 
 doc = {
   "schema": 2,
@@ -268,8 +284,10 @@ doc = {
   "verification": {
     "result": verification_result,
     "source": verification_source,
-    "commit": sha_or_none((post_verify or {}).get("commit")),
+    "commit": verify_commit,
     "at": (post_verify or {}).get("at"),
+    "degraded": (post_verify or {}).get("degraded") or [],
+    "required_failed": (post_verify or {}).get("required_failed") or [],
   },
   "failures": failures[-10:],
 }
@@ -280,7 +298,7 @@ doc["attention_required"] = bool(
     doc["failures"]
     or doc["deployment"]["promoted_but_not_running"]
     or doc["deployment_evidence"] != "ok"
-    or doc["verification"]["result"] == "fail"
+    or doc["verification"]["result"] in ("fail", "stale")
     or doc["test_gate"]["result"] == "failed")
 
 with open(out, "w") as fh:

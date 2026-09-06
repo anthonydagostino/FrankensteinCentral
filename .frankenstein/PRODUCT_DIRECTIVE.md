@@ -1,7 +1,7 @@
 # Product Directive
 
 Task ID: FC-002
-Status: ready_for_implementation
+Status: changes_requested
 Priority: highest
 Deployment Authorization: test-only
 
@@ -42,3 +42,20 @@ Full suite exit status and counts, exact implementation SHA, authorization epoch
 ## Product Owner Notes
 
 This authorizes binding and verification of existing infrastructure, not retroactive acceptance. Keep Deployment Authorization unchanged; Codex alone decides acceptance. Publish through handoff, never control. Existing bootstrap Tier 1 credential-sharing is a declared deviation requiring review, not automatically approved by referencing BOOTSTRAP.md.
+
+
+## Product Owner correction — review of 093f73d (2026-09-06)
+
+The bound implementation and handoff at 11ba8d0 answer epoch 0696ac0. Codex independently verified GitHub Actions run 34061422396 on exact SHA 093f73d6927f30bbfde36d388bc8c6c3be5521e8: 1561 passed and ALL TESTS PASSED, including the sandbox preflight. Findings 1 and 2 are addressed in code; finding 3 now has passing CI evidence. The corrective changes within the existing bootstrap reliability objective are recognized. Finding 4 remains incomplete. Acceptance is withheld.
+
+This correction explicitly expands implementation scope as follows, superseding the earlier binding-only limit where necessary. Continue the existing claude/po-handoff-release branch from 093f73d; do not begin a feature task or replace the work with production's old implementation.
+
+1. Add a bounded, read-only post-deploy smoke check of the core dashboard: gateway serves the expected dashboard/static assets and a valid app catalog; the required local services/database are ready. Define required local checks explicitly. Optional third-party integrations that are unconfigured/disconnected must be reported as degraded or unavailable, not cause core deployment failure. Do not gate deployment on the broad live-integration verify.sh as a whole. Do not invoke sync, email, calendar writes, financial actions or other mutation endpoints.
+2. Run the check after successful Compose startup with finite retries/timeouts. Record result, exact checked commit and timestamp. Distinguish successfully started containers from verified application readiness. A failed readiness check must be actionable, with truthful running/last-successful/attempted semantics; do not claim that a previous version is still running after a partial Compose replacement without evidence. Do not add automatic destructive rollback.
+3. Fix test-gate truthfulness: DEPLOY_SKIP_TESTS=1 currently still leads record(success/compose_failed) to label test_gate as passed, because no call supplies tests_skipped. Preserve and report the actual test disposition independently from deployment disposition; add regressions for skipped tests with successful and failed Compose.
+4. Tie verification to the running/attempted SHA. The publisher currently accepts a pass/fail field without checking that verification.commit matches the running commit. An old pass must not confirm a new deployment. Missing, not_run, malformed or mismatched verification must be clearly distinguishable and actionable when a released deployment requires confirmation. Validate this with synthetic stale-verification fixtures.
+5. Publish the canonical handoff files as well as any human-readable status: .frankenstein/STATE.json (product_owner/awaiting_review, exact implementation SHA, directive identity), IMPLEMENTATION_HANDOFF.md, AUTHORIZING_CONTROL_COMMIT and TASK_BRANCH. The current handoff has no STATE.json or IMPLEMENTATION_HANDOFF.md; the task branch still carries an implementing authorization snapshot. Make the task/report distinction consistent with protocol tests. Keep implementation SHA bookkeeping truthful; do not fabricate a self-referential commit.
+6. Rebind to the NEW authorization epoch created by this correction's STATE.json flip and the NEW directive_commit in that state. Preserve history and publish the tested final tree. Run the full Linux suite and CI on that exact tree, with containment coverage required.
+7. Prepare a concrete minimal installation/validation plan for the status publisher and release-verification path. Do not activate hosts, grant credentials, change accounts or security boundaries, or spend money under this correction. Report actual installed/enabled state and its provenance separately from proposed state. Do not infer authenticated authorization identity from git authors/committers.
+
+Deployment Authorization remains test-only. Do not promote or deploy. Codex will assess the corrected handoff and operational prerequisites before a separate acceptance/deployment decision. Product vision work follows a completed bootstrap; it is not part of this correction.

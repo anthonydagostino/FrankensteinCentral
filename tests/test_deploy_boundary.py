@@ -824,3 +824,85 @@ def test_setup_doc_names_the_poller_as_the_only_deploy_path():
         "the two-deployer choice is gone; do not present it"
     assert "sudo ./svc.sh install" not in text, \
         "self-hosted runner install must not be an instruction any more"
+
+
+# ---- test-gate truthfulness (Codex FC-002 review, finding 3) ------------
+#
+# DEPLOY_SKIP_TESTS=1 skips the suite entirely, but the record inferred
+# test_gate from the DEPLOY result -- so a skipped gate followed by a
+# successful compose was recorded as "passed". The deploy disposition and the
+# test disposition are different facts and must be recorded independently.
+
+
+def run_record(tmp_path, calls, disposition="skipped"):
+    """Run deploy.sh's real record() with a controlled test disposition."""
+    src = DEPLOY.read_text()
+    fn = src[src.index("record() {"):src.index('echo "==> Deploying')]
+    record_json = tmp_path / "deployed.json"
+    harness = tmp_path / "h.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -uo pipefail\n"
+        f'RECORD="{record_json}"\nBRANCH="production"\n'
+        f'TEST_DISPOSITION="{disposition}"\n' + fn + "\n" + "\n".join(calls) + "\n")
+    r = subprocess.run(["bash", str(harness)], capture_output=True, text=True,
+                       timeout=60)
+    assert record_json.exists(), r.stderr
+    return json.loads(record_json.read_text())
+
+
+def test_skipped_tests_are_never_recorded_as_a_passed_gate(tmp_path):
+    doc = run_record(tmp_path, ['record "success" "' + "a" * 40 + '"'],
+                     disposition="skipped")
+    assert doc["last_result"] == "success"
+    assert doc["test_gate"]["result"] == "skipped", \
+        "a deploy that skipped the suite claimed a passing test gate"
+    assert doc["test_gate"]["commit"] == "a" * 40
+
+
+def test_skipped_tests_with_a_failed_compose_still_report_skipped(tmp_path):
+    doc = run_record(tmp_path, ['record "compose_failed" "' + "c" * 40 + '"'],
+                     disposition="skipped")
+    assert doc["last_result"] == "compose_failed"
+    assert doc["test_gate"]["result"] == "skipped"
+
+
+def test_a_passing_gate_is_recorded_independently_of_the_deploy(tmp_path):
+    doc = run_record(tmp_path, ['record "compose_failed" "' + "d" * 40 + '"'],
+                     disposition="passed")
+    assert doc["last_result"] == "compose_failed"
+    assert doc["test_gate"]["result"] == "passed", \
+        "tests passed; only the deploy failed. Both facts must survive."
+
+
+def test_a_failed_gate_is_recorded_as_failed(tmp_path):
+    doc = run_record(tmp_path, ['record "tests_failed" "' + "e" * 40 + '" "failed"'],
+                     disposition="passed")
+    assert doc["test_gate"]["result"] == "failed"
+
+
+def test_compose_failure_is_recorded_rather_than_aborting_silently():
+    """set -euo pipefail aborted before record(), so the record kept showing
+    the PREVIOUS success and a failed deploy looked healthy."""
+    src = DEPLOY.read_text()
+    assert "compose_failed" in src, "a Compose failure is not recorded at all"
+    up = src.index("up -d --build")
+    assert src.index("compose_failed") > up, \
+        "the Compose failure must be recorded after the attempt"
+    assert re.search(r"if\s*!\s*\$DC up -d --build", src), \
+        "the Compose result must be captured, not left to set -e"
+
+
+def test_deploy_never_rolls_back_automatically():
+    """A failed readiness check reports; reverting unattended is its own
+    hazard and belongs to the Product Owner's rollback authorization."""
+    src = DEPLOY.read_text()
+    for forbidden in ("rollback.sh", "git revert", "promote.sh"):
+        assert forbidden not in src, f"deploy.sh references {forbidden}"
+
+
+def test_readiness_runs_after_compose_and_is_recorded():
+    src = DEPLOY.read_text()
+    up = src.index("up -d --build")
+    ready = src.index("readiness.sh")
+    assert ready > up, "readiness must be checked after the stack is started"
+    assert "record_verification" in src

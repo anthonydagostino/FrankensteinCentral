@@ -307,3 +307,77 @@ def test_a_healthy_deployment_needs_no_attention(world):
     assert doc["verification"]["result"] == "not_run"
     assert doc["failures"] == []
     assert doc["attention_required"] is False
+
+
+# ══ verification is about ONE commit ══════════════════════════════════
+#
+# Codex FC-002 review finding 4: the publisher accepted a pass/fail field
+# without checking WHICH commit it was about, so a verification of the
+# previous release could confirm the current one.
+
+
+def with_deployment(world, **over):
+    rec = {"production_branch": "production",
+           "last_attempt_commit": world["prod"],
+           "last_attempt_at": "2026-09-06T02:00:00+00:00",
+           "last_result": "success", "running_commit": world["prod"],
+           "last_success_at": "2026-09-06T02:00:00+00:00",
+           "test_gate": {"result": "passed", "commit": world["prod"],
+                         "at": "2026-09-06T02:00:00+00:00"}}
+    rec.update(over)
+    (world["state"] / "deployed.json").write_text(json.dumps(rec))
+
+
+def test_a_verification_of_a_different_commit_is_stale_not_a_pass(world):
+    """THE REGRESSION: an old pass must not confirm a new deployment."""
+    with_deployment(world, verification={
+        "result": "pass", "commit": "9" * 40, "at": "2026-09-05T00:00:00+00:00"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "stale", \
+        "a readiness result for another commit was accepted as a pass"
+    assert doc["attention_required"] is True
+    assert any(f["result"] == "verification_stale" for f in doc["failures"])
+
+
+def test_a_verification_matching_the_running_commit_is_a_pass(world):
+    with_deployment(world, verification={
+        "result": "pass", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00", "degraded": ["gmail"]})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "pass"
+    assert doc["verification"]["commit"] == world["prod"]
+    # A degraded optional integration is reported, and is not a failure.
+    assert doc["verification"]["degraded"] == ["gmail"]
+    assert doc["attention_required"] is False
+
+
+def test_a_failed_readiness_check_demands_attention(world):
+    with_deployment(world, verification={
+        "result": "fail", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00",
+        "required_failed": ["app catalog"]})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "fail"
+    assert doc["verification"]["required_failed"] == ["app catalog"]
+    assert doc["attention_required"] is True
+    assert any(f["result"] == "verification_fail" for f in doc["failures"])
+
+
+def test_a_verification_without_a_commit_is_unknown_not_a_pass(world):
+    with_deployment(world, verification={
+        "result": "pass", "commit": None, "at": "2026-09-06T02:00:00+00:00"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "unknown"
+
+
+def test_no_recorded_verification_reads_as_not_run(world):
+    with_deployment(world)
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "not_run"
+    assert doc["attention_required"] is False, \
+        "not_run is honest, not an alarm; it must not latch attention on forever"
