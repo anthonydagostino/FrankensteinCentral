@@ -1,0 +1,11 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED. See frankenstein-agent.service.
+[Unit]
+Description=Poll the control branch for authorized Claude work
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

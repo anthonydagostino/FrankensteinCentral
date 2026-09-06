@@ -34,9 +34,79 @@ fail() { echo "REFUSED: $1"; exit 1; }
 [ -n "$GOOD" ] || fail "give the known-good commit to restore, e.g. bash scripts/rollback.sh bf6192e"
 git rev-parse --verify --quiet "$GOOD^{commit}" >/dev/null || fail "$GOOD is not a commit in this repository"
 
-# read-tree below overwrites the working tree; refuse if anything is uncommitted.
-if [ -n "$(git status --porcelain)" ]; then
+# read-tree below overwrites the working tree, so uncommitted work has to stop
+# us — but "uncommitted" is two different questions, and conflating them made
+# rollback unavailable exactly when it is needed. A stray log file next to the
+# repo is not a reason to refuse to fix production.
+#
+#   tracked modifications -> always refuse. That is work someone can lose.
+#   untracked files       -> refuse only where the restored tree lands on them.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   fail "working tree is dirty — commit or stash first (this rewrites the working tree)"
+fi
+
+# `read-tree -u --reset` silently overwrites untracked files (unlike checkout,
+# which errors), so this collision check is ours to make. Git also cannot put a
+# file where a directory sits, or a directory where a file sits, so a path
+# PREFIX relationship collides just as surely as an equal path does:
+#
+#   untracked `foo`      target `foo`      -> the file would be overwritten
+#   untracked `foo`      target `foo/bar`  -> a file blocks the directory
+#   untracked `foo/bar`  target `foo`      -> a directory blocks the file
+#
+# Ignored files are included in the check, not in the dirty gate: .env is
+# ignored and irreplaceable, and silently losing it to a rollback would be
+# worse than the bad deploy. An ignored file that collides with nothing is
+# left alone and never blocks anything.
+COLLISIONS="$(python3 - "$GOOD" <<'PY'
+import subprocess, sys
+
+good = sys.argv[1]
+
+
+def paths(*args):
+    out = subprocess.run(["git", *args], capture_output=True, check=True).stdout
+    return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
+
+
+target = set(paths("ls-tree", "-r", "--name-only", "-z", good + "^{tree}"))
+held = (paths("ls-files", "--others", "--exclude-standard", "-z")
+        + paths("ls-files", "--others", "--ignored", "--exclude-standard", "-z"))
+held_set = set(held)
+
+
+def parents(path):
+    parts = path.split("/")
+    for i in range(1, len(parts)):
+        yield "/".join(parts[:i])
+
+
+hits = set()
+for h in held:
+    if h in target:                       # same path: it would be overwritten
+        hits.add(h)
+        continue
+    for d in parents(h):                  # we hold a dir the target wants as a file
+        if d in target:
+            hits.add(h)
+            break
+for t in target:                          # we hold a file the target wants as a dir
+    for d in parents(t):
+        if d in held_set:
+            hits.add(d)
+            break
+
+for h in sorted(hits):
+    print(h)
+PY
+)"
+if [ -n "$COLLISIONS" ]; then
+  echo "REFUSED: untracked files sit on paths the restored tree writes to:"
+  printf '%s\n' "$COLLISIONS" | sed 's/^/    /'
+  echo
+  echo "Move or delete just those paths and re-run. Untracked files elsewhere"
+  echo "are fine and do not block a rollback."
+  exit 1
 fi
 
 git fetch --prune origin "$PROD_BRANCH" >/dev/null 2>&1 || true
