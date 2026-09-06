@@ -21,8 +21,12 @@ STATE_DIR="${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}"
 mkdir -p "$STATE_DIR"
 RECORD="$STATE_DIR/deployed.json"
 
-record() {  # record <result> <sha>
-  local result="$1" sha="$2" prev=""
+# What the test gate actually did for this commit. Initialised before record()
+# can reference it: set -u makes an unset default fatal.
+TEST_DISPOSITION="skipped"
+
+record() {  # record <result> <sha> [test disposition]
+  local result="$1" sha="$2" disposition="${3:-$TEST_DISPOSITION}" prev=""
   [ -f "$RECORD" ] && prev="$(python3 -c "
 import json,sys
 try: print(json.load(open('$RECORD')).get('running_commit') or '')
@@ -30,9 +34,9 @@ except Exception: print('')
 " 2>/dev/null)"
   local running="$prev"
   [ "$result" = "success" ] && running="$sha"
-  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" <<'PY'
+  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" "$disposition" <<'PY'
 import json, sys, datetime
-path, result, sha, running, branch = sys.argv[1:6]
+path, result, sha, running, branch, disposition = sys.argv[1:7]
 try:
     doc = json.load(open(path))
 except Exception:
@@ -42,22 +46,59 @@ doc.update({"production_branch": branch, "last_attempt_commit": sha,
             "last_attempt_at": now, "last_result": result,
             "running_commit": running or None})
 # Three DIFFERENT facts, each tied to the commit it is about:
-#   test_gate     did scripts/test.sh pass for this commit
+#   test_gate     what scripts/test.sh actually did for this commit
 #   last_result   what the deploy attempt itself did
-#   verification  post-deploy health of the running stack
+#   verification  post-deploy readiness of the running stack
 # Collapsing them let an old "success" stand in for present health.
-doc["test_gate"] = {"result": {"tests_failed": "failed"}.get(result, "passed")
-                    if result != "tests_skipped" else "skipped",
-                    "commit": sha, "at": now}
+#
+# test_gate is passed IN, never inferred from the deploy result: with
+# DEPLOY_SKIP_TESTS=1 the suite never ran, and inferring "passed" from a
+# successful compose claimed a gate that did not happen.
+doc["test_gate"] = {"result": disposition, "commit": sha, "at": now}
 doc.setdefault("verification", {"result": "not_run", "commit": None, "at": None})
 if result == "success":
     doc["last_success_at"] = now
-    # A deploy proves the containers were started, NOT that the app is
-    # healthy. No post-deploy health check runs yet, so this stays explicitly
-    # unknown rather than inheriting the deploy result.
-    doc["verification"] = {"result": "not_run", "commit": sha, "at": now}
 json.dump(doc, open(path, "w"), indent=2)
 PY
+}
+
+record_verification() {  # deployed_sha, readiness json
+  python3 - "$RECORD" "$1" "$2" <<'PY' 2>/dev/null
+import json, sys, datetime
+path, sha, raw = sys.argv[1:4]
+try:
+    doc = json.load(open(path))
+except Exception:
+    doc = {}
+now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+try:
+    ready = json.loads(raw)
+except Exception:
+    ready = None
+if not isinstance(ready, dict) or ready.get("result") not in ("pass", "fail"):
+    # The check could not be run or gave nothing usable. That is NOT a pass,
+    # and it must not silently inherit the previous verification.
+    doc["verification"] = {"result": "not_run", "commit": sha, "at": now,
+                           "detail": "readiness check produced no usable result"}
+else:
+    doc["verification"] = {
+        "result": ready["result"], "commit": sha, "at": now,
+        "degraded": ready.get("degraded", []),
+        "required_failed": ready.get("required_failed", []),
+    }
+json.dump(doc, open(path, "w"), indent=2)
+PY
+  local v
+  v="$(python3 -c "
+import json,sys
+try: print(json.load(open('$RECORD')).get('verification',{}).get('result','?'))
+except Exception: print('?')" 2>/dev/null)"
+  if [ "$v" = "pass" ]; then
+    echo "==> Readiness PASS"
+  else
+    echo "!! READINESS $v — containers started but the dashboard did not verify."
+    echo "!! Production was NOT rolled back automatically; this is recorded for review."
+  fi
 }
 
 # Support both Docker Compose v2 ("docker compose") and the older v1
@@ -89,6 +130,8 @@ fi
 # the freshly-pulled code passes, so a bad push leaves the box on the last
 # good build instead of taking the dashboard down. Set DEPLOY_SKIP_TESTS=1
 # to force a deploy past this (emergencies only).
+# The honest record of what the gate actually did for this commit.
+TEST_DISPOSITION="skipped"
 if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
   echo "==> Running tests before touching the running stack"
   if ! bash scripts/test.sh >/tmp/fc-test.log 2>&1; then
@@ -96,9 +139,11 @@ if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
     echo "!! Commit under test: $(git rev-parse --short HEAD)"
     tail -30 /tmp/fc-test.log
     echo "!! Full output: /tmp/fc-test.log"
-    record "tests_failed" "$(git rev-parse HEAD)"
+    TEST_DISPOSITION="failed"
+    record "tests_failed" "$(git rev-parse HEAD)" "failed"
     exit 1
   fi
+  TEST_DISPOSITION="passed"
   echo "==> Tests passed ($(grep -oE '[0-9]+ passed' /tmp/fc-test.log | tail -1))"
 fi
 
@@ -117,6 +162,19 @@ fi
 # Keep disk tidy — drop dangling images from old builds.
 docker image prune -f >/dev/null 2>&1 || true
 
-record "success" "$(git rev-parse HEAD)"
+DEPLOYED_SHA="$(git rev-parse HEAD)"
+record "success" "$DEPLOYED_SHA"
+
+# ── post-deploy readiness ────────────────────────────────────────────────
+# Compose starting containers is NOT the application working. This is a
+# bounded, read-only check of the CORE dashboard; unconfigured third-party
+# integrations are reported as degraded and never fail it. A failure is
+# recorded and reported, and deliberately does NOT trigger an automatic
+# rollback: reverting unattended is its own hazard and belongs to the Product
+# Owner through the ordinary rollback authorization.
+echo "==> Checking the deployed dashboard is actually serving"
+READY_JSON="$(bash scripts/readiness.sh --json-only 2>/dev/null || true)"
+record_verification "$DEPLOYED_SHA" "$READY_JSON"
+
 echo "==> Deployed $(git rev-parse --short HEAD) on '$BRANCH'"
 docker compose ps
