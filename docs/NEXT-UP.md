@@ -8,6 +8,55 @@ becomes real, and only the Product Owner writes it.
 Last reviewed: 2026-09-05 21:51Z · Ideas at `5b3aed5` (wave 2) · control at
 `7846472` (`FC-001 / awaiting_directive`, placeholder directive, never moved)
 
+## URGENT — the deployment boundary is not actually closed
+
+`.github/workflows/deploy.yml` on `production` triggers on **push to
+`claude/personal-app-hub-vvpy4h`** — a task branch — and runs
+`scripts/deploy.sh "${GITHUB_REF_NAME}"` on the OptiPlex's self-hosted runner.
+`deploy.sh` line 14 is `BRANCH="${1:-...}"`, so it deploys whatever branch it
+is handed.
+
+That makes the protocol's central guarantee — *"a task-branch push deploys
+nothing"* — **false for that branch**. It is stated in `PROTOCOL.md`, in
+`CLAUDE.md`, and in the protocol agent's own commit message for `8db3602`,
+which asserts it while itself creating deploy run #49.
+
+Evidence: 49 runs of "Deploy to homelab", every one triggered by a push to that
+task branch. None of the ten most recent completed successfully — #47 has sat
+**queued since 2026-09-04** and #49 has been **pending since 00:11 today** —
+which is consistent with the runner being offline rather than the boundary
+holding. The jobs are armed, not harmless: if that runner comes back up, a
+queued job deploys unreviewed task-branch code to the live box, which is
+precisely what `promote.sh` exists to prevent and what `98aab13` was written to
+fix.
+
+**This is already known to two agents and neither can act.** The CM agent
+documented it as "deploy.yml boundary bypass" and is holding for authorization.
+The protocol agent's activation candidate `9b96bd0` deletes the file (-25) and
+is verified fast-forward promotable — but promoting requires `accepted` +
+`deploy-approved`, which requires the directive that does not exist. The fix is
+built and gated behind the same empty queue as everything else.
+
+**Recommended immediate action, and it does not need the Product Owner:**
+disable the `deploy.yml` workflow (or take the self-hosted runner offline) until
+`9b96bd0` is promoted. That is a repository/runner setting, not a production
+push, so it closes the hole without anyone crossing the boundary to do it. I
+have not done it — it is an infrastructure change and yours to authorize.
+
+## A second boundary crossing, smaller
+
+`bf31ab9` and `6d290be` were pushed **directly to `production`** by the CM
+agent — 1,806 lines of documentation, fast-forward, no product code, no scripts,
+no compose. `promote.sh` would have refused them: status is `awaiting_directive`,
+not `accepted`, and authorization is not `deploy-approved`. So the branch moved
+outside the only sanctioned path, and the poller deployed it.
+
+The effect is benign — docs do not change container behavior — but the
+precedent is not, and `CLAUDE.md` names this exact action ("push, force-push, or
+otherwise move the `production` branch by any other means"). To its credit the
+CM agent flagged its own action, asking whether to "route future docs to task
+branch". The answer is yes.
+
 ## The blocker before any of this
 
 `d1af4e7` put 1,524 lines of money layer on
@@ -23,7 +72,7 @@ around unruled work is fiction.
 | task | what | why here | effort |
 |---|---|---|---|
 | **FC-001** | Rule on the money layer | clears the only unruled work; built and green, so this is a review, not a build | — |
-| **FC-002** | Wave 2 #13–16 correctness pass, plus #19 | the screen currently states things it doesn't know; #19 is a two-line prerequisite for FC-005 | S |
+| **FC-002** | Correctness pass: wave 2 #13–16, #19, and filed issues #1–#10 | the screen states things it doesn't know, and a second agent has now filed the specific bugs | S–M |
 | **FC-003** | Wave 2 #17 — unwired inventory + consumer test | nine already-built features reachable by nobody | M |
 | **FC-004** | Wave 1 #2 — infra card + restore-test age | makes the unrecoverable risk visible | M |
 | **FC-005** | Wave 1 #3 Do-Next widening + wave 2 #18 pending holds | small, pure logic, and how FC-003/FC-004 become visible | S |
@@ -83,6 +132,31 @@ that two-line fix would do nothing. It rides along in FC-002.
 strengthens it — #20 (runway) and #26 (interview prep with company notes) put
 more of your financial and professional life on the same unauthenticated page.
 Auth stays a precondition on FC-006, not a task jumping the queue.
+
+## A fourth backlog appeared tonight
+
+A bug-finder agent filed **ten GitHub issues** (#1–#10), independently
+confirming the correctness case and giving FC-002 concrete acceptance criteria
+it did not have this morning. Several are sharper than the ideas doc:
+
+- **#1 / #7** — `/networth` reports `$0.00` when the true value is unknown, and
+  `/summary` turns unknown budget room into a confident `$0`. These are the
+  `BUDGETS.md` honesty rule violated in the money layer itself.
+- **#3** — Do-Next can *never* surface a calendar event: `next_event` is the
+  oldest event on record. Worse than wave 2 #18 described.
+- **#2** — `POST /recurring/apply` never terminates when `interval_days <= 0`.
+  A hang, not a wrong number.
+- **#10** — frontend HTML attribute escaping, filed with a private advisory.
+- **#6 / #9** — "this week" drops days falling in the previous month;
+  `days_until()` assumes 30-day months, so the bill "due soon" window is wrong
+  280 days a year.
+
+FC-002 should cite these issue numbers directly. It now has a test list.
+
+**But this is the fourth place work is tracked** — Jira `SCRUM`,
+`PRODUCT_DIRECTIVE.md`, `PRODUCT_IDEAS.md`, and now GitHub issues. Decision 5
+below was already open; it is now urgent enough that I would answer it before
+FC-002 is written, or the same bug gets fixed twice and closed in one place.
 
 ## These can run in parallel
 
