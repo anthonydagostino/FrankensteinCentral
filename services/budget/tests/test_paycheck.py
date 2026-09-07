@@ -367,3 +367,163 @@ def test_negative_amounts_are_read_as_magnitudes():
             deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
             withdrawals=[txn(date(2026, 9, 1), "Groceries", -212.0)])["cycle"]
     assert d["spent"] == 212.0
+
+
+# ══ direction and single-assignment (PO_REVIEW_e7adf83 P1 findings) ═══════
+#
+# Two defects shipped to production in e7adf83 and were found in review.
+#
+# 1. `_matches` searched desc, source, destination and category TOGETHER, and
+#    `_amount` takes abs(). A movement that merely NAMED a savings account was
+#    therefore a savings contribution whichever way the money went — so money
+#    leaving savings was reported as money entering it, and a purchase funded
+#    from a savings account was removed from spending AND added to savings,
+#    moving both figures the wrong way at once.
+#
+# 2. Every allocation rule independently scanned every transaction, so two
+#    rules matching the same term each claimed the same transfer and
+#    `savings_total` came out doubled — one ledger movement deducted twice
+#    from what the paycheck left to spend.
+#
+# All fixture data here is synthetic (public repo, vision principle 6).
+
+DIRN_MONTH = {"start": "2026-09-01", "days_elapsed": 7}
+DIRN_FRESH = {"ingest_days": 0}
+DIRN_TODAY = "2026-09-07"
+DIRN_PAY = [{"date": "2026-09-04", "amount": 2000.0, "desc": "Synthetic paycheck",
+             "source": "Employer", "destination": "Checking"}]
+ONE_RULE = {"enabled": True,
+            "allocations": [{"name": "Savings", "match": ["savings"], "amount": 0}]}
+
+
+def _cycle(cfg, withdrawals=(), transfers=()):
+    return paycheck_cycle(cfg, DIRN_TODAY, DIRN_MONTH, DIRN_PAY,
+                          list(withdrawals), list(transfers), DIRN_FRESH)
+
+
+def test_money_leaving_savings_is_not_a_contribution():
+    """Savings -> Checking moves money OUT. It read as 300 put IN."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 300.0, "desc": "Transfer",
+         "source": "Savings", "destination": "Checking"}])
+    assert r["month"]["savings"] == 0.0
+    assert r["cycle"]["savings_total"] == 0.0
+
+
+def test_a_reverse_movement_is_reported_not_silently_dropped():
+    """Not counted as its own opposite, and not made invisible either."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 300.0, "desc": "Transfer",
+         "source": "Savings", "destination": "Checking"}])
+    assert r["cycle"]["reverse_from_savings"] == 300.0
+
+
+def test_a_purchase_funded_from_savings_is_still_spending():
+    """The worst shape: `spent` fell by 250 while `savings` rose by 250."""
+    r = _cycle(ONE_RULE, withdrawals=[
+        {"date": "2026-09-05", "amount": 250.0, "desc": "Groceries",
+         "source": "Savings", "destination": "Store"}])
+    assert r["month"]["spent"] == 250.0, "a real expense vanished from spending"
+    assert r["month"]["savings"] == 0.0, "an expense was counted as saving"
+
+
+def test_a_genuine_contribution_still_counts():
+    """The fix must not simply stop recognising savings."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 400.0, "desc": "Transfer",
+         "source": "Checking", "destination": "Savings"}])
+    assert r["month"]["savings"] == 400.0
+    assert r["cycle"]["savings_total"] == 400.0
+
+
+def test_the_description_fallback_survives():
+    """A Firefly transfer is often described "Savings" while only the
+    destination account says "Fidelity". That fallback is why the original
+    code read the description at all, and it still has to work."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 150.0, "desc": "Savings",
+         "source": "Checking", "destination": "Fidelity"}])
+    assert r["cycle"]["savings_total"] == 150.0
+
+
+def test_an_account_naming_savings_on_the_source_overrules_the_description():
+    """Direction evidence beats a description that says otherwise."""
+    r = _cycle(ONE_RULE, withdrawals=[
+        {"date": "2026-09-05", "amount": 120.0, "desc": "Savings",
+         "source": "Savings", "destination": "Store"}])
+    assert r["month"]["spent"] == 120.0
+    assert r["month"]["savings"] == 0.0
+
+
+def test_a_savings_to_savings_shuffle_adds_nothing():
+    """Both sides are savings: nothing moved in from the spendable pot."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 500.0, "desc": "Rebalance",
+         "source": "Savings", "destination": "Savings vault"}])
+    assert r["cycle"]["savings_total"] == 0.0
+    assert r["cycle"]["reverse_from_savings"] == 0.0
+
+
+def test_overlapping_rules_never_count_one_movement_twice():
+    """Two rules, one 100 transfer. It was deducted twice."""
+    cfg = {"enabled": True, "allocations": [
+        {"name": "Savings", "match": ["savings"], "amount": 0},
+        {"name": "Savings goal", "match": ["savings"], "amount": 0}]}
+    r = _cycle(cfg, transfers=[
+        {"date": "2026-09-05", "amount": 100.0, "desc": "Transfer",
+         "source": "Checking", "destination": "Savings"}])
+    assert r["cycle"]["savings_total"] == 100.0
+    assert sum(a["amount"] for a in r["cycle"]["allocations"]) == 100.0
+
+
+def test_an_ambiguous_split_is_named_rather_than_resolved_in_silence():
+    """First-match-wins is a policy. A policy the reader cannot see is a
+    guess presented as a reading."""
+    cfg = {"enabled": True, "allocations": [
+        {"name": "Savings", "match": ["savings"], "amount": 0},
+        {"name": "Savings goal", "match": ["savings"], "amount": 0}]}
+    r = _cycle(cfg, transfers=[
+        {"date": "2026-09-05", "amount": 100.0, "desc": "Transfer",
+         "source": "Checking", "destination": "Savings"}])
+    winner = r["cycle"]["allocations"][0]
+    assert winner["amount"] == 100.0
+    assert winner["ambiguous"] == ["Savings goal"]
+
+
+def test_distinct_rules_each_keep_their_own_movement():
+    """Single-assignment must not starve a rule that has its own transfer."""
+    cfg = {"enabled": True, "allocations": [
+        {"name": "Emergency", "match": ["emergency"], "amount": 0},
+        {"name": "Vacation", "match": ["vacation"], "amount": 0}]}
+    r = _cycle(cfg, transfers=[
+        {"date": "2026-09-05", "amount": 100.0, "desc": "T",
+         "source": "Checking", "destination": "Emergency fund"},
+        {"date": "2026-09-06", "amount": 60.0, "desc": "T",
+         "source": "Checking", "destination": "Vacation fund"}])
+    by = {a["name"]: a for a in r["cycle"]["allocations"]}
+    assert by["Emergency"]["amount"] == 100.0
+    assert by["Vacation"]["amount"] == 60.0
+    assert r["cycle"]["savings_total"] == 160.0
+    assert all(a["ambiguous"] == [] for a in r["cycle"]["allocations"])
+
+
+def test_a_split_contribution_to_one_goal_is_summed_not_deduplicated():
+    """Two transfers funding the same goal are 2 movements, not 1."""
+    r = _cycle(ONE_RULE, transfers=[
+        {"date": "2026-09-05", "amount": 100.0, "desc": "T",
+         "source": "Checking", "destination": "Savings"},
+        {"date": "2026-09-06", "amount": 75.0, "desc": "T",
+         "source": "Checking", "destination": "Savings"}])
+    assert r["cycle"]["savings_total"] == 175.0
+    assert r["cycle"]["allocations"][0]["observed"] == 175.0
+
+
+def test_left_to_spend_reflects_the_corrected_totals():
+    """The number Anthony actually reads. Before the fix a 250 grocery run
+    from savings made `left` 250 too HIGH and claimed a 250 saving."""
+    r = _cycle(ONE_RULE, withdrawals=[
+        {"date": "2026-09-05", "amount": 250.0, "desc": "Groceries",
+         "source": "Savings", "destination": "Store"}])
+    # 2000 paycheck, nothing genuinely saved, 250 genuinely spent.
+    assert r["cycle"]["savings_total"] == 0.0
+    assert r["cycle"]["left"] == 1750.0
