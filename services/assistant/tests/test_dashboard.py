@@ -988,3 +988,176 @@ def test_a_naive_stamp_is_read_in_the_dashboards_own_zone():
     now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
     d = dash.deploy_state(rec(last_success_at="2026-09-07T09:00:00"), now)
     assert d["age_seconds"] == 6 * 3600.0
+
+# ══ PRODUCT_IDEAS #17 — deadlines were filed and never shown ══════════════
+#
+# The assistant extracts interview times and bill due dates on every sync and
+# writes them to `deadlines`. The only endpoint that exposed them was /space,
+# i.e. only the legacy lounge. Bucketing is pure so it can be pinned to a date.
+
+DL_NOW = datetime(2026, 9, 7, 12, 0, tzinfo=NY)
+
+
+def dl(title, due, source="gmail"):
+    return {"title": title, "due_at": due, "source": source}
+
+
+def test_overdue_is_never_sorted_in_with_upcoming():
+    out = dash.deadline_rows([
+        dl("Rent", "2026-09-01T00:00:00"),
+        dl("Interview", "2026-09-09T14:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["overdue"]] == ["Rent"]
+    assert [x["title"] for x in out["upcoming"]] == ["Interview"]
+
+
+def test_a_deadline_with_no_date_is_undated_not_due_now():
+    """The extractor stores null when the email carried no date. Rendering
+    that as due today would invent a deadline the mail never had."""
+    out = dash.deadline_rows([dl("Follow up", None)], DL_NOW, NY)
+    assert out["undated"] and out["undated"][0]["title"] == "Follow up"
+    assert not out["overdue"] and not out["upcoming"]
+
+
+def test_upcoming_is_soonest_first_and_overdue_is_most_overdue_first():
+    out = dash.deadline_rows([
+        dl("Later", "2026-09-20T09:00:00"),
+        dl("Sooner", "2026-09-08T09:00:00"),
+        dl("Long overdue", "2026-08-01T09:00:00"),
+        dl("Just missed", "2026-09-06T09:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["upcoming"]] == ["Sooner", "Later"]
+    assert [x["title"] for x in out["overdue"]] == ["Just missed", "Long overdue"]
+
+
+def test_counts_report_the_whole_set_not_just_the_shown_slice():
+    rows = [dl(f"D{i}", f"2026-09-{10 + i:02d}T09:00:00") for i in range(10)]
+    out = dash.deadline_rows(rows, DL_NOW, NY, limit=3)
+    assert len(out["upcoming"]) == 3
+    assert out["counts"]["upcoming"] == 10, "the card would understate the backlog"
+
+
+def test_malformed_rows_are_skipped_rather_than_crashing_the_card():
+    out = dash.deadline_rows(
+        ["not a dict", {}, {"title": "   "}, dl("Real", "2026-09-09T09:00:00")],
+        DL_NOW, NY)
+    assert [x["title"] for x in out["upcoming"]] == ["Real"]
+
+
+def test_an_unparseable_due_date_is_undated_not_silently_dropped():
+    out = dash.deadline_rows([dl("Weird", "next tuesday")], DL_NOW, NY)
+    assert out["undated"] and out["undated"][0]["title"] == "Weird"
+
+
+def test_the_boundary_is_now_not_midnight():
+    """A deadline earlier today is overdue; one later today is not."""
+    out = dash.deadline_rows([
+        dl("This morning", "2026-09-07T09:00:00"),
+        dl("Tonight", "2026-09-07T20:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["overdue"]] == ["This morning"]
+    assert [x["title"] for x in out["upcoming"]] == ["Tonight"]
+
+
+def test_bucketing_holds_across_a_two_year_sweep():
+    """Per docs/TESTING.md: never assert against today."""
+    from datetime import date as _date
+    start = _date(2026, 1, 1)
+    for n in range(0, 730, 7):
+        d = start + timedelta(days=n)
+        now = datetime(d.year, d.month, d.day, 12, tzinfo=NY)
+        out = dash.deadline_rows([
+            dl("past", (now - timedelta(days=2)).isoformat()),
+            dl("future", (now + timedelta(days=2)).isoformat()),
+        ], now, NY)
+        assert [x["title"] for x in out["overdue"]] == ["past"], d
+        assert [x["title"] for x in out["upcoming"]] == ["future"], d
+
+
+# ══ PRODUCT_IDEAS #17 — settings that were configurable and did nothing ═══
+#
+# "Alert on move >= (%)" and finance.low_balance both round-tripped through
+# Settings and were read by nothing. A setting that silently does nothing is
+# worse than a missing one: you configure it, you believe it is on, and you
+# stop watching for the thing it was supposed to catch.
+
+def test_a_move_past_the_threshold_produces_an_alert():
+    stocks = {"positions": [{"symbol": "AAPL", "change_pct": 4.2},
+                            {"symbol": "MSFT", "change_pct": 0.4}],
+              "watchlist": []}
+    alerts = dash.portfolio_alerts(stocks, 3.0)
+    assert [a["symbol"] for a in alerts] == ["AAPL"]
+    assert alerts[0]["direction"] == "up"
+
+
+def test_a_fall_past_the_threshold_alerts_too():
+    """"Move" is a magnitude. A 6% drop is the one you most want to know about."""
+    alerts = dash.portfolio_alerts(
+        {"positions": [{"symbol": "TSLA", "change_pct": -6.0}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["TSLA"]
+    assert alerts[0]["direction"] == "down"
+
+
+def test_the_threshold_boundary_is_inclusive():
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "X", "change_pct": 3.0}]}, 3.0)
+
+
+def test_the_watchlist_is_alerted_on_too():
+    alerts = dash.portfolio_alerts(
+        {"positions": [], "watchlist": [{"symbol": "NVDA", "change_pct": 9.1}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["NVDA"]
+
+
+def test_a_symbol_held_and_watched_is_alerted_once():
+    alerts = dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "change_pct": 5.0}],
+         "watchlist": [{"symbol": "AAPL", "change_pct": 5.0}]}, 3.0)
+    assert len(alerts) == 1
+
+
+def test_alerts_are_ordered_by_size_of_move():
+    alerts = dash.portfolio_alerts({"positions": [
+        {"symbol": "A", "change_pct": 3.5},
+        {"symbol": "B", "change_pct": -9.9},
+        {"symbol": "C", "change_pct": 6.0}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["B", "C", "A"]
+
+
+def test_a_position_with_no_quote_is_not_a_move():
+    """available: False means no data, which is not a 0% day."""
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "available": False}]}, 3.0) == []
+
+
+@pytest.mark.parametrize("threshold", [None, 0, "", "abc"])
+def test_an_unset_threshold_alerts_on_nothing(threshold):
+    """An alert the user did not ask for is its own lie about the setting."""
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "change_pct": 50.0}]}, threshold) == []
+
+
+def test_low_balance_flags_accounts_at_or_under_the_floor():
+    out = dash.low_balance_accounts(
+        [{"name": "Checking", "balance": 40.0},
+         {"name": "Savings", "balance": 900.0},
+         {"name": "Spare", "balance": 100.0}], 100)
+    assert [a["name"] for a in out] == ["Checking", "Spare"]
+
+
+def test_low_balance_never_treats_a_missing_balance_as_zero():
+    """An account whose balance could not be read is not an empty account."""
+    out = dash.low_balance_accounts(
+        [{"name": "Unknown", "balance": None}, {"name": "Broken"}], 100)
+    assert out == []
+
+
+def test_low_balance_reports_the_worst_first():
+    out = dash.low_balance_accounts(
+        [{"name": "A", "balance": 90}, {"name": "B", "balance": -20}], 100)
+    assert [a["name"] for a in out] == ["B", "A"]
+
+
+@pytest.mark.parametrize("floor", [None, "abc"])
+def test_an_unusable_low_balance_floor_flags_nothing(floor):
+    assert dash.low_balance_accounts([{"name": "A", "balance": 0}], floor) == []

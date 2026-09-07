@@ -10,9 +10,10 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import (deploy_state, firefly_state, parse_event_dt,
-                        portfolio_state, schedule_state, upcoming_events,
-                        week_window, weekly_review)
+from .dashboard import (deadline_rows, deploy_state, firefly_state,
+                        low_balance_accounts, parse_event_dt,
+                        portfolio_alerts, portfolio_state, schedule_state,
+                        upcoming_events, week_window, weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -781,6 +782,23 @@ def _read_deploy_record(path=None):
         return {}
     return rec if isinstance(rec, dict) else {}
 
+async def _deadline_rows(limit: int = 40) -> list[dict]:
+    """The deadlines the sync already files, read for the HOME screen.
+
+    These rows have existed and accumulated since the pipeline was written; the
+    only endpoint that exposed them was `/space`, i.e. only the legacy lounge.
+    Read here directly rather than over HTTP -- it is this service's own table.
+    """
+    try:
+        async with pool.connection() as conn:
+            conn.row_factory = dict_row
+            cur = await conn.execute(
+                "SELECT title, due_at, source FROM deadlines "
+                "ORDER BY due_at NULLS LAST LIMIT %s", (limit,))
+            return await cur.fetchall()
+    except Exception:  # noqa: BLE001 - a card that cannot load is not a 500
+        return []
+
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
     if (not fresh and cached["data"] and cached["at"]
@@ -854,18 +872,44 @@ async def build_home(fresh: bool = False) -> dict:
         **t,
         "briefing": _briefing_line(core, inbox, stocks, money, events),
         "big3": (core or {}).get("big3", []),
+        # The attention feed AUDIT.md section 3 promised. core._nudges()
+        # computes it -- severity, icon, title, detail and a typed action per
+        # item -- on every /today, which this function already fetches, and it
+        # was dropped on the floor here while the home screen rendered a single
+        # do_next instead. The feed existed the whole time; nothing asked for it.
+        "nudges": (core or {}).get("nudges", []),
+        # Written on every sync since the pipeline was built, readable only
+        # from the demoted lounge until now.
+        "deadlines": deadline_rows(await _deadline_rows(), now_local, LOCAL_TZ),
+        # finance.low_balance has been in DEFAULT_SETTINGS and consumed nowhere.
+        "low_balance": {
+            "floor": (settings.get("finance", {}) or {}).get("low_balance"),
+            "accounts": low_balance_accounts(
+                ((firefly or {}).get("accounts") or []),
+                (settings.get("finance", {}) or {}).get("low_balance")),
+        },
         "do_next": _do_next(core, inbox, money, events, settings, t),
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
         # `state` travels with it: an unreachable stocks service is not an
-        # empty portfolio, and must not read as "add your stocks".
-        "portfolio": {**(stocks or {}), "state": portfolio_state(stocks)},
+        # empty portfolio, and must not read as "add your stocks". `alerts`
+        # is what finally makes the "Alert on move >= (%)" setting do
+        # something -- it round-tripped through Settings and was read by
+        # nothing.
+        "portfolio": {
+            **(stocks or {}), "state": portfolio_state(stocks),
+            "alerts": portfolio_alerts(
+                stocks, (settings.get("market", {}) or {}).get("move_threshold_pct")),
+            "move_threshold_pct": (settings.get("market", {}) or {}).get("move_threshold_pct")},
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
             "water": (core or {}).get("water", {}),
             "nutrition": (core or {}).get("nutrition", {}),
+            # core has reported this on every /today and nothing carried it
+            # to a screen, so the sleep column stayed null forever.
+            "sleep": (core or {}).get("sleep", {}),
         },
         "score": (core or {}).get("score", {"score": 0, "parts": {}}),
         "captures": (captures.get("items", []) if captures else [])[:8],
