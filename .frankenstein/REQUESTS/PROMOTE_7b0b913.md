@@ -8,14 +8,14 @@ see the box, which I cannot. Verify rather than trust.
 | | |
 |---|---|
 | branch | `claude/hermetic-deploy-gate` |
-| SHA | **`26983ff8d79ab423390ce8387a9e90e64f0e6d6d`** |
-| base | fast-forward from production `1585d6b` |
+| SHA | **`7fdcc85c1c83e88fbc8a1f6a96cf28d507f2e39d`** |
+| base | fast-forward from production `145b20c` |
 | CI | **green**, run 34156961819 |
-| suite | **6990 passed, 0 skipped**, exit 0, re-run after this rebase |
+| suite | **7138 passed, 10 skipped**, exit 0, re-run after this rebase |
 | size | two files, one fix |
 
 ```bash
-bash scripts/promote.sh 26983ff8d79ab423390ce8387a9e90e64f0e6d6d
+bash scripts/promote.sh 7fdcc85c1c83e88fbc8a1f6a96cf28d507f2e39d
 ```
 
 ## The bug
@@ -96,3 +96,6 @@ cleanly every time.
 
 
 Rebase 5: production `1585d6b`. Bug re-verified live immediately before rebasing (savings_total 200, left 1800). Suite re-run after the merge: 6990 passed.
+
+
+Rebase 6: production `145b20c`. Bug re-verified live immediately before rebasing (savings_total 200, left 1800). Suite re-run after the merge: 7138 passed, 10 skipped. The 10 skips are declared exemptions in production's own new tests/test_no_orphans.py (manual diagnostics, renamed keys) — not containment, not introduced here, and each carries its own stated reason.
