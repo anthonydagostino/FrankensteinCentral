@@ -78,9 +78,7 @@
     renderHealth(d);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    const sys = d.systems || { healthy: true, down: [] };
-    q("#cc-systems").textContent = sys.healthy ? "● Systems healthy" : "⚠ " + (sys.down || []).join(", ") + " down";
-    q("#cc-systems").style.color = sys.healthy ? "var(--muted)" : "var(--imp)";
+    renderSystems();
     saveSnapshot(d);
   }
 
@@ -135,6 +133,34 @@
     pending:   { dot: "🟡", label: "offered — awaiting reply" },
     countered: { dot: "🟠", label: "they countered — needs your yes" },
   };
+  // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
+  // The footer used to compute its claim from `d.systems`, which the assistant
+  // builds from core and gmail alone — so eleven other services could be down
+  // while it said "Systems healthy". The gateway probes all fifteen at
+  // /api/health and the UI discarded it. Now it doesn't.
+  let SYSHEALTH = null;
+  async function loadSystems() {
+    try {
+      SYSHEALTH = await fetch("/api/health").then((r) => r.json());
+    } catch { SYSHEALTH = null; }   // null reads as "unknown", not healthy
+    renderSystems();
+  }
+
+  function renderSystems() {
+    const el = q("#cc-systems");
+    if (!el) return;
+    const s = SystemsHealth.summarize(SYSHEALTH);
+    el.textContent = SystemsHealth.line(s);
+    el.style.color = s.state === "degraded" ? "var(--imp)"
+      : s.state === "unknown" ? "var(--muted)" : "var(--muted)";
+    // The full per-service roll is one click away rather than always on show.
+    el.title = s.state === "unknown"
+      ? "The gateway's /api/health probe did not answer"
+      : Object.keys(SYSHEALTH || {}).sort().map((k) =>
+          `${(SYSHEALTH[k] || {}).status === "up" ? "●" : "✕"} ${k}`).join("\n");
+    el.style.cursor = s.total ? "help" : "default";
+  }
+
   // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
   // core has served GET /weekly-review since it was written and nothing ever
   // rendered it. On Sunday evening it takes the top of the page; the rest of
@@ -1212,12 +1238,14 @@
   (async function boot() {
     await loadApps();
     await refresh(true);
+    loadSystems();
     scheduleMidnightRollover();
     // background refresh every 60s (skip while a modal/palette/focus is open)
     setInterval(() => {
       if (q("#overlay").classList.contains("open")) return;
       if (!q("#palette").hidden || !q("#focus").hidden) return;
       refresh(false);
+      loadSystems();
     }, 60000);
   })();
 })();
