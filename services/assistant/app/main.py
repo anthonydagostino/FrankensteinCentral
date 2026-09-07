@@ -9,7 +9,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (firefly_state, parse_event_dt, schedule_state,
+                        upcoming_events, week_window)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -729,6 +730,12 @@ async def build_home(fresh: bool = False) -> dict:
     calendar = _upcoming_events(all_events, now_local, limit=6)
     events = _upcoming_events(all_events, now_local, limit=None,
                               statuses=("confirmed",))
+    # The week grid gets the same already-filtered events the flat card gets.
+    # `state` travels with it because an unreachable schedule service and a
+    # genuinely clear week are not the same fact, and the card must not render
+    # the first as the second.
+    week = week_window(all_events, now_local, LOCAL_TZ)
+    week["state"] = schedule_state(schedule)
     settings = settings or {}
 
     t = _home_time(settings)
@@ -755,6 +762,7 @@ async def build_home(fresh: bool = False) -> dict:
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
         "calendar": calendar,
+        "week": week,
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }

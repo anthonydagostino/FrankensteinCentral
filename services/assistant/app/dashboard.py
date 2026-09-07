@@ -7,7 +7,7 @@ not know, so they are exactly the parts that need tests that run everywhere.
 
 Nothing here does I/O.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def parse_event_dt(raw, local_tz):
@@ -76,3 +76,212 @@ def firefly_state(firefly):
     if firefly.get("connected") is False:
         return "not_configured"
     return "ok"
+
+
+# --- the seven-day week window ----------------------------------------------
+#
+# The dashboard's schedule card used to be one flat list of the next six
+# events. That answers "what is next" but not "what does my week look like",
+# and it silently rendered an unreachable schedule service as a calm empty day.
+# Everything below is pure and takes `now`/`local_tz` from the caller, so the
+# calendar sweep in the tests can pin any date it likes — per docs/TESTING.md,
+# none of this is ever exercised against the real "today".
+
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                 "Saturday", "Sunday")
+
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December")
+
+# One decorative theme key per month, consumed by CSS only. The key never
+# carries meaning about the data — it is picked from the date and nothing else.
+SEASON_KEYS = ("jan", "feb", "mar", "apr", "may", "jun",
+               "jul", "aug", "sep", "oct", "nov", "dec")
+
+WINDOW_DAYS = 7
+
+
+def ordinal_suffix(day):
+    """`st`/`nd`/`rd`/`th` for a day of the month.
+
+    The 11/12/13 branch is the whole reason this is not `day % 10`: the
+    eleventh is the 11th, not the 11st, and the same holds for 12 and 13.
+    """
+    if 11 <= (day % 100) <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
+def ordinal(day):
+    return f"{day}{ordinal_suffix(day)}"
+
+
+def schedule_state(schedule):
+    """`ok` or `unreachable` — an outage is not an empty week.
+
+    The assistant's `_get` swallows a timeout and returns `{}`, exactly as it
+    does for Firefly. Without this distinction a schedule service that is down
+    renders as "nothing coming up", which is the calmest possible way to tell
+    someone they have no commitments on a day they do. Same reasoning as
+    `firefly_state`, and the same three-states-not-two rule.
+    """
+    if not schedule:
+        return "unreachable"
+    return "ok"
+
+
+def _event_bounds(event, local_tz):
+    """(start, end, all_day) in local time, or None when unparseable.
+
+    A date-only timestamp ("2026-10-31") is an all-day event: it has no clock
+    time to show, and rendering it as midnight would file a Halloween all-dayer
+    under "Morning" alongside a 7am alarm.
+    """
+    raw_start = event.get("starts_at") or event.get("start")
+    start = parse_event_dt(raw_start, local_tz)
+    if start is None:
+        return None
+    all_day = "T" not in str(raw_start) and " " not in str(raw_start).strip()
+    end = parse_event_dt(event.get("ends_at"), local_tz) or start
+    if end < start:
+        end = start
+    return start, end, all_day
+
+
+def _slot_for(dt, all_day):
+    if all_day:
+        return "allday"
+    hour = dt.hour
+    if hour < 12:
+        return "morning"
+    if hour < 17:
+        return "afternoon"
+    return "evening"
+
+
+def _time_label(dt, all_day):
+    """`9 AM`, `9:30 PM`, `All day`. The `:00` is dropped on the hour."""
+    if all_day:
+        return "All day"
+    hour = dt.hour % 12 or 12
+    suffix = "AM" if dt.hour < 12 else "PM"
+    return f"{hour} {suffix}" if dt.minute == 0 else f"{hour}:{dt.minute:02d} {suffix}"
+
+
+def _mark_conflicts(entries):
+    """Flag every entry that overlaps another on the same day.
+
+    Two commitments in the same hour is precisely the "approaching conflict"
+    the product vision asks the hub to surface, and it is invisible in a flat
+    list. All-day events do not conflict with timed ones — an all-day marker
+    is context, not a competing obligation.
+    """
+    timed = [e for e in entries if not e["all_day"]]
+    for a_index, a in enumerate(timed):
+        for b in timed[a_index + 1:]:
+            # Identical starts collide even when both are zero-length, which a
+            # plain interval test would miss.
+            hit = (a["_start"] == b["_start"] or
+                   (a["_start"] < b["_end"] and b["_start"] < a["_end"]))
+            if hit:
+                a["conflict"] = True
+                b["conflict"] = True
+    return sum(1 for e in entries if e["conflict"])
+
+
+def week_window(events, now, local_tz, days=WINDOW_DAYS):
+    """Today plus the next `days - 1` local days, each with its own events.
+
+    Bucketing is done on local *dates*, never by adding 24-hour offsets to a
+    timestamp: a 23-hour or 25-hour DST day would slide events into the
+    neighbouring column, which is the same class of bug docs/TESTING.md was
+    written about.
+
+    An event already in progress stays on today rather than disappearing
+    backwards off the grid, and anything past the last day is counted in
+    `beyond` instead of being silently dropped.
+    """
+    today = now.astimezone(local_tz).date()
+    window = [today + timedelta(days=offset) for offset in range(days)]
+    index = {day: [] for day in window}
+    last_day = window[-1]
+    beyond = 0
+
+    for event in events or []:
+        if event.get("status", "confirmed") == "declined":
+            continue
+        bounds = _event_bounds(event, local_tz)
+        if bounds is None:
+            continue
+        start, end, all_day = bounds
+        if end < now and not all_day:
+            continue  # already finished
+        day = start.date()
+        ongoing = day < today
+        if ongoing:
+            # Started earlier, still running: it belongs to today's column.
+            if end.date() < today:
+                continue
+            day = today
+        if day > last_day:
+            beyond += 1
+            continue
+        if day not in index:
+            continue
+        index[day].append({
+            **event,
+            "time_label": _time_label(start, all_day),
+            "end_label": None if all_day or end == start else _time_label(end, all_day),
+            "slot": _slot_for(start, all_day),
+            "all_day": all_day,
+            "ongoing": ongoing or (start <= now <= end and not all_day),
+            "needs_you": event.get("status") == "countered",
+            "conflict": False,
+            "_start": start,
+            "_end": end,
+        })
+
+    out = []
+    previous_month = None
+    for offset, day in enumerate(window):
+        entries = sorted(index[day], key=lambda e: (not e["all_day"], e["_start"]))
+        conflicts = _mark_conflicts(entries)
+        statuses = [e.get("status", "confirmed") for e in entries]
+        for entry in entries:
+            del entry["_start"]
+            del entry["_end"]
+        out.append({
+            "iso": day.isoformat(),
+            "weekday": WEEKDAY_NAMES[day.weekday()],
+            "weekday_short": WEEKDAY_NAMES[day.weekday()][:3],
+            "month": MONTH_NAMES[day.month - 1],
+            "month_short": MONTH_NAMES[day.month - 1][:3],
+            "month_index": day.month,
+            "day": day.day,
+            "ordinal": ordinal(day.day),
+            "ordinal_suffix": ordinal_suffix(day.day),
+            "year": day.year,
+            "season": SEASON_KEYS[day.month - 1],
+            "is_today": offset == 0,
+            "is_tomorrow": offset == 1,
+            "is_weekend": day.weekday() >= 5,
+            # True on the first card and wherever the window crosses into a new
+            # month, so a week spanning Oct/Nov says so instead of restarting
+            # its day numbers with no explanation.
+            "starts_month": previous_month is None or previous_month != day.month,
+            "relative_label": "Today" if offset == 0 else ("Tomorrow" if offset == 1 else ""),
+            "long_label": (f"{WEEKDAY_NAMES[day.weekday()]}, {MONTH_NAMES[day.month - 1]} "
+                           f"{ordinal(day.day)}, {day.year}"),
+            "events": entries,
+            "conflicts": conflicts,
+            "counts": {
+                "total": len(entries),
+                "confirmed": statuses.count("confirmed"),
+                "pending": statuses.count("pending"),
+                "countered": statuses.count("countered"),
+                "needs_you": statuses.count("countered"),
+            },
+        })
+        previous_month = day.month
+
+    return {"days": out, "beyond": beyond, "spans_months": len({d["month_index"] for d in out}) > 1}

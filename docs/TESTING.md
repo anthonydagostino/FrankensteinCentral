@@ -57,6 +57,7 @@ at the month boundary — plus year rollovers and Feb 29.
 | `services/firefly/tests/test_date_windows.py` | 1,166 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag |
 | `services/firefly/tests/test_endpoints.py` | 17 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
+| `services/assistant/tests/test_dashboard.py` | 41 | "next" is not "oldest", the seven-day week window across an 800-day sweep, ordinals incl. 11th/12th/13th, DST days swept hour by hour, leap day, month/year spans, pending+countered survival, conflict detection, outage-vs-empty |
 
 ## Adding a service's tests
 

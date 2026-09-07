@@ -287,31 +287,214 @@ body.cc[data-mode="evening"] {
 .inbox-sync { font-size: 11.5px; color: var(--muted); margin: -2px 0 8px; }
 .inbox-sync.failed { color: #ffcc66; }
 
-/* ---- Schedule card (top of grid) ----------------------------------------
-   Pending and countered holds render distinctly from confirmed ones: the
-   whole point of the Gmail→Cal pipeline is the slot that is still waiting on
-   someone, and a card that showed only confirmed events would hide it. */
+/* ---- The week grid (top of grid) ----------------------------------------
+   Seven columns: today and the next six. Pending and countered holds render
+   distinctly from confirmed ones — the whole point of the Gmail→Cal pipeline
+   is the slot still waiting on someone, and a card that showed only confirmed
+   events would hide it.
+
+   Season themes below set --sn-* only. Text colour, surface and border tokens
+   are never themed, so October can be loud without October being unreadable.
+   Every status is carried by a word as well as a colour. */
 .cc-cal { grid-column: 1 / -1; }
-.cal-rows { display: flex; flex-direction: column; gap: 2px; }
-.cal-row {
-  display: flex; align-items: baseline; gap: 8px;
-  padding: 6px 8px; border-radius: 8px;
+
+.wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.wk-top h3 { margin: 0; }
+.wk-range { color: var(--text); font-size: 13px; font-weight: 600; }
+.wk-season {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+}
+.wk-note {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px;
+}
+.wk-note.clash { color: var(--imp); border-color: color-mix(in srgb, var(--imp) 45%, var(--line)); }
+.wk-amb {
+  margin-left: auto; font: inherit; font-size: 11px; cursor: pointer;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+}
+.wk-amb:hover { color: var(--text); border-color: var(--sn-accent, var(--accent-2)); }
+
+/* The grid is the positioning context for the decoration layer. */
+.wk-grid {
+  position: relative; isolation: isolate;
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px;
+}
+
+.wk-day {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; min-width: 0;
+  background: color-mix(in srgb, var(--panel-2) 86%, transparent);
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 10px 12px;
+  overflow: hidden;
+}
+.wk-day:focus-visible { outline: 2px solid var(--sn-accent, var(--accent-2)); outline-offset: 2px; }
+.wk-day.is-weekend {
+  background: color-mix(in srgb,
+    color-mix(in srgb, var(--panel-2) 82%, var(--bg)) 86%, transparent);
+}
+
+/* Today: a ring plus a "Today" word. Never colour alone. */
+.wk-day.is-today {
+  border-color: var(--sn-accent, var(--accent-2));
+  box-shadow: 0 0 0 1px var(--sn-accent, var(--accent-2)) inset,
+              0 6px 22px -12px var(--sn-accent, var(--accent-2));
+  background:
+    linear-gradient(180deg, var(--sn-wash, rgba(124,156,255,0.10)), transparent 62%),
+    color-mix(in srgb, var(--panel-2) 86%, transparent);
+}
+/* A window spanning two months says so instead of silently restarting its
+   day numbers. */
+.wk-day.month-start { border-left: 2px solid var(--sn-accent, var(--accent-2)); }
+.wk-day.month-start .wk-mo { color: var(--sn-accent, var(--accent-2)); font-weight: 700; }
+.wk-day.has-clash { border-color: color-mix(in srgb, var(--imp) 40%, var(--line)); }
+
+.wk-hd { position: relative; margin-bottom: 8px; }
+.wk-hd-top { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+.wk-dow {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--muted); white-space: nowrap;
+  /* No ellipsis: "Wednesday" clipped to "WEDNESD…" fails the one job this
+     line has. The Today pill moved to the date row to make the space. */
+}
+.wk-day.is-today .wk-dow { color: var(--sn-accent, var(--accent-2)); }
+.wk-rel {
+  align-self: center; margin-left: 5px; font-size: 9px; font-weight: 800; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--bg);
+  background: var(--sn-accent, var(--accent-2));
+  border-radius: 4px; padding: 1px 5px; white-space: nowrap;
+}
+.wk-count {
+  margin-left: auto; font-size: 10px; font-weight: 700;
+  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; min-width: 17px; text-align: center; padding: 0 5px;
+}
+.wk-date { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; margin-top: 3px; }
+.wk-num { font-size: 26px; font-weight: 700; line-height: 1.05; letter-spacing: -1px;
+  font-variant-numeric: tabular-nums; color: var(--text); }
+.wk-date sup { font-size: 11px; font-weight: 700; color: var(--muted); }
+.wk-mo { width: 100%; font-size: 11px; color: var(--muted); }
+
+/* Month motif: a watermark behind the header, never over the text. */
+.wk-motif {
+  position: absolute; right: -4px; top: -6px; font-size: 30px; line-height: 1;
+  opacity: .13; pointer-events: none; z-index: 0; filter: saturate(1.1);
+}
+.wk-day.is-today .wk-motif { opacity: .2; }
+
+.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wk-ev {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 5px; align-items: baseline;
+  padding: 5px 6px; border-radius: 7px;
+  background: rgba(255,255,255,0.025);
   border-left: 2px solid transparent;
 }
-.cal-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
-.cal-row.needs-you { border-left-color: var(--imp); }
-.cal-dot { flex: none; font-size: 11px; line-height: 1; }
-.cal-t { flex: none; min-width: 132px; color: var(--muted); font-size: 12px; }
-.cal-title { flex: 1 1 auto; color: var(--text); font-weight: 600; }
-.cal-tag {
-  flex: none; font-size: 10px; text-transform: uppercase;
-  letter-spacing: .04em; color: var(--muted);
-  border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px;
+.wk-ev-dot { font-size: 8px; line-height: 1.6; }
+.wk-ev-when { grid-column: 2; color: var(--muted); font-size: 10.5px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.wk-dash { padding: 0 2px; }
+.wk-ev-title {
+  grid-column: 2; color: var(--text); font-weight: 600; font-size: 12px; line-height: 1.3;
+  overflow-wrap: anywhere;
 }
-.cal-row.needs-you .cal-tag { color: var(--imp); }
-@media (max-width: 560px) {
-  .cal-row { flex-wrap: wrap; }
-  .cal-t { min-width: 0; width: 100%; }
+.wk-ev.allday { background: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 12%, transparent); }
+.wk-ev.needs-you { border-left-color: var(--imp); }
+.wk-ev.clash { border-left-color: var(--imp); background: rgba(255,122,122,0.08); }
+.wk-ev.live { border-left-color: var(--accent); }
+.wk-flag {
+  grid-column: 2; justify-self: start; font-size: 9px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .05em; border-radius: 3px; padding: 0 4px;
+}
+.wk-flag.live { color: var(--bg); background: var(--accent); }
+.wk-flag.clash { color: var(--imp); border: 1px solid currentColor; }
+.wk-tag {
+  grid-column: 2; justify-self: start; font-size: 9px; text-transform: uppercase;
+  letter-spacing: .04em; line-height: 1.5; color: var(--muted);
+  border: 1px solid currentColor; border-radius: 7px; padding: 1px 6px;
+  max-width: 100%; text-wrap: balance;
+}
+.wk-ev.needs-you .wk-tag { color: var(--imp); }
+.wk-clear { margin: 2px 0 0; color: var(--muted); font-size: 11px; opacity: .55; }
+
+/* An outage is not a clear week — it never renders as one. */
+.wk-down {
+  margin: 0; padding: 10px 12px; font-size: 13px; color: var(--text);
+  background: rgba(255,122,122,0.08);
+  border: 1px solid color-mix(in srgb, var(--imp) 40%, var(--line));
+  border-left: 3px solid var(--imp); border-radius: 10px;
+}
+
+/* ---- seasonal decoration -------------------------------------------------
+   Accent + motif only. These never touch --text, --panel or --line, so
+   contrast is identical in every month of the year. */
+.wk-grid[data-season="jan"], .wk-day[data-season="jan"] { --sn-accent: #7dd3fc; --sn-wash: rgba(125,211,252,0.13); }
+.wk-grid[data-season="feb"], .wk-day[data-season="feb"] { --sn-accent: #fda4af; --sn-wash: rgba(253,164,175,0.13); }
+.wk-grid[data-season="mar"], .wk-day[data-season="mar"] { --sn-accent: #6ee7b7; --sn-wash: rgba(110,231,183,0.13); }
+.wk-grid[data-season="apr"], .wk-day[data-season="apr"] { --sn-accent: #93c5fd; --sn-wash: rgba(147,197,253,0.13); }
+.wk-grid[data-season="may"], .wk-day[data-season="may"] { --sn-accent: #f9a8d4; --sn-wash: rgba(249,168,212,0.13); }
+.wk-grid[data-season="jun"], .wk-day[data-season="jun"] { --sn-accent: #fcd34d; --sn-wash: rgba(252,211,77,0.13); }
+.wk-grid[data-season="jul"], .wk-day[data-season="jul"] { --sn-accent: #fca5a5; --sn-wash: rgba(252,165,165,0.13); }
+.wk-grid[data-season="aug"], .wk-day[data-season="aug"] { --sn-accent: #67e8f9; --sn-wash: rgba(103,232,249,0.13); }
+.wk-grid[data-season="sep"], .wk-day[data-season="sep"] { --sn-accent: #fde047; --sn-wash: rgba(253,224,71,0.13); }
+.wk-grid[data-season="oct"], .wk-day[data-season="oct"] { --sn-accent: #fb923c; --sn-wash: rgba(251,146,60,0.15); }
+.wk-grid[data-season="nov"], .wk-day[data-season="nov"] { --sn-accent: #f59e0b; --sn-wash: rgba(245,158,11,0.13); }
+.wk-grid[data-season="dec"], .wk-day[data-season="dec"] { --sn-accent: #5eead4; --sn-wash: rgba(94,234,212,0.13); }
+
+/* Drifting glyphs, behind every card and non-interactive. */
+.wk-amb-layer {
+  position: absolute; inset: 0; z-index: 0; overflow: hidden;
+  pointer-events: none; border-radius: 12px;
+}
+.wk-flake {
+  position: absolute; top: -8%; line-height: 1; opacity: .55;
+  animation-name: wk-fall; animation-timing-function: linear;
+  animation-iteration-count: infinite; will-change: transform;
+}
+@keyframes wk-fall {
+  from { transform: translate3d(0, -20px, 0) rotate(0deg); }
+  to   { transform: translate3d(14px, 460px, 0) rotate(300deg); }
+}
+
+/* ---- responsive ----------------------------------------------------------
+   Seven columns need room. Below that the grid scrolls inside its own card
+   (never the page), and on a phone it stacks into rows so a day is readable
+   without pinching. */
+@media (max-width: 1080px) {
+  .wk-grid {
+    grid-auto-flow: column; grid-auto-columns: minmax(148px, 1fr);
+    grid-template-columns: none;
+    overflow-x: auto; scroll-snap-type: x proximity;
+    padding-bottom: 6px; scrollbar-width: thin;
+  }
+  .wk-day { scroll-snap-align: start; }
+}
+@media (max-width: 680px) {
+  .wk-grid {
+    grid-auto-flow: row; grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr);
+    overflow-x: visible; gap: 6px;
+  }
+  .wk-day { flex-direction: row; align-items: flex-start; gap: 12px; padding: 9px 10px; }
+  .wk-hd { flex: 0 0 96px; margin-bottom: 0; }
+  .wk-date { margin-top: 1px; }
+  .wk-num { font-size: 20px; }
+  .wk-evs { flex: 1 1 auto; min-width: 0; }
+  .wk-clear { margin-top: 4px; }
+  /* Anchor the motif to the row's own top-right corner instead of the
+     narrow header column, where it landed on top of the date. */
+  .wk-hd { position: static; }
+  .wk-motif { right: 8px; top: 6px; transform: none; font-size: 22px; opacity: .1; }
+  /* Falling decoration reads as clutter in a tall stacked list. */
+  .wk-amb-layer { display: none; }
+}
+
+/* Decoration is decoration: it stops moving when the reader asks it to. */
+@media (prefers-reduced-motion: reduce) {
+  .wk-flake { animation: none; opacity: .16; }
 }
 
 /* ---- Firefly figures on the money card ---------------------------------- */
