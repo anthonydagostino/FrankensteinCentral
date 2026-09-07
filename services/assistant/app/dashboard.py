@@ -132,35 +132,59 @@ def ordinal(day):
 SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "unknown")
 
 
-def schedule_state(schedule, calendar_link=None):
+def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     """Where the week's events came from, and how much to trust the gaps.
 
     `schedule` is the schedule service's payload; `{}` means `_get` swallowed
     a timeout, exactly as it does for Firefly.
 
-    `calendar_link` is the gmail service's payload. That is not an arbitrary
-    choice of evidence: `services/schedule/app/gcal.py` borrows its access
-    token from gmail's `/internal/token` because one OAuth consent covers both
-    accounts. So gmail's own `mode` IS the calendar integration's connection
-    state, and it is the only such evidence the read-only path actually has.
-    `GET /events` cannot supply it — that endpoint reads local Postgres and
-    would answer identically whether Google was connected or not.
+    `calendar_link` is the gmail service's payload, used ONLY as negative
+    evidence. An earlier version of this function read gmail's `mode == "live"`
+    as proof the Calendar integration was healthy. It is not, for two separate
+    reasons:
+
+      * `services/gmail/app/main.py` deliberately KEEPS `mode="live"` when an
+        inbox fetch fails but cached items exist, setting
+        `sync_status="failed"` alongside it. "live" there means "still serving
+        last-known-good mail", not "the connection works".
+      * Even a genuinely healthy Gmail sync says nothing about Calendar.
+        `gcal.py` borrows gmail's token, but a shared credential is not proof
+        that the Calendar API is reachable, in scope, or actually syncing.
+
+    So `ok` is reserved for POSITIVE, Calendar-specific evidence, supplied by
+    the caller as `calendar_evidence`. Nothing in today's read-only path
+    produces it — `GET /events` returns local Postgres rows and answers
+    identically whether Google is connected or not — so in production this
+    currently resolves to `unknown`, which is the honest answer rather than a
+    comfortable one. The parameter exists so that a real read-only Calendar
+    health surface can make `ok` reachable without reworking callers.
+
+    The one thing gmail CAN establish is the absence of a credential:
+    `mode == "disconnected"` means no OAuth consent exists at all, so Calendar
+    cannot be syncing either. That is sound negative evidence.
 
     Local commitments stay real in every state: the rows in Postgres were
     stored whatever Google is doing, so the caller still renders them.
     """
     if not schedule:
         return "unreachable"
-    if not calendar_link:
-        # gmail unreachable too — we cannot see the credential either way.
-        return "unknown"
-    mode = calendar_link.get("mode")
-    if mode == "live":
+
+    evidence = calendar_evidence if isinstance(calendar_evidence, dict) else {}
+    link = calendar_link or {}
+
+    # Positive Calendar evidence is the ONLY route to "ok" — something that
+    # actually performed a Calendar read said so.
+    if evidence.get("ok") is True:
         return "ok"
-    if mode == "disconnected":
+
+    # No credential at all, from either side. Conclusive negative evidence.
+    if evidence.get("state") == "disconnected" or link.get("mode") == "disconnected":
         return "disconnected"
-    # "error", "never", missing, or something added later: not evidence of
-    # health. Never guess upwards.
+
+    # Everything else: a failed probe, no probe, or gmail reporting "live"
+    # while its own sync_status is failed/never. None of those establish
+    # health, and a clear week that might not be clear is the one thing this
+    # function exists to prevent.
     return "unknown"
 
 

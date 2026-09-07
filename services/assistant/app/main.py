@@ -740,7 +740,8 @@ async def build_home(fresh: bool = False) -> dict:
 
     async with httpx.AsyncClient() as client:
         (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
+         networth, schedule, cal_health, deals, stocks, vault,
+         captures) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -751,6 +752,10 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{FIREFLY_SVC_URL}/spending"),
             _get(client, f"{NETWORTH_URL}/summary"),
             _get(client, f"{SCHEDULE_URL}/events"),
+            # Read-only Calendar reachability. Fetched alongside the rest so it
+            # costs no extra round trip; `_get` swallows failures into {}, which
+            # correctly reads as "no evidence" rather than as health.
+            _get(client, f"{SCHEDULE_URL}/calendar-health"),
             _get(client, f"{DEALS_URL}/summary"),
             _get(client, f"{STOCKS_URL}/portfolio"),
             _get(client, f"{VAULT_URL}/summary"),
@@ -775,12 +780,17 @@ async def build_home(fresh: bool = False) -> dict:
     # genuinely clear week are not the same fact, and the card must not render
     # the first as the second.
     week = week_window(all_events, now_local, LOCAL_TZ)
-    # The gmail payload is passed as the calendar-connection evidence: gcal
-    # borrows gmail's token, so one OAuth consent covers both. See
-    # dashboard.schedule_state. Passing the RAW payload matters — `gmail_mode`
-    # above defaults an unreachable gmail to "disconnected", which would turn
-    # "we cannot tell" into a confident claim.
-    week["state"] = schedule_state(schedule, emails_r)
+    # gmail is passed as NEGATIVE evidence only — it can establish that no
+    # OAuth consent exists, and nothing more. It cannot establish Calendar
+    # health: gmail keeps mode="live" while serving cached mail after a failed
+    # fetch, and a shared credential is not proof of Calendar API access.
+    # `calendar_evidence` comes from the schedule service's read-only
+    # /calendar-health probe, which is the only thing here that actually talks
+    # to Calendar. Absent or failed, the answer is "unknown", never "ok".
+    # See dashboard.schedule_state. The RAW payload is passed because the
+    # `gmail_mode` local above defaults an unreachable gmail to "disconnected",
+    # which would turn "we cannot tell" into a confident claim.
+    week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
     settings = settings or {}
 
     t = _home_time(settings)

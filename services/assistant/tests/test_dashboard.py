@@ -420,15 +420,36 @@ def test_unparseable_timestamps_are_dropped_not_guessed_at():
 # --- honest states ----------------------------------------------------------
 
 LIVE = {"mode": "live"}
+CAL_OK = {"state": "ok", "ok": True}
+CAL_DOWN = {"state": "unreachable", "ok": False}
+CAL_NONE = {"state": "disconnected", "ok": False}
+
+# The EXACT shape services/gmail/app/main.py produces when an inbox fetch
+# fails but cached items exist: mode stays "live" (serving last-known-good)
+# while sync_status flips to "failed". Codex asked that the tests use this
+# rather than a synthetic dict, because it is the state that made the old
+# mode-only check wrong.
+GMAIL_CACHED_FAILURE = {
+    "mode": "live",
+    "emails": [{"id": "cached"}],
+    "sync": {"sync_status": "failed", "last_error": "Gmail fetch failed",
+             "last_successful_sync": "2026-09-06T12:00:00Z"},
+}
+GMAIL_HEALTHY = {
+    "mode": "live",
+    "emails": [{"id": "fresh"}],
+    "sync": {"sync_status": "healthy", "last_error": None,
+             "last_successful_sync": "2026-09-07T12:00:00Z"},
+}
 
 
 def test_an_unreachable_schedule_service_is_not_an_empty_week():
     """Vision principle 1. `_get` returns {} on a timeout; rendering that as
     "nothing coming up" is the calmest possible way to hide real commitments."""
-    assert dash.schedule_state({}, LIVE) == "unreachable"
-    assert dash.schedule_state(None, LIVE) == "unreachable"
-    assert dash.schedule_state({"events": []}, LIVE) == "ok"
-    assert dash.schedule_state({"events": [1]}, LIVE) == "ok"
+    assert dash.schedule_state({}, LIVE, CAL_OK) == "unreachable"
+    assert dash.schedule_state(None, LIVE, CAL_OK) == "unreachable"
+    assert dash.schedule_state({"events": []}, LIVE, CAL_OK) == "ok"
+    assert dash.schedule_state({"events": [1]}, LIVE, CAL_OK) == "ok"
 
 
 def test_a_disconnected_calendar_is_not_a_healthy_empty_week():
@@ -440,6 +461,44 @@ def test_a_disconnected_calendar_is_not_a_healthy_empty_week():
     # The shape that reproduced it.
     assert dash.schedule_state({"connected": False, "events": []},
                                {"mode": "disconnected"}) != "ok"
+    # And the probe saying "no token" is equally conclusive.
+    assert dash.schedule_state({"events": []}, LIVE, CAL_NONE) == "disconnected"
+
+
+def test_gmail_live_while_its_own_sync_failed_is_never_healthy():
+    """Codex's second P1, reproduced with the real shape.
+
+    services/gmail/app/main.py KEEPS mode="live" when a fetch fails but cached
+    items exist, setting sync_status="failed" beside it. "live" there means
+    "still serving last-known-good mail", not "the connection works" — so it
+    must never, on its own, turn an unconfirmed Calendar into a clear week.
+    """
+    assert dash.schedule_state({"events": []}, GMAIL_CACHED_FAILURE) == "unknown"
+    assert dash.schedule_state({"events": [1]}, GMAIL_CACHED_FAILURE) == "unknown"
+    # Not even with a probe that failed.
+    assert dash.schedule_state({"events": []}, GMAIL_CACHED_FAILURE, CAL_DOWN) == "unknown"
+
+
+def test_a_healthy_inbox_is_not_confirmed_calendar_health():
+    """The distinction Codex asked for explicitly. A perfectly healthy Gmail
+    sync says nothing about whether Calendar is reachable or in scope: gcal
+    borrows the credential, and a shared credential is not an API check."""
+    assert dash.schedule_state({"events": []}, GMAIL_HEALTHY) == "unknown"
+    assert dash.schedule_state({"events": []}, GMAIL_HEALTHY, CAL_DOWN) == "unknown"
+    # Only a Calendar-specific read flips it.
+    assert dash.schedule_state({"events": []}, GMAIL_HEALTHY, CAL_OK) == "ok"
+
+
+def test_only_positive_calendar_evidence_reaches_ok():
+    """`ok` is reserved for something that actually performed a Calendar read."""
+    for link in (None, {}, LIVE, GMAIL_HEALTHY, GMAIL_CACHED_FAILURE,
+                 {"mode": "error"}, {"mode": "never"}):
+        assert dash.schedule_state({"events": []}, link) != "ok", link
+        assert dash.schedule_state({"events": []}, link, {}) != "ok", link
+        assert dash.schedule_state({"events": []}, link, CAL_DOWN) != "ok", link
+    # A probe that merely ANSWERED is not a probe that succeeded.
+    assert dash.schedule_state({"events": []}, LIVE, {"state": "unreachable"}) == "unknown"
+    assert dash.schedule_state({"events": []}, LIVE, {"ok": False}) == "unknown"
 
 
 def test_unestablished_connection_health_is_unknown_not_ok():
@@ -452,15 +511,16 @@ def test_unestablished_connection_health_is_unknown_not_ok():
 
 
 def test_connection_evidence_is_never_inferred_from_the_wrapper():
-    """A non-empty payload is not a connection. Only the calendar link decides."""
+    """A non-empty payload is not a connection. Only the evidence decides."""
     assert dash.schedule_state({"events": [1, 2, 3]}, None) == "unknown"
     assert dash.schedule_state({"events": [1, 2, 3]}, {"mode": "disconnected"}) == "disconnected"
 
 
 def test_every_state_is_one_of_the_documented_four():
     for sched in ({}, {"events": []}, {"events": [1]}):
-        for link in (None, {}, LIVE, {"mode": "disconnected"}, {"mode": "error"}):
-            assert dash.schedule_state(sched, link) in dash.SCHEDULE_STATES
+        for link in (None, {}, LIVE, GMAIL_CACHED_FAILURE, {"mode": "disconnected"}):
+            for ev in (None, {}, CAL_OK, CAL_DOWN, CAL_NONE):
+                assert dash.schedule_state(sched, link, ev) in dash.SCHEDULE_STATES
 
 
 def test_local_commitments_survive_a_disconnected_calendar():

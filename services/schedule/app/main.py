@@ -285,9 +285,25 @@ async def sync_from_calendar():
     return {"synced": True, "imported": imported, "updated": updated}
 
 
+@app.get("/calendar-health")
+async def calendar_health():
+    """Positive, read-only evidence about the Google Calendar connection.
+
+    `GET /events` cannot supply this: it reads local Postgres and answers
+    identically whether Calendar is connected or not. The dashboard needs to
+    distinguish a genuinely clear week from one where events living only in
+    Google are missing, and only something that actually talked to Calendar
+    can establish that.
+
+    Writes nothing.
+    """
+    state = await gcal.probe()
+    return {"state": state, "ok": state == "ok"}
+
+
 @app.get("/")
 async def root():
     return {"app": "Schedule", "endpoints": [
         "/events", "/events/{id}/status", "/events/resolve-thread",
-        "/sync-from-calendar", "/health",
+        "/sync-from-calendar", "/calendar-health", "/health",
     ]}
