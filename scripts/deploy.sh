@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Redeploy FrankensteinCentral from the latest pushed code.
 #
-# Runs on the OptiPlex (the box that hosts the stack). The GitHub Actions
-# self-hosted runner calls this on every push; you can also run it by hand.
+# Runs on the OptiPlex (the box that hosts the stack). scripts/autopull.sh —
+# the systemd poller, and the only supported deployment path — calls this when
+# the production branch moves; you can also run it by hand.
 #
 #   FRANKENSTEIN_DIR   where the repo is cloned (default: $HOME/FrankensteinCentral)
 #   $1                 branch to deploy (default: whatever is checked out)

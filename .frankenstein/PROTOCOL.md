@@ -213,6 +213,68 @@ with an explanation in the directive or review notes.
 
 ---
 
+## The control branch: the messaging channel
+
+The Product Owner and Claude exchange directives and handoffs through the
+orphan `control` branch on GitHub. No human relays routine messages between
+them.
+
+| | |
+|---|---|
+| bus | the `control` branch — orphan history, carries `.frankenstein/` only |
+| transport | GitHub |
+| what travels here | directives, corrections, handoffs, protocol state |
+| what never travels here | code, product changes, anything deployable |
+
+`control` shares no history with `production`, so it cannot be fast-forwarded
+into it, and the poller watches `production` only. A commit on `control`
+therefore deploys nothing, by construction rather than by promise.
+
+**The human leaves the message path, not the decision path.** These remain
+explicit human approvals regardless of what `STATE.json` says:
+
+- production deployment
+- credential creation, rotation or disclosure
+- actions that spend money
+- destructive deletion of meaningful data
+- destructive migrations
+- weakening containment
+- widening autonomous egress
+- high-risk host changes
+- irreversible operations
+
+`turn: claude` authorizes implementation. It has never authorized any of the
+above, and direct messaging does not change that.
+
+### Control write order
+
+`control` is the authorization channel, so a half-written directive must not
+be able to start work. When the Product Owner writes through sequential
+single-file commits, the state flip goes **last**:
+
+**New directive**
+
+1. commit `PRODUCT_DIRECTIVE.md` while `STATE.json` still says
+   `turn: product_owner` — this commit cannot wake Claude
+2. note that commit's SHA
+3. commit `STATE.json` with `directive_commit = <that SHA>`,
+   `turn = claude`, `status = ready_for_implementation`
+
+**Changes requested**
+
+1. commit the correction while state remains
+   `product_owner` / `awaiting_review`
+2. commit `STATE.json` with `turn = claude`,
+   `status = changes_requested`
+
+The intermediate commit never authorizes execution. Atomic multi-file commits
+to `control` are welcome if they become available, but they are not required
+for safety as long as this ordering holds — and the ordering is what the
+worker's strict state validation assumes. That validation is not to be
+loosened to accommodate a partially written directive.
+
+---
+
 ## Commit conventions
 
 | actor / event | prefix |
