@@ -2,11 +2,12 @@
 
 | | |
 |---|---|
-| Implementation SHA | **`47c12571a1da661035dffdc8f5085f2cf5932f49`** |
+| Implementation SHA | **`d2b77b6306ece71b51aa0bf52e1cd942d1fb6135`** |
 | Task branch | `claude/FC-009-savings-classification` |
 | Baseline | `e7adf83` (current production) — fast-forward |
 | Answers | `PO_REVIEW_e7adf83.md`, control `b06a199` |
 | Suite | **2306 passed, 0 skipped**, exit 0 |
+| CI on that exact SHA | **green** — run 34143034262 |
 | Deployment Authorization | **none** — nothing promoted |
 
 **Authorization, stated plainly.** There is no control directive for this
@@ -109,6 +110,27 @@ account for the difference exactly.
 `docs/BUDGETS.md` updated — the value table and three new refusals — because
 it is the canonical spec a reviewer checks the code against, and the
 semantics of "allocation-matched" changed.
+
+## CI — one ported commit, declared
+
+The first push (`47c1257`) was **red**: 19 failed, 2250 passed. None of them
+were money. Eighteen were the worker containment suite failing because the
+GitHub runner cannot create the namespaces, and the nineteenth was
+`test_mismatched_running_commit_reports_pending` resolving `origin/production`
+from an ambient checkout that a single-branch CI clone does not have.
+
+Both are inherited from `e7adf83`, which is production and predates the fix.
+That fix already exists, already reviewed, proven green: `691d70b` on
+`claude/FC-008-ci-gate`. It was **cherry-picked here unchanged** rather than
+re-solved — two files, `.github/workflows/tests.yml` and
+`tests/test_deploy_boundary.py`, no product code — so this branch can show a
+green run on its own SHA instead of asking the reviewer to take the failure on
+trust. It no-ops the moment production carries it.
+
+That is the one scope addition beyond the three findings, and it is declared
+rather than folded in quietly. Nothing was skipped, disabled or quarantined:
+the run is green with `FRANKENSTEIN_REQUIRE_SANDBOX=1`, which turns a skipped
+containment test into a failure.
 
 ## Deviations and what is not claimed
 
