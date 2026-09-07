@@ -118,18 +118,30 @@ def ordinal(day):
 
 # What the week card is allowed to claim about where its events came from.
 #
-#   ok            the schedule service answered AND the calendar integration
-#                 is known to be connected
-#   unreachable   the schedule service did not answer at all — we have nothing
-#   disconnected  the service answered, but the calendar integration has no
-#                 credential, so anything living only in Google is missing
-#   unknown       the service answered, but the integration's health cannot be
-#                 established — which is NOT the same as healthy
+#   ok             the schedule service answered AND the calendar integration
+#                  is known to be connected
+#   unreachable    the schedule service did not answer at all — we have nothing
+#   disconnected   the service answered, but the calendar integration has no
+#                  credential, so anything living only in Google is missing
+#   needs_consent  a credential exists and Google refuses it for Calendar —
+#                  wrong scopes. Fixable in one click, and never by waiting
+#   unknown        the service answered, but the integration's health cannot be
+#                  established — which is NOT the same as healthy
 #
 # `unknown` exists because the previous two-state version returned `ok` for
 # any truthy payload, so a disconnected calendar rendered as a clear week.
 # Absence of evidence was being presented as evidence of absence.
-SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "unknown")
+#
+# `needs_consent` exists for the mirror-image reason. It was previously folded
+# into `unknown`, whose caveat says the connection could not be confirmed —
+# language that invites you to wait. But a refresh token minted without the
+# calendar scope never heals on its own, so "wait" is advice that cannot work,
+# and the week grid quietly stays incomplete for as long as you take it.
+SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "needs_consent", "unknown")
+
+# The states where Google Calendar is definitely NOT syncing and a person has
+# to reconnect the account. Both render an action, not a shrug.
+RECONNECT_STATES = ("disconnected", "needs_consent")
 
 
 def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
@@ -181,6 +193,12 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     # No credential at all, from either side. Conclusive negative evidence.
     if evidence.get("state") == "disconnected" or link.get("mode") == "disconnected":
         return "disconnected"
+
+    # A credential that Calendar refuses. Also conclusive, and also negative —
+    # but it points at a different repair than "disconnected" does, so it is
+    # reported separately rather than being rounded to the nearest state.
+    if evidence.get("state") == "needs_consent":
+        return "needs_consent"
 
     # Everything else: a failed probe, no probe, or gmail reporting "live"
     # while its own sync_status is failed/never. None of those establish
@@ -324,6 +342,13 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
             continue
         index[day].append({
             **event,
+            # The schedule service stamps `source` on import; anything it
+            # pulled out of the real Google Calendar carries
+            # 'google_calendar'. Resolved here rather than in the browser so
+            # the front end never has to know the service's source strings,
+            # and so the calendar sweep covers it.
+            "from_google": event.get("source") == "google_calendar",
+            "location": event.get("location") or None,
             "time_label": _time_label(start, all_day),
             "end_label": None if all_day or end == start else _time_label(end, all_day),
             "slot": _slot_for(start, all_day),
@@ -380,11 +405,21 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
                 "pending": statuses.count("pending"),
                 "countered": statuses.count("countered"),
                 "needs_you": statuses.count("countered"),
+                "google": sum(1 for e in entries if e["from_google"]),
             },
         })
         previous_month = day.month
 
-    return {"days": out, "beyond": beyond, "spans_months": len({d["month_index"] for d in out}) > 1}
+    # A running total of what came out of Google Calendar. This is the only
+    # POSITIVE, visible-to-the-user evidence that the import is actually
+    # working: `state == "ok"` says the API answered a probe, which it will do
+    # just as happily when nothing has ever been imported. A number here that
+    # stays at zero on a week you know is busy is the symptom worth seeing.
+    from_google = sum(d["counts"]["google"] for d in out)
+
+    return {"days": out, "beyond": beyond,
+            "from_google": from_google,
+            "spans_months": len({d["month_index"] for d in out}) > 1}
 
 
 # --- the weekly review (PRODUCT_IDEAS #5) -----------------------------------
