@@ -648,3 +648,72 @@ body.cc[data-mode="evening"] {
   .wr-row { grid-template-columns: 60px 1fr 40px; }
   .wr-bar { grid-column: 1 / -1; }
 }
+
+/* Needs attention — the feed AUDIT.md §3 promised (PRODUCT_IDEAS #17).
+   Severity is carried by a word as well as a colour, so the distinction
+   survives a colour-blind reader and a greyscale screenshot. */
+#cc-attention .att-row {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .5rem 0; border-top: 1px solid var(--line, rgba(128,128,128,.18));
+}
+#cc-attention .att-row:first-of-type { border-top: 0; }
+#cc-attention .att-icon { font-size: 1.1rem; flex: 0 0 auto; }
+#cc-attention .att-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+#cc-attention .att-text b { font-weight: 600; }
+#cc-attention .att-text em { font-style: normal; font-size: .76rem; opacity: .65; }
+#cc-attention .att-sev {
+  flex: 0 0 auto; font-size: .64rem; letter-spacing: .04em; text-transform: uppercase;
+  padding: .1rem .4rem; border-radius: 999px; border: 1px solid currentColor; opacity: .8;
+}
+#cc-attention .att-row.important .att-sev { color: var(--imp, #e0574a); }
+#cc-attention .att-row.fyi .att-sev { color: var(--muted, #8a8a8a); }
+#cc-attention .att-count {
+  font-size: .68rem; font-weight: 600; color: var(--imp, #e0574a);
+  border: 1px solid currentColor; border-radius: 999px; padding: .05rem .4rem; margin-left: .4rem;
+}
+#cc-attention .att-btn {
+  flex: 0 0 auto; cursor: pointer; font: inherit; font-size: .74rem;
+  padding: .25rem .6rem; border-radius: 8px;
+  border: 1px solid var(--line, rgba(128,128,128,.3)); background: transparent; color: inherit;
+}
+#cc-attention .att-btn:hover { border-color: var(--accent-2, #6aa6ff); }
+@media (max-width: 520px) {
+  #cc-attention .att-row { flex-wrap: wrap; }
+  #cc-attention .att-text { flex-basis: 100%; order: 2; }
+}
+
+/* Deadlines and the weekly review (PRODUCT_IDEAS #17) — both built long ago
+   and reachable from nothing the user looks at. */
+#cc-deadlines .dl-row, #cc-weekly .wk-row {
+  display: flex; align-items: center; gap: .6rem; padding: .4rem 0;
+  border-top: 1px solid var(--line, rgba(128,128,128,.18));
+}
+#cc-deadlines .dl-row:first-of-type, #cc-weekly .wk-row:first-of-type { border-top: 0; }
+#cc-deadlines .dl-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+#cc-deadlines .dl-text em { font-style: normal; font-size: .72rem; opacity: .55; }
+#cc-deadlines .dl-when { flex: 0 0 auto; font-size: .74rem; opacity: .75; }
+#cc-deadlines .dl-row.overdue .dl-when { color: var(--imp, #e0574a); font-weight: 600; }
+#cc-deadlines .dl-row.undated .dl-when { opacity: .5; font-style: italic; }
+#cc-deadlines .dl-count {
+  font-size: .68rem; font-weight: 600; color: var(--imp, #e0574a);
+  border: 1px solid currentColor; border-radius: 999px; padding: .05rem .4rem; margin-left: .4rem;
+}
+#cc-weekly .wk-row span:first-child { flex: 0 0 4.2rem; font-size: .78rem; }
+#cc-weekly .wk-row .track {
+  flex: 1 1 auto; height: 6px; border-radius: 3px;
+  background: var(--line, rgba(128,128,128,.2)); overflow: hidden;
+}
+#cc-weekly .wk-row .fill { height: 100%; background: var(--accent-2, #6aa6ff); }
+#cc-weekly .wk-row em { flex: 0 0 auto; font-style: normal; font-size: .72rem; opacity: .7; }
+#cc-weekly .wk-row.untracked .track { opacity: .35; }
+#cc-weekly .wk-delta { font-size: .7rem; font-weight: 600; }
+#cc-weekly .wk-delta.up { color: var(--ok, #4caf82); }
+#cc-weekly .wk-delta.down { color: var(--imp, #e0574a); }
+
+/* Small orphan wirings (PRODUCT_IDEAS #17). */
+.pf-alert { font-size: .76rem; margin: .3rem 0 .5rem; opacity: .9; }
+.pf-alert b.up { color: var(--ok, #4caf82); }
+.pf-alert b.down { color: var(--imp, #e0574a); }
+.cap-form .cap-kind { flex: 0 0 auto; max-width: 6.5rem; }
+.hx-btns .hx-label { flex: 1 1 6rem; min-width: 5rem; font-size: .76rem; padding: .2rem .4rem; }
+
