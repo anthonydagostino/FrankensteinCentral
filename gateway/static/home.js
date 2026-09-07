@@ -30,16 +30,15 @@
   }
   // The seven-day window is anchored to the server's local day, so a tab left
   // open across midnight would keep showing yesterday as "Today" until a
-  // manual reload. Re-fetch just after the boundary, then re-arm.
+  // manual reload. Re-fetch just after the boundary, then re-arm. The delay
+  // itself lives in weekclock.js so it can be swept by node --test.
   let midnightTimer = null;
   function scheduleMidnightRollover() {
     if (midnightTimer) clearTimeout(midnightTimer);
-    const now = new Date();
-    const next = new Date(now);
-    next.setHours(24, 0, 5, 0);  // a few seconds past, to be safely over
+    const delay = WeekClock.msUntilNextMidnight(new Date());
     midnightTimer = setTimeout(() => {
       refresh(true).finally(scheduleMidnightRollover);
-    }, Math.max(1000, next - now));
+    }, Math.max(1000, delay));
   }
 
   async function refresh(fresh) {
@@ -178,7 +177,12 @@
       : esch(e.time_label);
     const flags = [
       e.ongoing ? `<span class="wk-flag live">now</span>` : "",
-      e.conflict ? `<span class="wk-flag clash" title="Overlaps another commitment">⚠ overlaps</span>` : "",
+      // "Overlaps" on its own is baffling when the other commitment is in a
+      // different column, so a cross-midnight clash says so.
+      e.conflict ? `<span class="wk-flag clash" title="${e.conflict_offday
+        ? `Overlaps a commitment on the ${e.conflict_neighbour} day`
+        : "Overlaps another commitment this day"}">⚠ overlaps${
+        e.conflict_offday ? ` ${esch(e.conflict_neighbour)} day` : ""}</span>` : "",
     ].filter(Boolean).join("");
     return `<li class="${cls}">
       <span class="wk-ev-dot" aria-hidden="true">${st.dot}</span>

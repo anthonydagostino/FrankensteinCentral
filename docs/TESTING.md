@@ -57,7 +57,29 @@ at the month boundary — plus year rollovers and Feb 29.
 | `services/firefly/tests/test_date_windows.py` | 1,166 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag |
 | `services/firefly/tests/test_endpoints.py` | 17 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
-| `services/assistant/tests/test_dashboard.py` | 41 | "next" is not "oldest", the seven-day week window across an 800-day sweep, ordinals incl. 11th/12th/13th, DST days swept hour by hour, leap day, month/year spans, pending+countered survival, conflict detection, outage-vs-empty |
+| `services/assistant/tests/test_dashboard.py` | 47 | "next" is not "oldest", the seven-day week window across an 800-day sweep, ordinals incl. 11th/12th/13th, DST days swept hour by hour, leap day, month/year spans, pending+countered survival, conflict detection incl. across midnight, outage-vs-empty |
+| `gateway/tests/weekclock.test.js` | 5 | the browser's midnight rollover, swept over 800 days × 4 times of day, DST days hour by hour, month/year/leap boundaries |
+
+## Browser-side date logic
+
+Almost all date work happens server-side, where the Python sweeps can reach
+it. The one exception is *when an open tab should re-fetch* — that has to run
+in the browser. It lives in `gateway/static/weekclock.js` rather than inline
+in `home.js`, takes `now` as an argument instead of calling `new Date()`
+internally, and is swept by `node --test` under a pinned `TZ`, exactly as the
+Python date logic is swept.
+
+```bash
+TZ=America/New_York node --test gateway/tests/*.test.js
+```
+
+`scripts/test.sh` runs this. Pass the file glob, not the directory: `node
+--test <dir>` is not portable across the Node versions this runs on.
+
+Assert against literals, not against the constant under test. A first draft of
+the rollover test compared the fire time to the same `GRACE_MS` that produced
+it, so setting the margin to zero still passed — a test that cannot fail is
+decoration, the same trap the sweep rule exists to avoid.
 
 ## Adding a service's tests
 

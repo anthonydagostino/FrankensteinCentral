@@ -443,3 +443,53 @@ def test_season_key_is_derived_from_the_date_and_nothing_else():
         for cell in dash.week_window([], at(d), NY)["days"]:
             real = date.fromisoformat(cell["iso"])
             assert cell["season"] == dash.SEASON_KEYS[real.month - 1]
+
+
+def test_conflicts_are_detected_across_midnight():
+    """A per-day pass is structurally blind to this: an 11:30pm call and a
+    12:15am call are one collision filed under two dates."""
+    d = date(2026, 6, 10)
+    events = [
+        ev("Late call", at(d, 23, 30).isoformat(), end=at(d + timedelta(days=1), 0, 30).isoformat()),
+        ev("Overnight page", at(d + timedelta(days=1), 0, 15).isoformat(),
+           end=at(d + timedelta(days=1), 1, 0).isoformat()),
+        ev("Unrelated", at(d + timedelta(days=1), 9).isoformat()),
+    ]
+    week = dash.week_window(events, at(d, 8), NY)
+    today, tomorrow = week["days"][0], week["days"][1]
+    late = next(e for e in today["events"] if e["title"] == "Late call")
+    page = next(e for e in tomorrow["events"] if e["title"] == "Overnight page")
+    free = next(e for e in tomorrow["events"] if e["title"] == "Unrelated")
+    assert late["conflict"] is True
+    assert page["conflict"] is True
+    assert free["conflict"] is False
+    # Both are told the clash is with a different calendar day, and which
+    # direction it lies in — "overlaps next day" on a 00:15 event whose other
+    # half was the night before is worse than saying nothing.
+    assert late["conflict_offday"] is True
+    assert page["conflict_offday"] is True
+    assert late["conflict_neighbour"] == "next"
+    assert page["conflict_neighbour"] == "previous"
+    assert today["conflicts"] == 1 and tomorrow["conflicts"] == 1
+
+
+def test_same_day_conflicts_are_not_marked_as_cross_day():
+    d = date(2026, 6, 10)
+    events = [
+        ev("A", at(d, 10).isoformat(), end=at(d, 11).isoformat()),
+        ev("B", at(d, 10, 30).isoformat(), end=at(d, 11, 30).isoformat()),
+    ]
+    today = dash.week_window(events, at(d, 8), NY)["days"][0]
+    assert today["conflicts"] == 2
+    assert all(e["conflict_offday"] is False for e in today["events"])
+    assert all(e["conflict_neighbour"] is None for e in today["events"])
+
+
+def test_events_on_different_days_that_do_not_overlap_are_not_conflicts():
+    """The window-wide pass must not turn "two busy days" into a conflict."""
+    d = date(2026, 6, 10)
+    events = [ev(f"Day {n}", at(d + timedelta(days=n), 9).isoformat(),
+                 end=at(d + timedelta(days=n), 10).isoformat()) for n in range(7)]
+    week = dash.week_window(events, at(d, 8), NY)
+    assert all(c["conflicts"] == 0 for c in week["days"])
+    assert all(not e["conflict"] for c in week["days"] for e in c["events"])

@@ -169,12 +169,16 @@ def _time_label(dt, all_day):
 
 
 def _mark_conflicts(entries):
-    """Flag every entry that overlaps another on the same day.
+    """Flag every entry whose time overlaps another one's.
 
     Two commitments in the same hour is precisely the "approaching conflict"
     the product vision asks the hub to surface, and it is invisible in a flat
     list. All-day events do not conflict with timed ones — an all-day marker
     is context, not a competing obligation.
+
+    This runs over the WHOLE window, not one day at a time. A 23:30 call and
+    a 00:15 call are a real collision even though the calendar files them
+    under different dates, and a per-day pass is structurally blind to it.
     """
     timed = [e for e in entries if not e["all_day"]]
     for a_index, a in enumerate(timed):
@@ -186,7 +190,18 @@ def _mark_conflicts(entries):
             if hit:
                 a["conflict"] = True
                 b["conflict"] = True
-    return sum(1 for e in entries if e["conflict"])
+                # Named so the column can say which neighbour it clashes
+                # with when that neighbour is not in the same column. The
+                # direction matters: telling someone a 00:15 call "overlaps
+                # next day" when the other half is the night before is worse
+                # than saying nothing.
+                if a["_start"].date() != b["_start"].date():
+                    earlier, later = ((a, b) if a["_start"] <= b["_start"]
+                                      else (b, a))
+                    earlier["conflict_offday"] = True
+                    later["conflict_offday"] = True
+                    earlier["conflict_neighbour"] = "next"
+                    later["conflict_neighbour"] = "previous"
 
 
 def week_window(events, now, local_tz, days=WINDOW_DAYS):
@@ -237,15 +252,21 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
             "ongoing": ongoing or (start <= now <= end and not all_day),
             "needs_you": event.get("status") == "countered",
             "conflict": False,
+            "conflict_offday": False,
+            "conflict_neighbour": None,
             "_start": start,
             "_end": end,
         })
+
+    # One pass over every placed event, so an overlap that straddles midnight
+    # is caught. Must happen before the per-day sort strips the bounds.
+    _mark_conflicts([e for day in window for e in index[day]])
 
     out = []
     previous_month = None
     for offset, day in enumerate(window):
         entries = sorted(index[day], key=lambda e: (not e["all_day"], e["_start"]))
-        conflicts = _mark_conflicts(entries)
+        conflicts = sum(1 for e in entries if e["conflict"])
         statuses = [e.get("status", "confirmed") for e in entries]
         for entry in entries:
             del entry["_start"]
