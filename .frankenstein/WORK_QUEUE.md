@@ -9,7 +9,7 @@
 >
 > | branch | tip | vs production | suite |
 > |---|---|---|---|
-> | `claude/FC-008-weekly-calendar` (FC-008) | `176e72b` | +1, **fast-forward** | **1510 pass** |
+> | `claude/FC-008-weekly-calendar` (FC-008) | `add5b2b` | +2, **fast-forward** | **1513 pass + 5 node** |
 >
 > Handoff: `.frankenstein/FC-008/`. Deployment Authorization: **none**.
 >

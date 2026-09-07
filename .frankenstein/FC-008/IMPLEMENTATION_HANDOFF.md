@@ -3,7 +3,8 @@
 Task ID: FC-008
 Task branch: `claude/FC-008-weekly-calendar`
 Baseline: `0a5d24a` (`production`)
-Implementation commit: `176e72b3fcf065ada0df82e840d3ec82b7ef0fe0`
+Implementation commit: `add5b2b99f9f67c42824507a7237a404817882f0`
+  (supersedes `176e72b`; both are on the task branch)
 Authorizing control commit (epoch): `c60c29798510224111bb8339c9aacc4655e6972e`
 Directive commit: `71dba66c8814646a16b3d244e76a4a074e812c20`
 Deployment Authorization: **none** — task branch pushed for review, nothing deployed.
@@ -69,25 +70,30 @@ takes `now`/`local_tz` from its caller. That injection point is the clock seam
 
 ## Verification
 
-Full suite on the exact implementation tree `176e72b`:
+Full suite on the exact implementation tree `add5b2b`:
 
 ```
-1510 passed, 4 warnings in 114.97s
+1513 passed, 4 warnings in 146.35s
+== javascript: unit tests ==   # tests 5   # pass 5   # fail 0
 ALL TESTS PASSED
 ```
 
-Baseline `0a5d24a` runs 1486. The 24 new cases are 21 new test functions, with
-the DST case parametrized over four transition dates.
+Baseline `0a5d24a` runs 1486 and has no JavaScript tests at all. This adds 27
+Python cases and a 5-case `node --test` suite.
 
 Diff vs baseline — 6 files, +919 / −53:
 
 ```
-docs/TESTING.md                            |   1 +
-gateway/static/home.css                    | 227 ++++++++++++++---
-gateway/static/home.js                     | 235 ++++++++++++++---
-services/assistant/app/dashboard.py        | 211 +++++++++++++++-
+docs/TESTING.md                            |  23 +
+gateway/static/home.css                    | 229 +++++++++++++--
+gateway/static/home.js                     | 239 +++++++++++++---
+gateway/static/index.html                  |   1 +
+gateway/static/weekclock.js                |  37 +++   (new)
+gateway/tests/weekclock.test.js            |  93 +++++++   (new)
+scripts/test.sh                            |   8 +
+services/assistant/app/dashboard.py        | 232 +++++++++++++++
 services/assistant/app/main.py             |  10 +-
-services/assistant/tests/test_dashboard.py | 288 ++++++++++++++++++++++
+services/assistant/tests/test_dashboard.py | 338 ++++++++++++++++++++++
 ```
 
 `.frankenstein/` on the task branch is **unchanged** (0 files differ from
@@ -125,6 +131,9 @@ was verified by reintroducing the bug and watching the suite go red:
 | filter events to `confirmed` only | 1 failed |
 | make `schedule_state` always return `ok` | 1 failed |
 | bucket by UTC + 86400s instead of local dates | 4 failed |
+| detect conflicts per day instead of window-wide | 1 failed |
+| browser rollover using +86400000 | 4 of 5 node tests failed |
+| rollover firing exactly on the boundary (grace 0) | 1 node test failed |
 
 **The DST test did not bite on its first draft.** Anchored at 9am it passed
 against the very bug it claimed to guard, because an absolute-offset
@@ -153,33 +162,56 @@ overflow at 390px. All fixture data is synthetic, per vision principle 6.
 
 ## Deviations From Directive
 
-1. **Requirement 3, midnight rollover — implemented client-side, and its
-   timer is not covered by the suite.** The `week_window` logic is fully
-   swept, but `scheduleMidnightRollover()` is a browser `setTimeout` and this
-   repo has no JS test harness (`scripts/test.sh` runs `node --check` only).
-   It was verified by reading, not by execution. No product impact observed;
-   flagged because it is the one date-dependent line in this change without
-   sweep coverage.
+Deviations 1 and 2 below were declared at the first handoff (`176e72b`) and
+have since been **closed** in `add5b2b`. They are kept here, marked, rather
+than deleted: a deviations section that quietly loses entries between
+revisions is not a record.
 
-2. **Requirement 5, conflicts — same-day only.** Two commitments that overlap
-   across a midnight boundary are not flagged as conflicting with each other.
-   Out of scope as written; noted so the limit is explicit rather than
-   discovered.
+1. ~~**Requirement 3, midnight rollover — not covered by the suite.**~~
+   **CLOSED in `add5b2b`.** The calculation moved out of `home.js` into
+   `gateway/static/weekclock.js`, where it takes `now` as an argument rather
+   than reading the clock itself. `scripts/test.sh` now runs `node --test`
+   over it: 800 days × four times of day, DST days hour by hour, and
+   month/year/leap boundaries, under a pinned `TZ`. Fixing it also removed a
+   real bug — the original used `+86400000`, which lands an hour off on a 23-
+   or 25-hour day; the new sweep fails in 4 of 5 cases against that.
 
-3. **All-day detection is heuristic.** A `starts_at` with no time component is
-   treated as all-day. That is how a date-only calendar value arrives today,
-   but the schedule service has no explicit `all_day` column, so an event
-   stored as exactly midnight with a time component reads as a timed 12 AM
-   event. Adding the column was out of scope.
+2. ~~**Requirement 5, conflicts — same-day only.**~~ **CLOSED in `add5b2b`.**
+   `_mark_conflicts` now runs once over the whole window instead of per day,
+   so an 11:30pm call and a 12:15am call are recognised as one collision. Each
+   side is also told which direction the clash lies in (`conflict_neighbour`
+   is `next` or `previous`), because labelling a 00:15 event "overlaps next
+   day" when its counterpart was the night before is worse than saying
+   nothing.
 
-4. **`systems.down` was not extended.** An unreachable schedule service is now
-   honest inside the week card (`week.state`), but it still does not appear in
-   the dashboard's `systems.down` list, which tracks only core and email.
-   Changing that is a wider behaviour change than this directive authorizes.
+3. **All-day detection is heuristic.** *(still open)* A `starts_at` with no
+   time component is treated as all-day. That is how a date-only calendar
+   value arrives today, but the schedule service has no explicit `all_day`
+   column, so an event stored as exactly midnight with a time component reads
+   as a timed 12 AM event. Adding the column was out of scope.
+
+4. **`systems.down` was not extended.** *(still open)* An unreachable schedule
+   service is now honest inside the week card (`week.state`), but it still
+   does not appear in the dashboard's `systems.down` list, which tracks only
+   core and email. Changing that is a wider behaviour change than this
+   directive authorizes.
 
 Nothing else departed from the directive. No changes to money, budget,
 Firefly, Gmail, credentials, accounts, spend or security boundaries. No
 calendar writes. No promotion, no deployment.
+
+## A second decoration test, caught the same way
+
+The first draft of the new `node --test` suite asserted that the rollover
+fires `GRACE_MS / 1000` seconds past midnight — comparing the output to the
+very constant that produced it. Setting the margin to zero still passed. It
+now asserts against a literal (strictly after the boundary, inside the same
+minute), and fails when the margin is removed.
+
+This is the second time in this task that a date test passed against the bug
+it claimed to guard; the first was the DST case at a 9am anchor. Both are
+written up in `docs/TESTING.md` so the pattern is on the record rather than
+in one commit message.
 
 ## Open / not done
 
