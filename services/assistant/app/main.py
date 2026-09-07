@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
+from .dashboard import firefly_state, parse_event_dt, upcoming_events
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -302,7 +303,8 @@ async def build_overview() -> dict:
     tp = fitness.get("today_plan") or {}
     # Only a *confirmed* event counts as "next up" — a still-pending proposal
     # you sent isn't a real commitment yet, so it shouldn't read as one.
-    events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
+    events = _upcoming_events(cal.get("events", []), datetime.now(LOCAL_TZ),
+                              limit=None, statuses=("confirmed",))
     return {
         "emails_to_reply": len(emails.get("emails", [])),
         "expected_profit": pb.get("expected_profit", 0),
@@ -361,20 +363,27 @@ def _home_time(settings: dict) -> dict:
     }
 
 
+def _parse_event_dt(raw):
+    return parse_event_dt(raw, LOCAL_TZ)
+
+
+def _upcoming_events(events, now, limit=6, statuses=None):
+    return upcoming_events(events, now, LOCAL_TZ, limit=limit, statuses=statuses)
+
+
 def _event_minutes_until(events, now) -> tuple | None:
-    """(minutes_until, event) for the next confirmed event, if parseable."""
+    """(minutes_until, event) for the next confirmed event, if parseable.
+
+    Callers pass an already-bounded, soonest-first list, so the first parseable
+    entry is the next one. It used to be handed every event ever recorded, and
+    the first of those is the oldest — which made the minutes-until figure
+    hugely negative and meant the "starts in 30 min" rules could never fire.
+    """
     for e in events:
-        raw = e.get("starts_at") or e.get("start")
-        if not raw:
+        dt = _parse_event_dt(e.get("starts_at") or e.get("start"))
+        if dt is None:
             continue
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=LOCAL_TZ)
-        mins = (dt - now).total_seconds() / 60
-        return (mins, e)
+        return ((dt - now).total_seconds() / 60, e)
     return None
 
 
@@ -559,7 +568,13 @@ def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) ->
 
 
 def _money(firefly, spending, finance, budget, networth, settings) -> dict:
-    connected = bool(firefly) and firefly.get("connected") is not False
+    # Three states, not two. `_get` swallows a timeout and returns {}, so an
+    # empty payload means the service could not be reached — which is NOT the
+    # same as Firefly answering "I have no credentials". Rendering both as
+    # "not connected — set FIREFLY_URL" sends you to fix configuration that is
+    # already correct, every time a container blinks.
+    state = firefly_state(firefly)
+    connected = state == "ok"
     sp = spending if (spending and spending.get("connected")) else {}
     thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
 
@@ -632,6 +647,17 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
             f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
         "left_to_spend": _m("left_to_spend").get("display"),
         "income_month": _m("earned").get("value"),
+        "state": state,
+        # Everything the Firefly sub-app puts on screen except its recent
+        # transactions, so the headline figures need no second click.
+        "earned": _m("earned").get("display"),
+        "spent": _m("spent").get("display"),
+        "accounts": [
+            {"name": a.get("name"), "balance": a.get("balance")}
+            for a in ((firefly or {}).get("accounts") or [])
+            if a.get("name")
+        ],
+        "categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True),
         "top_categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True)[:4],
         "recent": (sp.get("recent") or (firefly or {}).get("recent", []))[:6],
         "upcoming_bills": soon[:4],
@@ -693,8 +719,16 @@ async def build_home(fresh: bool = False) -> dict:
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
     gmail_emails = emails_r.get("emails", []) if emails_r else []
     gmail_mode = (emails_r or {}).get("mode", "disconnected")
-    events = [e for e in (schedule.get("events", []) if schedule else [])
-              if e.get("status", "confirmed") == "confirmed"]
+    # The calendar card shows what is actually coming, including the pending
+    # and countered holds Bones writes from your sent mail — an interview slot
+    # awaiting a reply is exactly the thing you need to see. Rules that act on
+    # a real commitment still take confirmed events only.
+    all_events = [e for e in (schedule.get("events", []) if schedule else [])
+                  if e.get("status", "confirmed") != "declined"]
+    now_local = datetime.now(LOCAL_TZ)
+    calendar = _upcoming_events(all_events, now_local, limit=6)
+    events = _upcoming_events(all_events, now_local, limit=None,
+                              statuses=("confirmed",))
     settings = settings or {}
 
     t = _home_time(settings)
@@ -720,6 +754,7 @@ async def build_home(fresh: bool = False) -> dict:
         "score": (core or {}).get("score", {"score": 0, "parts": {}}),
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
+        "calendar": calendar,
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }
