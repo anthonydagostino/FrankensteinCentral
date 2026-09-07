@@ -9,8 +9,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import (firefly_state, parse_event_dt, schedule_state,
-                        upcoming_events, week_window, weekly_review)
+from .dashboard import (firefly_state, parse_event_dt, portfolio_state,
+                        schedule_state, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -809,7 +810,9 @@ async def build_home(fresh: bool = False) -> dict:
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
-        "portfolio": stocks or {"configured": False},
+        # `state` travels with it: an unreachable stocks service is not an
+        # empty portfolio, and must not read as "add your stocks".
+        "portfolio": {**(stocks or {}), "state": portfolio_state(stocks)},
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),

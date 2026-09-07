@@ -673,3 +673,31 @@ def test_the_review_survives_a_partial_payload():
     assert got["study"]["state"] == "unknown"
     assert got["gym"]["state"] == "unknown"
     assert got["water"]["state"] == "unknown"
+
+
+# --- portfolio: unreachable is not empty (PRODUCT_IDEAS #13) ----------------
+
+def test_an_unreachable_stocks_service_is_not_an_empty_portfolio():
+    """The bug: `_get` returns {} on a timeout and the payload collapsed that
+    into {"configured": False}, so a briefly-down container told you to "add
+    your stocks" — go fix configuration that is already correct."""
+    assert dash.portfolio_state({}) == "unreachable"
+    assert dash.portfolio_state(None) == "unreachable"
+
+
+def test_genuinely_unconfigured_stocks_still_says_so():
+    assert dash.portfolio_state({"configured": False, "positions": []}) == "not_configured"
+
+
+def test_a_working_portfolio_is_ok():
+    assert dash.portfolio_state({"configured": True, "positions": [1]}) == "ok"
+    # Configured with nothing held yet is still reachable, not an outage.
+    assert dash.portfolio_state({"configured": True, "positions": []}) == "ok"
+
+
+def test_portfolio_mirrors_the_firefly_contract():
+    """firefly_state is the pattern this repo already got right; #13 is about
+    making it universal. The two must not drift apart."""
+    for payload in ({}, None, {"connected": False}, {"connected": True}):
+        assert dash.firefly_state(payload) in ("ok", "unreachable", "not_configured")
+    assert dash.firefly_state({}) == dash.portfolio_state({}) == "unreachable"

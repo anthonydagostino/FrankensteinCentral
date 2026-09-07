@@ -707,8 +707,18 @@
   }
 
   function renderPortfolio(p) {
-    p = p || { configured: false };
-    if (!p.configured) {
+    p = p || { state: "unreachable" };
+    // Three states, not two (PRODUCT_IDEAS #13). A stocks service that is down
+    // is NOT an empty portfolio, and telling you to "add your stocks" over a
+    // transient blip sends you to fix configuration that is already correct.
+    if (p.state === "unreachable") {
+      q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
+        <p class="att-empty">Couldn't reach the stocks service just now — a
+        connection problem, not a setup one. Your holdings are unchanged;
+        figures are hidden rather than guessed at.</p>`;
+      return;
+    }
+    if (p.state === "not_configured" || !p.configured) {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
         <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your stocks →</b><br>Then you'll see daily change, movers & watchlist here.</p>`;
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();

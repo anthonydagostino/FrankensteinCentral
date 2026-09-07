@@ -189,6 +189,26 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     return "unknown"
 
 
+def portfolio_state(stocks):
+    """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13.
+
+    `_get` swallows a timeout and returns `{}`, and the home payload used to
+    collapse that into `{"configured": False}`. So a stocks container that was
+    briefly down told you **"No holdings yet. Add your stocks →"** — an
+    instruction to go and fix configuration that was already correct. Acting on
+    it means hunting a problem that does not exist.
+
+    Exactly the same three-states-not-two rule as `firefly_state`, which is the
+    pattern this repo already got right, applied to the one card the idea's
+    acceptance signal names.
+    """
+    if not stocks:
+        return "unreachable"
+    if stocks.get("configured") is False:
+        return "not_configured"
+    return "ok"
+
+
 def _event_bounds(event, local_tz):
     """(start, end, all_day) in local time, or None when unparseable.
 
