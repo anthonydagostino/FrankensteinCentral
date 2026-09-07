@@ -14,7 +14,7 @@ the 1st of a month; a test that runs on the day it was written cannot catch a
 bug that waits for a date.
 """
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -807,3 +807,184 @@ def test_an_imported_location_reaches_the_grid():
     by_title = {e["title"]: e for e in week["days"][0]["events"]}
     assert by_title["Dentist"]["location"] == "400 Main St"
     assert by_title["Call"]["location"] is None
+# --- the box's own deploy state (PRODUCT_IDEAS #24) --------------------------
+#
+# The defect this guards is silence, not a wrong number. deploy.sh advances
+# `running_commit` only on success, so a failed deploy leaves the previous
+# build serving every request perfectly. On 2026-09-07 that happened for five
+# poll cycles and the only way to find out was to SSH in. The rule these tests
+# enforce is that no unreadable, absent or self-contradictory record may ever
+# come back as `current`.
+
+def rec(**kw):
+    """A deploy record in the shape scripts/deploy.sh actually writes."""
+    base = {"production_branch": "production",
+            "last_attempt_commit": "be294dd4a2ad192f6d3364949a346abd13a316a9",
+            "last_attempt_at": "2026-09-07T18:00:00+00:00",
+            "last_result": "success",
+            "running_commit": "be294dd4a2ad192f6d3364949a346abd13a316a9",
+            "last_success_at": "2026-09-07T18:00:00+00:00"}
+    base.update(kw)
+    return base
+
+
+def test_deploy_state_reports_current_when_the_last_attempt_succeeded():
+    now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+    d = dash.deploy_state(rec(), now)
+    assert d["state"] == "current"
+    assert d["running"].startswith("be294dd")
+
+
+@pytest.mark.parametrize("record", [None, {}, [], "nope", 0, {"a": 1}])
+def test_a_record_we_cannot_read_is_unknown_and_never_current(record):
+    """The assistant runs in a container; the record is written on the host.
+    An absent mount, a truncated file and a JSON scalar all land here, and
+    'we cannot see the box' must not render as 'the box is up to date'."""
+    d = dash.deploy_state(record, datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["state"] == "unknown"
+    assert d["state"] != "current"
+
+
+def test_a_failed_deploy_is_failed_and_names_the_older_running_build():
+    """The whole point. The box is serving e7adf83 while be294dd is what was
+    promoted — reporting this as healthy is the defect."""
+    now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+    d = dash.deploy_state(
+        rec(last_result="tests_failed",
+            running_commit="e7adf8300000000000000000000000000000000a",
+            last_attempt_commit="be294dd4a2ad192f6d3364949a346abd13a316a9"), now)
+    assert d["state"] == "failed"
+    assert d["running"].startswith("e7adf83"), "must report what is RUNNING"
+    assert d["attempted"].startswith("be294dd"), "and what failed to replace it"
+    assert d["running"] != d["attempted"]
+
+
+@pytest.mark.parametrize("result", ["failed", "tests_failed", "aborted", "?", "SUCCESS"])
+def test_anything_that_is_not_exactly_success_is_a_failed_deploy(result):
+    """`SUCCESS` included: deploy.sh writes the literal lowercase string, so a
+    case-insensitive read here would accept a value it never writes."""
+    d = dash.deploy_state(rec(last_result=result),
+                          datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["state"] == "failed"
+
+
+def test_a_record_with_no_verdict_is_unknown():
+    d = dash.deploy_state(rec(last_result=None),
+                          datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["state"] == "unknown"
+
+
+def test_no_confirmed_running_commit_is_pending_not_current():
+    d = dash.deploy_state(rec(running_commit=None),
+                          datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["state"] == "pending"
+
+
+def test_a_success_whose_running_and_attempted_disagree_is_unknown():
+    """deploy.sh sets running = attempted on success, so these differing means
+    the record contradicts itself. Report that rather than picking whichever
+    field flatters the box."""
+    d = dash.deploy_state(
+        rec(running_commit="e7adf8300000000000000000000000000000000a"),
+        datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["state"] == "unknown"
+
+
+@pytest.mark.parametrize("stamp", [None, "", "not-a-date", "2026-13-45", 17, {}])
+def test_an_unknown_age_is_none_and_never_zero(stamp):
+    """`docs/BUDGETS.md`: suppressed values are null, never 0. A 0 here renders
+    as 'deployed just now', the exact opposite of 'we don't know when'."""
+    d = dash.deploy_state(rec(last_success_at=stamp),
+                          datetime(2026, 9, 7, 15, 0, tzinfo=NY))
+    assert d["age_seconds"] is None
+
+
+def test_deploy_age_is_measured_from_the_injected_clock_over_a_calendar_sweep():
+    """Per docs/TESTING.md the age is the one value here that moves on its own,
+    so it takes an injected `now` and is swept rather than run against today.
+
+    800 consecutive days, each at four times of day, across two DST boundaries
+    in both directions. A deploy recorded exactly 6 hours before `now` must
+    read as 21600 seconds on every one of them — an absolute-offset or naive
+    -datetime bug shows up as a 3600-second error on the DST days.
+    """
+    start = datetime(2026, 1, 1, tzinfo=NY)
+    for day in range(800):
+        for hour in (0, 6, 13, 23):
+            now = (start + timedelta(days=day)).replace(hour=hour)
+            # Subtract in UTC, so six hours of REAL time elapsed on every day
+            # including the 23- and 25-hour ones. Doing this in local wall
+            # clock instead would make the expected answer 5h on the spring
+            # -forward day, which is a fact about the arithmetic in the test
+            # rather than about the code under test.
+            deployed = now.astimezone(timezone.utc) - timedelta(hours=6)
+            d = dash.deploy_state(
+                rec(last_success_at=deployed.isoformat()), now)
+            assert d["state"] == "current"
+            assert d["age_seconds"] == 21600.0, (
+                f"{now.isoformat()} (offset {now.utcoffset()}) -> "
+                f"{d['age_seconds']}")
+
+
+def test_a_utc_stamp_and_a_local_now_agree():
+    """deploy.sh writes UTC with an offset; the dashboard's clock is local.
+    Comparing them without converting is a five-hour lie in New York."""
+    now = datetime(2026, 9, 7, 14, 0, tzinfo=NY)          # 18:00Z
+    d = dash.deploy_state(rec(last_success_at="2026-09-07T12:00:00+00:00"), now)
+    assert d["age_seconds"] == 21600.0
+
+
+def test_the_attempt_age_is_reported_separately_from_the_success_age():
+    """On a failed deploy these are different facts: when the box last got a
+    working build, and when it last tried and failed to get a new one."""
+    now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+    d = dash.deploy_state(
+        rec(last_result="tests_failed",
+            running_commit="e7adf8300000000000000000000000000000000a",
+            last_success_at=(now - timedelta(days=3)).isoformat(),
+            last_attempt_at=(now - timedelta(minutes=5)).isoformat()), now)
+    assert d["state"] == "failed"
+    assert d["age_seconds"] == 3 * 86400.0
+    assert d["attempt_age_seconds"] == 300.0
+
+
+def test_deploy_state_does_no_io_and_needs_no_clock():
+    """It is a pure function of (record, now) — `now=None` must not explode,
+    it must simply decline to compute an age."""
+    d = dash.deploy_state(rec())
+    assert d["state"] == "current"
+    assert d["age_seconds"] is None
+
+
+def test_age_is_elapsed_real_time_not_wall_clock_across_spring_forward():
+    """The distinction the sweep above is built on, pinned on its own.
+
+    On 2026-03-08 New York skips 02:00. A build deployed at local 00:00 and
+    read at local 06:00 is FIVE hours old, not six — the hour never happened.
+    Reporting six would mean the age was computed on naive local strings.
+    """
+    now = datetime(2026, 3, 8, 6, 0, tzinfo=NY)
+    deployed = datetime(2026, 3, 8, 0, 0, tzinfo=NY)
+    # In UTC, because Python subtracts two same-zone aware datetimes in wall
+    # clock and would report six here regardless of the skipped hour.
+    assert (now.astimezone(timezone.utc)
+            - deployed.astimezone(timezone.utc)).total_seconds() == 5 * 3600, \
+        "premise: 2026-03-08 skips 02:00 in New York"
+    # The stamp is written NAIVE on purpose. isoformat() on an aware datetime
+    # emits a fixed offset ("-05:00"), whose tzinfo differs from now's, and
+    # Python subtracts differing tzinfos as real elapsed time no matter how
+    # the code is written — so an offset-bearing stamp cannot catch wall-clock
+    # subtraction here. A naive stamp is adopted into now's own zone, which is
+    # the one arrangement where the bug can actually bite.
+    d = dash.deploy_state(
+        rec(last_success_at=deployed.replace(tzinfo=None).isoformat()), now)
+    assert d["age_seconds"] == 5 * 3600.0
+
+
+def test_a_naive_stamp_is_read_in_the_dashboards_own_zone():
+    """deploy.sh always writes an offset, but a hand-edited or older record
+    may not. Reading a naive stamp as UTC would report a New York deploy as
+    five hours older than it is."""
+    now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+    d = dash.deploy_state(rec(last_success_at="2026-09-07T09:00:00"), now)
+    assert d["age_seconds"] == 6 * 3600.0
