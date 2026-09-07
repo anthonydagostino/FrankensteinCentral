@@ -160,7 +160,7 @@
     const el = q("#cc-donext");
     const calm = !dn.action;
     const btn = dn.action ? `<button class="big-btn" id="dn-go">${esch(actionLabel(dn.action))}</button>` : "";
-    el.className = "cc-card hero";
+    el.className = "cc-card compact";
     el.innerHTML = `
       <h3>Do this next</h3>
       <div class="donext ${calm ? "calm" : ""}">
