@@ -472,6 +472,15 @@
     }
   }
 
+  // "Aug 28" — short enough to sit inline in a sentence.
+  const dshort = (iso) => {
+    if (!iso) return "";
+    const p = String(iso).slice(0, 10).split("-");
+    if (p.length !== 3) return String(iso);
+    return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+p[1] - 1]
+      + " " + (+p[2]);
+  };
+
   function renderMoney(m, bud) {
     m = m || {}; bud = bud || {};
     // Unreachable and unconfigured are different problems with different
@@ -490,16 +499,52 @@
     const staleLine = m.month_ingested === false
       ? `<p class="mny-stale">📅 ${m.stale_days ? `Nothing imported for <b>${m.stale_days} days</b>` : "Nothing imported yet"} — <b>this month's spending is unknown, not $0</b></p>`
       : (m.stale_days
-        ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — current-period figures unavailable</p>` : "");
+        ? `<p class="mny-stale">📅 Financial data hasn't been imported for <b>${m.stale_days} days</b> — anything spent since then is missing from these figures</p>` : "");
 
-    // Trailing 30 days is a rolling window; the budgets below are calendar
-    // months. The labels say so explicitly so the two can't be conflated.
+    // Trailing 30 days is a rolling window; the month and the pay cycle below
+    // are not. The labels say so explicitly so the three can't be conflated.
     const trend30 = (m.last_30_trend_pct != null)
-      ? `<br><span class="mny-trend ${m.last_30_trend_pct <= 0 ? "up" : "down"}">${m.last_30_trend_pct <= 0 ? "↓" : "↑"} ${Math.abs(m.last_30_trend_pct)}% vs previous 30 days</span>`
+      ? ` <span class="mny-trend ${m.last_30_trend_pct <= 0 ? "up" : "down"}">${m.last_30_trend_pct <= 0 ? "↓" : "↑"} ${Math.abs(m.last_30_trend_pct)}%</span>`
       : "";
     // Never present a partial window as complete.
     const through30 = (m.last_30 != null && m.last_30_through && m.stale_days)
-      ? `<br><span style="font-size:10px">through ${esch(m.last_30_through)} only</span>` : "";
+      ? ` (through ${esch(m.last_30_through)})` : "";
+
+    // ---- the pay cycle: what's left of this paycheck --------------------
+    const pay = m.paycheck || {};
+    const stateCls = { over: "down", low: "warn", ok: "up" }[pay.state] || "";
+    const leftVal = (pay.available && pay.left != null) ? money(pay.left) : "—";
+    const leftSub = pay.available
+      ? (pay.overdue
+        ? "next paycheck missing from the ledger"
+        : `of ${money(pay.spendable)} this paycheck · ${pay.days_to_next > 0
+            ? `${pay.days_to_next} day${pay.days_to_next === 1 ? "" : "s"} to ${esch(dshort(pay.next_payday))}`
+            : `payday ${esch(dshort(pay.next_payday))}`}`)
+      : (pay.configured ? "not available yet"
+        : `<span id="pay-setup" style="cursor:pointer;color:var(--accent-2)">set up your paycheck →</span>`);
+
+    // The arithmetic, spelled out — the card should never show a number the
+    // user can't retrace. "Expected" allocations are labelled as such: they
+    // are the configured amount, not something seen in the ledger.
+    let payLine = "";
+    if (pay.available && !pay.overdue) {
+      const allocs = (pay.allocations || []).map((a) => {
+        const tag = a.source === "expected" ? " expected"
+          : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
+        return `${esch(a.name)} ${money(a.source === "withheld_before_deposit" ? a.planned : a.amount)}${tag}`;
+      }).join(" · ");
+      const perDay = pay.per_day != null
+        ? ` · about ${money(pay.per_day, 2)}/day keeps you to payday` : "";
+      payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
+        − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
+        · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}
+        ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
+    } else if (pay.available && pay.overdue) {
+      payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
+    } else if (pay.configured && pay.reason) {
+      payLine = `<p class="mny-pay">💵 Left to spend unavailable — ${esch(pay.reason)}.</p>`;
+    }
 
     // The single most important budget signal — never the whole database.
     let budLine = "";
@@ -518,32 +563,48 @@
     } else if (bud.available && !bud.configured) {
       budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
     }
-    const safe = (bud.fresh && bud.budget_room != null)
-      ? `<div class="mny-stat"><div class="v mono up">${money(bud.budget_room)}</div><div class="l">Budget room<br><span style="font-size:10px">remaining ${esch(bud.budget_room_scope || "across active budgets")}</span></div></div>` : "";
+    // Secondary context: a rolling window and remaining budget capacity.
+    // Neither is a bank balance and neither is "left to spend".
+    const subBits = [];
+    if (m.last_30 != null) subBits.push(`Past 30 days <b>${money(m.last_30)}</b>${trend30}${through30}`);
+    if (bud.fresh && bud.budget_room != null)
+      subBits.push(`Budget room <b>${money(bud.budget_room)}</b> ${esch(bud.budget_room_scope || "across active budgets")}`);
+    const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
+
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
       `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
-    const obs = (m.observations || []).slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");
+    // The pay-cycle line already says what the first observation would.
+    const obs = (m.observations || []).filter((o) => !(pay.text && o === pay.text))
+      .slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");
 
     // The Firefly sub-app's headline figures, here so they cost no clicks.
     // A missing value renders as an em dash, never as $0 — unknown is not zero.
+    //
+    // Two of these are dropped when the pay cycle is available, because the
+    // hero above already answers them from better evidence and the same word
+    // meaning two different numbers on one card is the exact failure
+    // docs/BUDGETS.md exists to prevent:
+    //   * "Spent (mo)" is Firefly's raw month total; the hero's is the same
+    //     month with savings transfers taken back out.
+    //   * "Left to spend" is Firefly's own budget arithmetic; the hero's is
+    //     this paycheck minus its savings minus what's been spent since.
+    // Without a pay cycle configured, both stay — nothing is lost.
     const ffTiles = [
       ["Net worth", m.net_worth],
       ["Earned (mo)", m.earned],
-      ["Spent (mo)", m.spent],
-      ["Left to spend", m.left_to_spend],
+      ...(pay.available ? [] : [["Spent (mo)", m.spent], ["Left to spend", m.left_to_spend]]),
     ].map(([l, v]) => `<div class="mny-stat"><div class="v mono">${v ? esch(v) : "—"}</div><div class="l">${esch(l)}</div></div>`).join("");
 
-    // Spending by category, last 30 days — the sub-app's donut as bars, which
-    // read better at this width and stay legible in both themes.
-    const cats = (m.categories || []).slice(0, 6);
-    const catMax = cats.reduce((mx, c) => Math.max(mx, Number(c.amount) || 0), 0);
-    const catRows = cats.map((c) => {
-      const amt = Number(c.amount) || 0;
-      const pct = catMax > 0 ? Math.round((amt / catMax) * 100) : 0;
-      return `<div class="cat-row"><span class="cat-n">${esch(c.name)}</span>` +
-        `<span class="cat-bar"><i style="width:${pct}%"></i></span>` +
-        `<span class="cat-v mono">${money(amt)}</span></div>`;
-    }).join("");
+    // Spending by category, last 30 days — the Firefly sub-app's own donut,
+    // called rather than reimplemented (app.js loads first and defines it
+    // globally). One implementation means the dashboard and the sub-app
+    // cannot drift into showing the same data two different ways; it already
+    // handles slice colours, an "Other" roll-up past 8 categories, and the
+    // centre total. It replaced a bar version here because the pie is what
+    // was asked for.
+    const catPie = (typeof spendingDonut === "function")
+      ? spendingDonut(m.categories, "Spending by category · last 30 days")
+      : "";
 
     const accts = (m.accounts || []).map((a) =>
       `<div class="pos"><span>${esch(a.name)}</span><span class="mono">${a.balance != null ? money(a.balance, 2) : "—"}</span></div>`).join("");
@@ -551,15 +612,15 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.last_30 != null ? money(m.last_30) : "—"}</div><div class="l">Past 30 days${trend30}${through30}</div></div>
+        <div class="mny-stat"><div class="v">${m.month != null ? money(m.month) : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
+        <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
-        ${safe}
       </div>
-      ${budLine}
+      ${payLine}${budLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
-      ${catRows ? `<h3 style="margin-top:12px">Spending by category<span class="mny-sub"> · last 30 days</span></h3><div class="cat-rows">${catRows}</div>` : ""}
+      ${catPie}
       ${accts ? `<h3 style="margin-top:12px">Accounts</h3>${accts}` : ""}
       ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}
       <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="money-firefly">Recent transactions →</button></div>`;
@@ -568,6 +629,8 @@
     q("#money-budget").onclick = () => openAppKey("budget");
     const setup = q("#bud-setup");
     if (setup) setup.onclick = () => openSettings();
+    const paySetup = q("#pay-setup");
+    if (paySetup) paySetup.onclick = () => openSettings();
   }
 
   function renderPortfolio(p) {
@@ -870,6 +933,7 @@
     try { s = await fetch("/api/core/settings").then((r) => r.json()); } catch {}
     const w = s.score_weights || {};
     const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
+    const pc = s.paycheck || {};
     q("#settings-body").innerHTML = `
       <div class="set-group"><h4>Goals</h4><div class="set-grid">
         <div class="set-field"><label>Study/day (min)</label><input id="s-sd" type="number" value="${s.study_daily_min ?? 120}"></div>
@@ -895,6 +959,25 @@
         <div id="s-budgets"></div>
         <button class="hx-btn" id="s-budget-add" type="button">+ Add budget</button>
         <p class="set-hint" id="s-cat-hint"></p>
+      </div>
+      <div class="set-group"><h4>Paycheck &amp; savings</h4>
+        <p class="set-hint">Powers <b>Left to spend</b> on the Money card: the paycheck that landed,
+        minus the savings that come out of it, minus what you've spent since. Matching is
+        case-insensitive against a transaction's description and account names.</p>
+        <div class="set-grid">
+          <div class="set-field" style="grid-column:1/-1"><label>Paycheck deposit contains (comma-separated)</label>
+            <input id="s-pay-match" value="${esch((pc.match || []).join(", "))}" placeholder="payroll, direct dep"></div>
+          <div class="set-field"><label>Minimum deposit ($)</label><input id="s-pay-min" type="number" value="${pc.min_amount ?? 500}"></div>
+          <div class="set-field"><label>Pay every (days)</label><input id="s-pay-cad" type="number" value="${pc.cadence_days ?? 14}"></div>
+          <div class="set-field"><label>Track left to spend</label>
+            <select id="s-pay-on"><option value="1"${pc.enabled === false ? "" : " selected"}>Yes</option><option value="0"${pc.enabled === false ? " selected" : ""}>No</option></select></div>
+        </div>
+        <p class="set-hint">Savings that come out of each paycheck. A real transfer in Firefly is
+        used when there is one; otherwise the amount below is treated as expected and labelled that
+        way. Tick <b>pre-deposit</b> only if your employer takes it before the money lands (then it
+        is shown but not subtracted twice).</p>
+        <div id="s-allocs"></div>
+        <button class="hx-btn" id="s-alloc-add" type="button">+ Add savings deduction</button>
       </div>
       <div class="set-group"><h4>Important senders (comma-separated emails/domains)</h4><div class="set-field">
         <input id="s-imp" value="${esch((s.important_senders || []).join(", "))}"></div></div>
@@ -924,6 +1007,24 @@
     (s.budgets || []).forEach((b) => wrap.appendChild(budRow(b)));
     if (!(s.budgets || []).length) wrap.appendChild(budRow({}));
     q("#s-budget-add").onclick = () => wrap.appendChild(budRow({}));
+
+    // savings-deduction editor: name / $amount / match terms / pre-deposit
+    const allocRow = (a) => {
+      const div = document.createElement("div");
+      div.className = "alloc-row";
+      div.innerHTML = `
+        <input class="a-name" placeholder="Name (e.g. Fidelity)" value="${esch(a.name || "")}">
+        <input class="a-amt" type="number" min="0" step="1" placeholder="$/paycheck" value="${a.amount ?? ""}">
+        <input class="a-match" placeholder="matches (comma-separated)" value="${esch((a.match || []).join(", "))}">
+        <label class="a-pre" title="Employer takes it before the deposit lands"><input type="checkbox" class="a-withheld"${a.already_withheld ? " checked" : ""}> pre-deposit</label>
+        <button class="a-x" type="button" title="remove">✕</button>`;
+      div.querySelector(".a-x").onclick = () => div.remove();
+      return div;
+    };
+    const awrap = q("#s-allocs");
+    (pc.allocations || []).forEach((a) => awrap.appendChild(allocRow(a)));
+    if (!(pc.allocations || []).length) awrap.appendChild(allocRow({}));
+    q("#s-alloc-add").onclick = () => awrap.appendChild(allocRow({}));
 
     // category hints from live budget status (what Firefly actually has)
     fetch("/api/budget/status").then((r) => r.json()).then((st) => {
@@ -1000,7 +1101,30 @@
       budgets.push({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, limit, categories: cats });
     }
 
+    // savings deductions: a touched row needs a name; a blank amount is 0
+    const allocations = [];
+    for (const row of q("#settings-body").querySelectorAll(".alloc-row")) {
+      const name = row.querySelector(".a-name").value.trim();
+      const amount = Number(row.querySelector(".a-amt").value) || 0;
+      const match = row.querySelector(".a-match").value.split(",").map((c) => c.trim()).filter(Boolean);
+      const withheld = row.querySelector(".a-withheld").checked;
+      if (!name && !amount && !match.length) continue;   // untouched blank row
+      if (!name) {
+        status.textContent = "⚠ Every savings deduction needs a name (it's what gets matched in Firefly).";
+        status.style.color = "var(--down)";
+        return;
+      }
+      allocations.push({ name, amount, match: match.length ? match : [name], already_withheld: withheld });
+    }
+
     const patch = {
+      paycheck: {
+        enabled: q("#s-pay-on").value === "1",
+        match: list("#s-pay-match"),
+        min_amount: num("#s-pay-min", 500),
+        cadence_days: num("#s-pay-cad", 14),
+        allocations: allocations,
+      },
       study_daily_min: num("#s-sd", 120), study_weekly_min: num("#s-sw", 600),
       gym_weekly: num("#s-gw", 4), water_goal_oz: num("#s-wg", 80),
       exam_label: q("#s-el").value.trim() || "exam",

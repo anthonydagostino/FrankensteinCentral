@@ -7,9 +7,15 @@ clearly-scoped "budget room" number. Stateless — budget definitions live in
 core settings (budgets: [{id, name, limit, categories}]), transactions come
 from the firefly service each request (with a short cache).
 
-All math lives in engine.py (pure + unit-tested); formulas and thresholds are
-documented in docs/BUDGETS.md. Stale ledgers pause current-period guidance
-rather than pretending $0 = "on track".
+It also serves the **pay cycle** (/paycheck, and embedded in /status): what
+was spent this month with savings transfers taken back out, and what is left
+of the current paycheck after the savings that come out of it. That math is
+in paycheck.py (also pure + unit-tested), fed by the firefly service's
+/cycle endpoint; config lives in core settings (paycheck: {...}).
+
+All math lives in engine.py / paycheck.py (pure + unit-tested); formulas and
+thresholds are documented in docs/BUDGETS.md. Stale ledgers pause
+current-period guidance rather than pretending $0 = "on track".
 """
 import os
 import time
@@ -18,6 +24,7 @@ import httpx
 from fastapi import FastAPI
 
 from .engine import budget_status
+from .paycheck import paycheck_cycle
 
 app = FastAPI(title="Budget Service")
 
@@ -46,8 +53,10 @@ async def _build(fresh: bool = False) -> dict:
         settings = await _get(client, f"{CORE_URL}/settings", timeout=8)
         month = await _get(client, f"{FIREFLY_SVC_URL}/month", timeout=40)
         bills = await _get(client, f"{FIREFLY_SVC_URL}/bills", timeout=20)
+        cycle = await _get(client, f"{FIREFLY_SVC_URL}/cycle", timeout=40)
 
     budgets_cfg = (settings or {}).get("budgets") or []
+    paycheck_cfg = (settings or {}).get("paycheck") or {}
 
     if not month or not month.get("connected"):
         data = {
@@ -56,6 +65,9 @@ async def _build(fresh: bool = False) -> dict:
             "configured": bool(budgets_cfg),
             "reason": "firefly not connected" if month else "firefly unreachable",
             "budgets": [], "warnings": [], "budget_room": None,
+            "paycheck": {"configured": bool(paycheck_cfg), "available": False,
+                         "reason": "firefly not connected", "month": None,
+                         "cycle": None},
         }
         _CACHE.update(at=now, data=data)
         return data
@@ -70,6 +82,7 @@ async def _build(fresh: bool = False) -> dict:
                    "month_ingested": month.get("month_ingested")},
     )
     status.update({
+        "paycheck": _paycheck(paycheck_cfg, cycle),
         "available": True,
         "connected": True,
         "configured": bool(budgets_cfg),
@@ -84,6 +97,30 @@ async def _build(fresh: bool = False) -> dict:
     return status
 
 
+def _paycheck(cfg: dict, cycle: dict | None) -> dict:
+    """Pay-cycle answers: month-to-date spending and what's left of the
+    current paycheck. All math is in paycheck.py (pure); this only supplies
+    it with data and reports honestly when there is none."""
+    if not cfg:
+        return {"configured": False, "available": False,
+                "reason": "no paycheck configured", "month": None, "cycle": None}
+    if not cycle or not cycle.get("connected"):
+        return {"configured": True, "available": False, "month": None, "cycle": None,
+                "reason": "firefly not connected" if cycle else "firefly unreachable"}
+    return paycheck_cycle(
+        cfg=cfg,
+        today=cycle.get("today"),
+        month=cycle.get("month", {}),
+        deposits=cycle.get("deposits", []),
+        withdrawals=cycle.get("withdrawals", []),
+        transfers=cycle.get("transfers", []),
+        freshness={"ingest_days": cycle.get("ingest_days"),
+                   "activity_days": cycle.get("days_stale"),
+                   "month_ingested": cycle.get("month_ingested"),
+                   "ledger_latest_txn": cycle.get("ledger_latest_txn")},
+    )
+
+
 @app.get("/health")
 async def health():
     return {"service": "budget", "ok": True, "mode": "firefly-driven"}
@@ -92,6 +129,13 @@ async def health():
 @app.get("/status")
 async def status(fresh: int = 0):
     return await _build(fresh=bool(fresh))
+
+
+@app.get("/paycheck")
+async def paycheck(fresh: int = 0):
+    """The pay-cycle view on its own — same data /status embeds."""
+    s = await _build(fresh=bool(fresh))
+    return {**s.get("paycheck", {}), "importer_url": s.get("importer_url")}
 
 
 @app.get("/summary")
@@ -105,5 +149,5 @@ async def summary():
 
 @app.get("/")
 async def root():
-    return {"app": "Budget", "endpoints": ["/status", "/summary", "/health"],
+    return {"app": "Budget", "endpoints": ["/status", "/paycheck", "/summary", "/health"],
             "note": "time-aware budgets over Firefly; config lives in core settings"}

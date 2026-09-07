@@ -306,6 +306,39 @@ else:
     add("FAIL", "budget svc", f"{err}")
 
 print()
+print("-- pay cycle (left to spend) --")
+st, pay, err = get(8088, "/paycheck?fresh=1", timeout=60)
+if st == 200 and pay is not None:
+    if not pay.get("configured"):
+        add("WARN", "paycheck", "not configured (⚙ Settings → Paycheck & savings) — "
+            "'left to spend' cannot compute without it")
+    elif not pay.get("available"):
+        # The common cause is match terms that don't match how the bank
+        # describes the deposit. Say so instead of just "unavailable".
+        add("WARN", "paycheck", f"unavailable — {pay.get('reason','?')}")
+    else:
+        c = pay.get("cycle", {})
+        add("PASS", "paycheck", f"${c.get('paycheck')} on {c.get('start')} "
+            f"({c.get('paycheck_parts')} deposit(s)), next ~{c.get('next_payday')} "
+            f"(cadence {c.get('cadence_days')}d, {c.get('cadence_source')})")
+        for a in c.get("allocations", []):
+            add("PASS" if a.get("source") == "observed" else "WARN", f"  {a['name'][:12]}",
+                f"${a.get('amount')} [{a.get('source')}]"
+                + (f" seen {a.get('date')}" if a.get("date") else ""))
+        add("PASS", "left to spend",
+            f"${c.get('paycheck')} - ${c.get('savings_total')} savings = "
+            f"${c.get('spendable')} spendable; spent ${c.get('spent')}; "
+            f"LEFT={c.get('left')} ({c.get('state')})")
+        add("PASS" if pay.get("fresh") else "WARN", "paycheck fresh",
+            (f"$/day guidance ON (${c.get('per_day')}/day)" if pay.get("fresh")
+             else f"$/day SUPPRESSED — {pay.get('stale_reason')}; totals as of {pay.get('as_of')}"))
+        m = pay.get("month", {})
+        add("PASS", "month spend", f"{m.get('label')}: spent=${m.get('spent')} "
+            f"(savings excluded: ${m.get('savings')}), avg ${m.get('daily_avg')}/day")
+else:
+    add("WARN", "paycheck", f"{err or 'no data'} — OLD build (no /paycheck)? redeploy needed")
+
+print()
 print("-- Firefly data-quality audit (last 12 months) --")
 st, au, err = get(8097, "/audit", timeout=90)
 if st == 200 and au and au.get("connected"):
