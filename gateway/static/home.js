@@ -389,17 +389,16 @@
       ...(pay.available ? [] : [["Spent (mo)", m.spent], ["Left to spend", m.left_to_spend]]),
     ].map(([l, v]) => `<div class="mny-stat"><div class="v mono">${v ? esch(v) : "—"}</div><div class="l">${esch(l)}</div></div>`).join("");
 
-    // Spending by category, last 30 days — the sub-app's donut as bars, which
-    // read better at this width and stay legible in both themes.
-    const cats = (m.categories || []).slice(0, 6);
-    const catMax = cats.reduce((mx, c) => Math.max(mx, Number(c.amount) || 0), 0);
-    const catRows = cats.map((c) => {
-      const amt = Number(c.amount) || 0;
-      const pct = catMax > 0 ? Math.round((amt / catMax) * 100) : 0;
-      return `<div class="cat-row"><span class="cat-n">${esch(c.name)}</span>` +
-        `<span class="cat-bar"><i style="width:${pct}%"></i></span>` +
-        `<span class="cat-v mono">${money(amt)}</span></div>`;
-    }).join("");
+    // Spending by category, last 30 days — the Firefly sub-app's own donut,
+    // called rather than reimplemented (app.js loads first and defines it
+    // globally). One implementation means the dashboard and the sub-app
+    // cannot drift into showing the same data two different ways; it already
+    // handles slice colours, an "Other" roll-up past 8 categories, and the
+    // centre total. It replaced a bar version here because the pie is what
+    // was asked for.
+    const catPie = (typeof spendingDonut === "function")
+      ? spendingDonut(m.categories, "Spending by category · last 30 days")
+      : "";
 
     const accts = (m.accounts || []).map((a) =>
       `<div class="pos"><span>${esch(a.name)}</span><span class="mono">${a.balance != null ? money(a.balance, 2) : "—"}</span></div>`).join("");
@@ -415,7 +414,7 @@
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
-      ${catRows ? `<h3 style="margin-top:12px">Spending by category<span class="mny-sub"> · last 30 days</span></h3><div class="cat-rows">${catRows}</div>` : ""}
+      ${catPie}
       ${accts ? `<h3 style="margin-top:12px">Accounts</h3>${accts}` : ""}
       ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}
       <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="money-firefly">Recent transactions →</button></div>`;

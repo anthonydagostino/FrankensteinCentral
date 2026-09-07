@@ -329,9 +329,3 @@ body.cc[data-mode="evening"] {
 /* ---- Firefly figures on the money card ---------------------------------- */
 .mny-ff { margin-top: 10px; }
 .mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }
-.cat-rows { display: flex; flex-direction: column; gap: 4px; }
-.cat-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.cat-n { flex: 0 0 34%; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cat-bar { flex: 1 1 auto; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
-.cat-bar > i { display: block; height: 100%; background: var(--accent-2); border-radius: 999px; }
-.cat-v { flex: none; color: var(--muted); }
