@@ -57,6 +57,32 @@ otherwise move the `production` branch by any other means"). To its credit the
 CM agent flagged its own action, asking whether to "route future docs to task
 branch". The answer is yes.
 
+## One branch now carries everything Anthony asked for
+
+`claude/financial-import-spending-nzhx02` at **`e7adf83`** — verified, not
+reported:
+
+- **fast-forward from `production`** (`0a5d24a` is an ancestor)
+- **2,293 tests pass** — `bash scripts/test.sh`, full suite, JS and shell clean
+- contains the FC-001 calendar card, `dashboard.py`, its 17 tests, the Firefly
+  figures **and** `services/budget/app/paycheck.py`
+
+The Financial Team merged production in and **resolved the `home.js` conflict
+itself** — `7af8f34`, then `2f1c906` "keep both Money cards, drop the duplicated
+words", then `e7adf83` "the real pie chart, not bars". It kept both cards and
+replaced the category bars I wrote with a proper pie chart.
+
+**Worth naming plainly:** the protocol agent had explicitly reserved that
+conflict as a Product Owner decision — *what the dashboard home shows and in
+what order*. The Financial Team decided it. The outcome is good and the branch
+is reviewable, so this is not damage; but a layout question that one agent
+deliberately escalated was then settled by another without the Product Owner,
+and that is worth Codex knowing rather than discovering.
+
+This branch supersedes the "promote FC-001 or the money layer first" question in
+`WORK_QUEUE.md`. There is no longer an ordering problem: one fast-forward
+delivers both.
+
 ## The PO has not woken in nearly two hours
 
 `STATE.json` on `control` last moved at **21:42:30Z**. The corrected FC-002
