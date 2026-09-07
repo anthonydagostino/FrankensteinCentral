@@ -735,7 +735,12 @@ async def build_home(fresh: bool = False) -> dict:
     # genuinely clear week are not the same fact, and the card must not render
     # the first as the second.
     week = week_window(all_events, now_local, LOCAL_TZ)
-    week["state"] = schedule_state(schedule)
+    # The gmail payload is passed as the calendar-connection evidence: gcal
+    # borrows gmail's token, so one OAuth consent covers both. See
+    # dashboard.schedule_state. Passing the RAW payload matters — `gmail_mode`
+    # above defaults an unreachable gmail to "disconnected", which would turn
+    # "we cannot tell" into a confident claim.
+    week["state"] = schedule_state(schedule, emails_r)
     settings = settings or {}
 
     t = _home_time(settings)

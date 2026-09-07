@@ -508,3 +508,20 @@ body.cc[data-mode="evening"] {
 .cat-bar { flex: 1 1 auto; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
 .cat-bar > i { display: block; height: 100%; background: var(--accent-2); border-radius: 999px; }
 .cat-v { flex: none; color: var(--muted); }
+
+/* Why the week grid may be incomplete. Distinct from .wk-down, which is a
+   total outage: these render ABOVE a real grid, because local commitments
+   are still real when an external integration is disconnected. */
+.wk-caveat {
+  margin: 0 0 10px; padding: 8px 11px; border-radius: 9px;
+  font-size: 12px; line-height: 1.45;
+}
+.wk-caveat.warn {
+  color: var(--text); background: rgba(255,122,122,0.07);
+  border: 1px solid color-mix(in srgb, var(--imp) 32%, var(--line));
+  border-left: 3px solid var(--imp);
+}
+.wk-caveat.muted {
+  color: var(--muted); background: rgba(255,255,255,0.02);
+  border: 1px solid var(--line); border-left: 3px solid var(--muted);
+}

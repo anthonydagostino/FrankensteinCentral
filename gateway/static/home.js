@@ -227,7 +227,7 @@
           ${rel}
           <span class="wk-mo">${esch(day.month)}</span>
         </time>
-        <span class="wk-motif" aria-hidden="true">${season.glyph}</span>
+        ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
       </header>
       ${body}
     </article>`;
@@ -248,6 +248,10 @@
       wireWeek();
       return;
     }
+    // An outage is the only state with nothing to draw. Disconnected and
+    // unknown still have real local commitments in Postgres, so the grid is
+    // rendered and the caveat sits above it — hiding a week you do have is
+    // its own dishonesty.
     if (week.state === "unreachable") {
       el.innerHTML = `<h3>This week</h3>
         <p class="wk-down">⚠ Can't reach the schedule service. This is an
@@ -271,16 +275,38 @@
       week.beyond ? `<span class="wk-note">+${week.beyond} later</span>` : "",
     ].filter(Boolean).join("");
 
+    // Three ways the grid can be incomplete, said differently, because they
+    // call for different actions: reconnect, wait, or nothing.
+    const CAVEAT = {
+      disconnected: {
+        cls: "warn",
+        text: `Google Calendar isn't connected, so only commitments stored
+               here are shown. A clear day may not be a free day.`,
+      },
+      unknown: {
+        cls: "muted",
+        text: `Couldn't confirm the calendar connection, so anything that
+               lives only in Google may be missing from this week.`,
+      },
+    };
+    const caveat = CAVEAT[week.state]
+      ? `<p class="wk-caveat ${CAVEAT[week.state].cls}">${
+          week.state === "disconnected" ? "⚠" : "◔"} ${esch(
+          CAVEAT[week.state].text.replace(/\s+/g, " ").trim())}</p>`
+      : "";
+
     el.innerHTML = `
       <div class="wk-top">
         <h3>This week</h3>
         <span class="wk-range">${esch(range)}</span>
-        <span class="wk-season" title="Seasonal theme">${season.glyph} ${esch(season.name)}</span>
+        <span class="wk-season" title="Seasonal theme">${
+          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
         ${notes}
         <button class="wk-amb" id="wk-amb" type="button"
           aria-pressed="${ambienceOn()}" title="Seasonal decoration">
           ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
       </div>
+      ${caveat}
       <div class="wk-grid" role="list" data-season="${esch(first.season)}">
         ${days.map(dayCard).join("")}
         <div class="wk-amb-layer" aria-hidden="true"></div>

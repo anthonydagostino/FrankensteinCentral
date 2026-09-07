@@ -419,13 +419,59 @@ def test_unparseable_timestamps_are_dropped_not_guessed_at():
 
 # --- honest states ----------------------------------------------------------
 
+LIVE = {"mode": "live"}
+
+
 def test_an_unreachable_schedule_service_is_not_an_empty_week():
     """Vision principle 1. `_get` returns {} on a timeout; rendering that as
     "nothing coming up" is the calmest possible way to hide real commitments."""
-    assert dash.schedule_state({}) == "unreachable"
-    assert dash.schedule_state(None) == "unreachable"
-    assert dash.schedule_state({"events": []}) == "ok"
-    assert dash.schedule_state({"events": [1]}) == "ok"
+    assert dash.schedule_state({}, LIVE) == "unreachable"
+    assert dash.schedule_state(None, LIVE) == "unreachable"
+    assert dash.schedule_state({"events": []}, LIVE) == "ok"
+    assert dash.schedule_state({"events": [1]}, LIVE) == "ok"
+
+
+def test_a_disconnected_calendar_is_not_a_healthy_empty_week():
+    """The bug Codex found reviewing add5b2b: a truthy payload returned `ok`,
+    so a schedule service answering normally with a DISCONNECTED calendar
+    rendered exactly like a genuinely clear week."""
+    assert dash.schedule_state({"events": []}, {"mode": "disconnected"}) == "disconnected"
+    assert dash.schedule_state({"events": [1]}, {"mode": "disconnected"}) == "disconnected"
+    # The shape that reproduced it.
+    assert dash.schedule_state({"connected": False, "events": []},
+                               {"mode": "disconnected"}) != "ok"
+
+
+def test_unestablished_connection_health_is_unknown_not_ok():
+    """Absence of evidence is not evidence of health. `never` and `error` are
+    not "connected", and an unreachable gmail means we cannot see the
+    credential at all — none of those may render as a clear week."""
+    for link in ({}, None, {"mode": "error"}, {"mode": "never"},
+                 {"mode": "something-added-later"}, {"events": []}):
+        assert dash.schedule_state({"events": []}, link) == "unknown", link
+
+
+def test_connection_evidence_is_never_inferred_from_the_wrapper():
+    """A non-empty payload is not a connection. Only the calendar link decides."""
+    assert dash.schedule_state({"events": [1, 2, 3]}, None) == "unknown"
+    assert dash.schedule_state({"events": [1, 2, 3]}, {"mode": "disconnected"}) == "disconnected"
+
+
+def test_every_state_is_one_of_the_documented_four():
+    for sched in ({}, {"events": []}, {"events": [1]}):
+        for link in (None, {}, LIVE, {"mode": "disconnected"}, {"mode": "error"}):
+            assert dash.schedule_state(sched, link) in dash.SCHEDULE_STATES
+
+
+def test_local_commitments_survive_a_disconnected_calendar():
+    """Rows already in Postgres are real whatever Google is doing. Hiding the
+    week because the integration is down is its own dishonesty."""
+    d = date(2026, 6, 10)
+    events = [ev("Locally stored dentist", at(d, 10).isoformat())]
+    week = dash.week_window(events, at(d, 8), NY)
+    assert [e["title"] for e in week["days"][0]["events"]] == ["Locally stored dentist"]
+    # The state is a separate fact from the data; it never empties the grid.
+    assert dash.schedule_state({"events": events}, {"mode": "disconnected"}) == "disconnected"
 
 
 def test_an_empty_but_healthy_week_is_distinguishable_from_an_outage():

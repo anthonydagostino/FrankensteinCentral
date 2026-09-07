@@ -116,18 +116,52 @@ def ordinal(day):
     return f"{day}{ordinal_suffix(day)}"
 
 
-def schedule_state(schedule):
-    """`ok` or `unreachable` — an outage is not an empty week.
+# What the week card is allowed to claim about where its events came from.
+#
+#   ok            the schedule service answered AND the calendar integration
+#                 is known to be connected
+#   unreachable   the schedule service did not answer at all — we have nothing
+#   disconnected  the service answered, but the calendar integration has no
+#                 credential, so anything living only in Google is missing
+#   unknown       the service answered, but the integration's health cannot be
+#                 established — which is NOT the same as healthy
+#
+# `unknown` exists because the previous two-state version returned `ok` for
+# any truthy payload, so a disconnected calendar rendered as a clear week.
+# Absence of evidence was being presented as evidence of absence.
+SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "unknown")
 
-    The assistant's `_get` swallows a timeout and returns `{}`, exactly as it
-    does for Firefly. Without this distinction a schedule service that is down
-    renders as "nothing coming up", which is the calmest possible way to tell
-    someone they have no commitments on a day they do. Same reasoning as
-    `firefly_state`, and the same three-states-not-two rule.
+
+def schedule_state(schedule, calendar_link=None):
+    """Where the week's events came from, and how much to trust the gaps.
+
+    `schedule` is the schedule service's payload; `{}` means `_get` swallowed
+    a timeout, exactly as it does for Firefly.
+
+    `calendar_link` is the gmail service's payload. That is not an arbitrary
+    choice of evidence: `services/schedule/app/gcal.py` borrows its access
+    token from gmail's `/internal/token` because one OAuth consent covers both
+    accounts. So gmail's own `mode` IS the calendar integration's connection
+    state, and it is the only such evidence the read-only path actually has.
+    `GET /events` cannot supply it — that endpoint reads local Postgres and
+    would answer identically whether Google was connected or not.
+
+    Local commitments stay real in every state: the rows in Postgres were
+    stored whatever Google is doing, so the caller still renders them.
     """
     if not schedule:
         return "unreachable"
-    return "ok"
+    if not calendar_link:
+        # gmail unreachable too — we cannot see the credential either way.
+        return "unknown"
+    mode = calendar_link.get("mode")
+    if mode == "live":
+        return "ok"
+    if mode == "disconnected":
+        return "disconnected"
+    # "error", "never", missing, or something added later: not evidence of
+    # health. Never guess upwards.
+    return "unknown"
 
 
 def _event_bounds(event, local_tz):
