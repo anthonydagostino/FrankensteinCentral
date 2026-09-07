@@ -8,14 +8,14 @@ see the box, which I cannot. Verify rather than trust.
 | | |
 |---|---|
 | branch | `claude/hermetic-deploy-gate` |
-| SHA | **`b3f452e0f84b3f853598e7ec48fea52b32d7e430`** |
-| base | fast-forward from production `67361bd` — dry run confirms `67361bd -> b3f452e` |
+| SHA | **`26983ff8d79ab423390ce8387a9e90e64f0e6d6d`** |
+| base | fast-forward from production `1585d6b` |
 | CI | **green**, run 34156961819 |
-| suite | **6956 passed, 0 skipped**, exit 0, `FRANKENSTEIN_REQUIRE_SANDBOX=1`, re-run after each rebase |
+| suite | **6990 passed, 0 skipped**, exit 0, re-run after this rebase |
 | size | two files, one fix |
 
 ```bash
-bash scripts/promote.sh b3f452e0f84b3f853598e7ec48fea52b32d7e430
+bash scripts/promote.sh 26983ff8d79ab423390ce8387a9e90e64f0e6d6d
 ```
 
 ## The bug
@@ -93,3 +93,6 @@ Current: **`b3f452e`**, 6956 passed, fast-forward from `67361bd`.
 The bug is still live on `67361bd` — checked immediately before this rebase,
 not assumed. The change stays two files in the allocation loop and has merged
 cleanly every time.
+
+
+Rebase 5: production `1585d6b`. Bug re-verified live immediately before rebasing (savings_total 200, left 1800). Suite re-run after the merge: 6990 passed.
