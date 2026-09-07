@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,9 +10,10 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import (firefly_state, parse_event_dt, portfolio_state,
-                        schedule_state, since_changes, since_snapshot,
-                        upcoming_events, week_window, weekly_review)
+from .dashboard import (deploy_state, firefly_state, parse_event_dt,
+                        portfolio_state, schedule_state, since_changes,
+                        since_snapshot, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -30,6 +32,12 @@ PLEX_SVC_URL = os.environ.get("PLEX_SVC_URL", "http://plex:8000")
 FIREFLY_SVC_URL = os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000")
 CORE_URL = os.environ.get("CORE_URL", "http://core:8000")
 STOCKS_URL = os.environ.get("STOCKS_URL", "http://stocks:8000")
+# The deploy record `deploy.sh` writes on the HOST, mounted read-only. It is
+# deliberately outside the repo — `git reset --hard` during a deploy would
+# erase anything tracked, and the point is to still be able to say what is
+# running after a deploy that failed. Absent mount reads as "unknown".
+DEPLOY_RECORD = os.environ.get("FRANKENSTEIN_DEPLOY_RECORD",
+                               "/var/frankenstein/deployed.json")
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
@@ -758,6 +766,22 @@ def _budget_brief(status) -> dict:
     }
 
 
+
+def _read_deploy_record(path=None):
+    """The host's deploy record, or {} when we cannot read it.
+
+    Every failure — no mount, no file, bad JSON, a JSON scalar where an object
+    belongs — collapses to {}, which `deploy_state` reads as `unknown`. That is
+    the point: this function must never be able to manufacture a healthy-
+    looking state out of a read it did not manage to do.
+    """
+    try:
+        with open(path or DEPLOY_RECORD) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
 def _since_block(seen, data, now):
     """The "since you last checked" block, plus the fingerprint to store."""
     seen = seen if isinstance(seen, dict) else {}
@@ -770,7 +794,6 @@ def _since_block(seen, data, now):
     block["seen_at"] = seen.get("seen_at")
     block["seen_on"] = seen.get("device")
     return block
-
 
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
@@ -869,6 +892,10 @@ async def build_home(fresh: bool = False) -> dict:
         "week": week,
         "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
         "systems": {"healthy": not down, "down": down},
+        # What the box is actually running. A failed deploy leaves the
+        # PREVIOUS build serving and is otherwise completely silent from
+        # the UI, so this is the only place a stale build announces itself.
+        "deploy": deploy_state(_read_deploy_record(), now_local),
         "last_updated": t["now"],
     }
     # Computed against the payload we are ABOUT to return, so the fingerprint

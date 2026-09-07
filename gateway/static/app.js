@@ -153,14 +153,12 @@ function spendingDonut(cats, title) {
     }
     const slice = svg.querySelector('.dn-slice[data-i="' + i + '"]');
     if (!slice) return;
-    const label = slice.getAttribute("data-label") || "";
-    // "Food $412.00 · 34%" -> amount in the middle, name underneath.
-    const parts = label.split(" · ");
-    const head = parts[0] || label;
-    const cut = head.lastIndexOf(" $");
-    total.textContent = cut > 0 ? head.slice(cut + 1) : head;
-    cap.textContent = (cut > 0 ? head.slice(0, cut) : "") +
-      (parts[1] ? " · " + parts.slice(1).join(" · ") : "");
+    // Read the two figures straight off the wedge. donut.js composed them
+    // (centreFor) next to the label they belong with, already trimmed to fit
+    // the hole — this used to re-split data-label on " · " and " $", which
+    // made the middle of the chart depend on a separator picked for display.
+    total.textContent = slice.getAttribute("data-v") || "";
+    cap.textContent = slice.getAttribute("data-cap") || "";
     wrap.classList.add("dn-active");
     svg.querySelectorAll(".dn-slice").forEach((p) =>
       p.classList.toggle("is-on", p.getAttribute("data-i") === String(i)));

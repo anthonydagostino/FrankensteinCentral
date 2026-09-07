@@ -23,6 +23,10 @@
     "#7bd88f", "#ff8a5b", "#38bdf8", "#a3e635", "#f2b8d0"];
 
   var MAX_SLICES = 8;          // past this the wedges are too thin to hit
+  // The readout sits in the ring's hole (radius 50, so ~100 units wide) at
+  // font-size 11. Past roughly this many characters it stops being centred
+  // text and starts being text drawn over the wedges.
+  var MAX_CAPTION = 18;
   var CX = 100, CY = 100, R_OUT = 82, R_IN = 50;
 
   function esc(s) {
@@ -79,6 +83,28 @@
       : base;
   }
 
+  /* What the centre of the ring shows while a slice is pointed at.
+   *
+   * Computed HERE, next to the label it belongs with, and carried on the
+   * element as its own attributes. The alternative — having the listener
+   * split sliceLabel()'s output back apart — makes the readout depend on a
+   * separator chosen for display, so changing " · " to " — " silently breaks
+   * the middle of the chart while every test that pins the label still
+   * passes once its expected string is updated.
+   *
+   * The caption drops the roll-up's "(4 smaller categories)": it does not fit
+   * in the hole, and it is still on the wedge's aria-label, its <title>, and
+   * its legend row, all of which have room.
+   */
+  function centreFor(s) {
+    var pct = Math.round(s.pct) + "%";
+    var room = MAX_CAPTION - (pct.length + 3);        // " · " plus the percent
+    var name = s.name.length > room
+      ? s.name.slice(0, Math.max(1, room - 1)).replace(/\s+$/, "") + "…"
+      : s.name;
+    return { value: money(s.amount), caption: name + " · " + pct };
+  }
+
   function arc(frac, a0) {
     var a1 = a0 + frac * Math.PI * 2;
     var large = a1 - a0 > Math.PI ? 1 : 0;
@@ -107,11 +133,13 @@
       var a = arc(s.amount / total, a0);
       a0 = a.next;
       var label = sliceLabel(s);
+      var centre = centreFor(s);
       // tabindex + aria-label: the wedge is reachable and announced without a
       // mouse, so colour is never the only way to know what a slice is.
       return '<path class="dn-slice" d="' + a.d + '" fill="' + s.color + '"' +
         ' fill-rule="evenodd" tabindex="0" role="img"' +
         ' data-i="' + s.index + '" data-label="' + esc(label) + '"' +
+        ' data-v="' + esc(centre.value) + '" data-cap="' + esc(centre.caption) + '"' +
         ' aria-label="' + esc(label) + '">' +
         "<title>" + esc(label) + "</title></path>";
     }).join("");
@@ -136,6 +164,7 @@
       '<div class="dn-legend" style="flex:1;min-width:200px">' + legend + "</div></div>";
   }
 
-  return { slicesFor: slicesFor, sliceLabel: sliceLabel, render: render,
-           COLORS: COLORS, MAX_SLICES: MAX_SLICES };
+  return { slicesFor: slicesFor, sliceLabel: sliceLabel, centreFor: centreFor,
+           render: render, COLORS: COLORS, MAX_SLICES: MAX_SLICES,
+           MAX_CAPTION: MAX_CAPTION };
 });
