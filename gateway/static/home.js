@@ -144,6 +144,7 @@
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
+    renderDeploy(d);
     saveSnapshot(d);
   }
 
@@ -225,6 +226,25 @@
       : Object.keys(SYSHEALTH || {}).sort().map((k) =>
           `${(SYSHEALTH[k] || {}).status === "up" ? "●" : "✕"} ${k}`).join("\n");
     el.style.cursor = s.total ? "help" : "default";
+  }
+
+
+  // ---- the box's own deploy state (PRODUCT_IDEAS #24) ------------------------
+  // A failed deploy is otherwise completely silent: the previous build keeps
+  // serving, so the dashboard looks perfect while the fix you shipped is not
+  // the code you are looking at. Read-only — promote.sh stays the only path
+  // to production and there are deliberately no controls here.
+  function renderDeploy(d) {
+    const el = q("#cc-deploy");
+    if (!el) return;
+    const v = DeployState.describe(d && d.deploy);
+    el.textContent = v.text;
+    el.title = v.title;
+    // Only `bad` is loud. `unknown` is muted but must never be styled as ok.
+    el.style.color = v.tone === "bad" ? "var(--imp)"
+      : v.tone === "warn" ? "var(--imp)" : "var(--muted)";
+    el.style.cursor = "help";
+    el.dataset.tone = v.tone;
   }
 
   // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
