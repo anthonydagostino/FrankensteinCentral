@@ -681,31 +681,358 @@ on.
 
 ---
 
-# If I had to pick five
+# Wave 3 — the job hunt, the calendar, and one label that overstates its data
 
-In order:
+This wave came from reading `gmail/main.py`, `schedule/`, `stocks/` and
+`orchestrator.py`. It has a blunt headline: **the part of this system that
+handles the most important thing in your life right now is the least
+intelligent part of it.** Everything else — the money layer, the budget engine,
+the date-window tests — is carefully built. The job-hunt path is two regexes.
 
-1. **#2 — infra & restore test.** Still first. It's the only item across both
-   waves that protects something you can't get back, and your own `Data Loss
-   Prevention` epic has been saying so since you created it.
-2. **#13–16 as one correctness pass.** The dashboard currently tells you your
-   holdings aren't set up when a container blinked, calls 15 services healthy
-   after checking 2, credits Sunday-night workouts to next week, and scores an
-   unset goal as a failed one. Everything else in this document is worth less
-   while the numbers on the screen can't be taken at face value — and each fix
-   is small.
-3. **#17 — the unwired inventory.** Nine features you already paid for,
-   including the attention feed `AUDIT.md` promised and the deadlines the
-   assistant files on every sync. Highest ratio of value to new code in the
-   document, and the consumer test stops the pattern coming back.
-4. **#1 — the job pipeline.** Highest stakes, ~80% already built, and #18 and
-   #26 fall out of it nearly free.
-5. **#20 — cash runway.** One number, composed entirely from data already in
-   `build_home`, and the only forward-looking figure on the whole dashboard.
+---
 
-A reasonable first directive is #2 or the #13–16 pass. #13–16 is the safer
-opening move under the protocol: contained, testable, no new services, and it
-makes every later idea land on a screen you trust.
+## Group D — your job hunt runs on a two-keyword regex
+
+### 27. One regex gates the entire inbound booking path
+
+Here is the whole definition of what counts as job correspondence:
+
+```python
+_INTERVIEW = re.compile(r"\binterview\b|phone screen|onsite interview", re.I)
+```
+
+And here is the gate on Bones booking anything into your calendar:
+
+```python
+for e in mails:
+    if e.get("category") != "interview":
+        continue                                   # assistant/main.py:1039
+```
+
+So the sentence *"Are you free Thursday at 2pm for a quick chat about the
+Founding Engineer role?"* classifies as **`personal`**. It is never tagged as
+an interview, never gets priority 3, never books a hold, and never files a
+deadline — because it doesn't contain the literal word "interview".
+
+None of these do either: *chat, call, screen, next steps, availability,
+recruiter, hiring manager, take-home, coding challenge, assessment, HackerRank,
+CodeSignal, offer, references, background check, technical round, final round.*
+That's most of a real hiring pipeline.
+
+**Proposal.** Replace the keyword test with a **job-stage classifier**:
+`outreach → screen → assessment → onsite → offer → rejection → ack`. It's still
+deterministic and testable — the same style as `_FINANCIAL` and `_HUMAN_ASK`,
+which are both much more carefully built than `_INTERVIEW` — and it's the
+natural feed for the pipeline in wave 1 #1. The classifier is the hard part of
+that idea, and it belongs here regardless.
+
+**Effort:** S · **Acceptance signal:** a corpus of your own last 30 job emails,
+each asserted to the right stage, run as a test.
+
+### 28. LinkedIn is blanket-blocked, so real recruiter contact scores zero
+
+```python
+_JOB_BOARD = re.compile(r"joinhandshake\.com|linkedin\.com|indeed\.com|…")
+if _JOB_BOARD.search(sender):
+    return {**msg, "category": "fyi", "needs_reply": False, "priority": 0, "automated": True}
+```
+
+The comment above it is right about the problem — bulk "you might like this
+job" mail that fakes deadline language. But the rule is **domain-wide and
+returns early**, before any other classification runs. A recruiter's InMail
+notification, an interview request routed through LinkedIn, a hiring manager
+replying to you there — all forced to `fyi`, priority 0, `needs_reply: False`,
+`automated: True`. Bottom of the card, invisible to Do-Next, unbookable.
+
+For someone actively job hunting, LinkedIn is not a noise domain; it's a
+channel with a high noise ratio. Those are different problems.
+
+**Proposal.** Keep the early-return for the genuine alert senders
+(`jobalerts-noreply@linkedin.com`, `jobs-listings@linkedin.com` and friends) and
+let the rest through to normal triage. Match on the sending address, not the
+domain.
+
+**Effort:** XS · **Acceptance signal:** a LinkedIn InMail notification lands as
+`interview`/`personal` with `needs_reply` true; a LinkedIn job alert still lands
+as `fyi`.
+
+### 29. There is no outcome axis, so a rejection reads as personal mail
+
+The classifier has categories for *what a message is about* and nothing for
+*what it means for an application*. An ATS acknowledgement and an ATS rejection
+are the same shape of text, and both fall through to `personal` at priority 2 —
+above your finance mail, your bills and your deals, as though a human wrote to
+you personally.
+
+Your Disney rejection is the worked example: subject *"Thank You for Your
+Interest — Product Software Engineer I"*, body *"we appreciate you spending some
+of it applying to the role of…"*. No "interview", so not `interview`. No
+financial or transactional language. No `_HUMAN_ASK` match, no trailing "?". It
+lands as `personal`, priority 2, and sits near the top of your inbox card for
+seven days.
+
+A rejection is one of the few emails that should **lower** the attention it
+demands, because it resolves something. Under wave 1 #1 it should close the
+pipeline row and disappear.
+
+**Effort:** XS on top of #27 · **Acceptance signal:** a rejection classifies as
+a rejection, sorts below unresolved mail, and closes its application.
+
+### 30. Twenty-five messages, silently
+
+```python
+params={"q": INBOX_QUERY, "maxResults": 25},   # gmail/main.py:421
+params={"q": SENT_QUERY,  "maxResults": 25},   # gmail/main.py:598
+```
+
+No `nextPageToken` handling anywhere in the service, and no flag telling the UI
+the result was capped. The sent-mail scan is the binding one: `SENT_QUERY` is
+`in:sent newer_than:21d`, and during an active job hunt you will send more than
+25 emails in three weeks. When you do, the **oldest** threads fall off — which
+are exactly the ones whose availability proposals have been sitting unanswered
+longest, and the ones the gone-quiet detector most needs.
+
+This is the same error `docs/BUDGETS.md` forbids in the money layer, one service
+over: *never present a partial window as complete.* The inbox card says "3 need
+a reply" with no hint that it only looked at 25 messages.
+
+**Proposal.** Paginate, or at minimum return `truncated: true` with the count
+and render it. A number you know might be wrong is useful; a number you think is
+complete is not.
+
+**Effort:** S · **Acceptance signal:** with 40 sent messages in the window, the
+availability tracker sees all 40, or the UI says it didn't.
+
+### 31. The inbox card's entire world is seven days
+
+`INBOX_QUERY` defaults to `category:primary newer_than:7d -from:me`. That's a
+sane default for triage and a bad one for a job hunt, because the single most
+important thread is the one that has been silent for **more than** seven days —
+and on day 8 it simply stops existing as far as the dashboard is concerned.
+
+The `deadlines` table would survive this (it's persistent), but it's unwired
+(wave 2 #17), and the pipeline that would survive it doesn't exist yet (wave 1
+#1). So today, silence is indistinguishable from resolution.
+
+**Proposal.** Keep the 7-day window for the *triage feed* and give the job
+pipeline its own persistent state, seeded from a wider query. Freshness and
+memory are different jobs and shouldn't share a window.
+
+**Effort:** S · **Depends on:** wave 1 #1
+
+---
+
+## Group E — the calendar can actually hurt you
+
+### 32. Bones writes to your real Google Calendar with no overlap check and no end time
+
+I grepped `services/schedule/` for `conflict`, `overlap`, `duration`, `travel`
+and `reminder`. Zero hits, in `main.py` and `gcal.py` both.
+
+The `events` table *has* an `ends_at` column and the `Event` model *has* an
+optional `ends_at` field — but the booking path never sets it:
+
+```python
+json={"title": f"Interview — {e['from']}", "starts_at": when,
+      "source": "gmail", "external_id": ext_id, "thread_id": thread_key}
+```
+
+So every automatically booked interview is a zero-duration point with no end,
+and nothing anywhere checks whether it lands on top of something else. Bones
+will cheerfully write a 🟡 hold for Thursday 2pm into your real calendar when
+you already have a confirmed interview at Thursday 2pm, and neither the
+dashboard nor Google will say a word.
+
+Multiply that by the several companies wave 1 #1 assumes you're talking to, and
+the failure mode isn't cosmetic — it's double-booking two interviews and finding
+out live.
+
+**Proposal.** Populate `ends_at` with a sensible default (45 or 60 minutes,
+configurable), detect overlaps before writing, and surface collisions on the
+pending card: *"this slot collides with your confirmed 233 Analytics screen."*
+Don't refuse the write — you may genuinely want to offer overlapping slots to
+different companies — but never write one silently.
+
+**Effort:** S · **Acceptance signal:** two overlapping holds produce a visible
+collision warning, asserted in a test.
+
+---
+
+## Group F — one more label that overstates what it knows
+
+### 33. "Portfolio · what changed · Today" is end-of-day data
+
+Both quote sources are daily bars:
+
+```python
+url = f"{STOOQ_BASE}/q/d/l/?s={_norm(symbol)}&i=d"        # i=d — daily
+params={"range": "2d", "interval": "1d"}                   # Yahoo fallback
+```
+
+`_stooq_quote` takes the **last two rows of the daily CSV** and calls the
+difference `change` / `change_pct`. The home screen renders that as
+**`▲ 1.4%` / `Today · +$212`** under the heading *"Portfolio · what changed"*.
+
+During market hours that number is generally the **previous completed session**,
+not today. On a Saturday it's Friday-vs-Thursday, labelled "Today". Over a long
+weekend it's three days stale, labelled "Today". And no as-of date is returned
+by the service or shown by the card, so there's no way to tell from the screen
+which it is.
+
+This is the third instance of the same pattern (with #13 and #30) and the reason
+I keep flagging it: the money layer already knows how to do this right, and the
+discipline hasn't propagated. `docs/BUDGETS.md` would not permit this label.
+
+**Proposal.** Return an `as_of` date from the quote source and render it —
+*"Last session (Fri close) · +1.4%"*. If you want a genuinely intraday figure
+that's a different (keyed) data source and a separate decision; the labelling fix
+is worth doing either way and costs almost nothing.
+
+**Effort:** XS · **Acceptance signal:** open the dashboard on a Sunday and the
+portfolio card says which session it's showing.
+
+---
+
+## Group G — capability that isn't there at all
+
+### 34. Nothing can be dismissed, snoozed, or ignored
+
+I grepped the whole product for `snooze`, `dismiss`, `ignore` and `mute`. Every
+hit is `re.IGNORECASE`. There is no way to tell this system "not now" or "not
+ever" about anything.
+
+Consequences you'll have felt: an email you've consciously decided not to answer
+stays `needs_reply` at the top of the card for seven days. Do-Next recomputes
+from scratch on every load with no memory of what it already told you or what
+you already did about it, so it can re-suggest the thing you just handled, and
+flip between two recommendations as the clock crosses `evening_start_hour`. The
+"Since you last checked" bar is the only dismissible thing on the page, and its
+dismissal doesn't survive a refresh.
+
+An attention system that can't be told "handled" trains you to stop reading it.
+That's the mechanism by which dashboards die, and it's the one thing `AUDIT.md`
+§2 — an otherwise sharp diagnosis of why the old homepage wasn't sticky —
+doesn't mention.
+
+**Proposal.** A `dismissals` table in `core`: key, scope (`today` / `until` /
+`forever`), reason, timestamp. Every attention item and every Do-Next
+recommendation carries a stable key and a snooze affordance. Dismissals are
+data — the weekly review can tell you what you keep snoozing, which is usually
+the most honest signal in the whole system.
+
+**Effort:** S · **Acceptance signal:** snooze the top item, refresh, and it's
+still gone.
+
+### 35. Kiosk mode — you already own the hardware and you're buying it stands
+
+Your backlog has a 2012 MacBook Pro and a Kali Lenovo being set up as
+**always-on nodes** (SCRUM-24, SCRUM-25), laptop stands for both (SCRUM-28), and
+clamshell mode with the lid shut (SCRUM-44, SCRUM-48). You are, in other words,
+assembling always-on screens.
+
+Nothing in `gateway/static/` serves them. The command center assumes a person
+sitting in front of it: hover states, a command palette, click-to-open modals,
+30-second cache, small type.
+
+**Proposal.** A `/wall` view. Big type, no interaction, high contrast, auto-refresh,
+and only what's worth glancing at from across the room: next event, what needs a
+reply, today's score, days-since-last-restore-test (idea #2), spend vs. budget,
+and whether anything is down. It's a second renderer over the `/home` payload
+that already exists — no new backend at all.
+
+This is the idea most specific to you in the whole document. Most people don't
+have spare always-on machines and stands on order.
+
+**Effort:** S · **Depends on:** `/home` (exists)
+
+### 36. iOS Shortcuts as the phone path
+
+Wave 1 #7 argued for a PWA. This is the cheaper, complementary half. You're on
+iOS; the logging verbs are all single POSTs that already exist
+(`/core/water`, `/core/gym`, `/core/focus`, `/core/capture`, `/core/big3`).
+
+A published Shortcut per verb gives you *"Hey Siri, log gym"*, a home-screen
+widget, and a share-sheet capture — with no service worker, no HTTPS
+requirement beyond Tailscale, and no new code beyond a documented endpoint list.
+Same reasoning as #22 (Telegram input): the moments you need to log something
+are the moments you're not at the OptiPlex.
+
+**Effort:** XS (docs + a Shortcut) · **Depends on:** Tailscale (SCRUM-48)
+
+### 37. The life-OS's own database is not in the backup plan
+
+Wave 1 #2 was about the dashboard *reporting* backup state. This is narrower and
+more embarrassing: the `db_data` and `gmail_token` volumes hold your gym history,
+every focus session, Big 3 history, captures, calendar events, net-worth
+accounts, budget definitions and **the Gmail refresh token** — and they live on
+the same single OptiPlex covered by the same `Data Loss Prevention` epic that has
+never had a restore test.
+
+`docker compose down -v` is documented in your own README as the way to start
+clean. There is no documented way to take a backup first.
+
+You already have SCRUM-33, *"[CLAUDE] Write the database dump script"*, sitting in
+the backlog. My argument is that it isn't homelab housekeeping — it's a product
+requirement. The thing that makes a life OS worth using is that it accumulates,
+and everything it has accumulated is currently one disk away from zero.
+
+**Proposal.** A `pg_dump` on a timer into the same B2 bucket as everything else,
+the token volume included, and the restore path written down and **tested once**.
+Then surface the result on the infra card from #2.
+
+**Effort:** S · **Acceptance signal:** a restore into a scratch database that
+comes back with your gym history intact — performed once, then dated on the
+dashboard.
+
+---
+
+## Smaller things from this pass
+
+- **`extract_datetime` has no year and no timezone.** `orchestrator.py` parses
+  "Thursday at 2pm" out of email text; worth confirming what it does in late
+  December and what timezone it assumes, given the interview it books goes into
+  your real calendar.
+- **No quiet hours on notifications.** With `AUTO_SYNC_SECONDS` set and
+  `NOTIFY_ON_SYNC=true`, a notable event at 3am texts you at 3am.
+- **`AUTO_SYNC_SECONDS=0` ships in `.env.example`.** Every proactive behaviour in
+  the system — digests, auto-sync, "since you last checked" — is off by default,
+  which means the dashboard only knows things when you're already looking at it.
+- **`_HOME_TTL = 30s` with no background refresh** means the first load after a
+  gap is always the slow one, fanning out to 14 services.
+- **`activity` logs what the agents did, never what you did.** For the weekly
+  review, the second half is the interesting one.
+
+---
+
+# Where I'd start
+
+Across all three waves, in order:
+
+1. **#2 + #37 — the data that can't be recovered.** One directive: back up the
+   ledger, the vault and the dashboard's own Postgres, restore-test it once, and
+   put the result on the screen. Everything else here is an improvement; this is
+   the only one that's insurance.
+2. **#13–16 — the correctness pass.** The screen currently says holdings aren't
+   configured when a container blinked, calls 15 services healthy after checking
+   2, credits Sunday-night workouts to next week, and scores an unset goal as a
+   failure. Small, contained, and everything downstream depends on trusting the
+   numbers.
+3. **#17 — the unwired inventory.** Nine built-and-unreachable features,
+   including the attention feed `AUDIT.md` promised, plus a consumer test so it
+   doesn't recur. Best value-to-new-code ratio in the document.
+4. **#27–31 + #1 — the job hunt.** The classifier first, because it's the hard
+   part and the pipeline is mostly plumbing once stages exist. #32 (calendar
+   collisions) rides along, and it's the one with a genuinely bad failure mode.
+5. **#34 — dismiss and snooze.** Cheap, and it's what stops the attention model
+   going stale and taking your trust with it.
+
+Then the additive ones — #20 (cash runway), #35 (kiosk), #21 (evening mode) — in
+whatever order suits the week.
+
+**Suggested first directive:** #13–16 as a single correctness pass. It's the
+safest opening move under the protocol — contained scope, no new services,
+testable acceptance criteria, `Deployment Authorization: test-only` — and it
+makes every later idea land on a screen you can believe.
 
 ---
 
