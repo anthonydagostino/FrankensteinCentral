@@ -277,9 +277,27 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     claimed: list[int | None] = [None] * len(cycle_out_txns)
     reverse_total = 0.0
     overlaps: list[str] = []
+    unmatched_savings: list[dict] = []
     for j, t in enumerate(cycle_out_txns):
         claims = [i for i, a in enumerate(allocs_cfg)
                   if _savings_role(t, _alloc_terms(a)) == "contribution"]
+        if not claims:
+            # Its DESCRIPTION looks like savings but its accounts don't say
+            # so. Direction is unknowable here — "Savings" appears on the way
+            # in and on the way out alike — so it is neither counted nor
+            # silently dropped. Dropping it would understate savings and push
+            # `left` UP, the dangerous direction.
+            for a in allocs_cfg:
+                terms = _alloc_terms(a)
+                if _savings_role(t, terms) is None and (
+                        _field_matches(t.get("desc"), terms)
+                        or _field_matches(t.get("category"), terms)):
+                    unmatched_savings.append({
+                        "desc": t.get("desc") or "", "amount": _amount(t),
+                        "date": t.get("date"), "rule": a.get("name") or "Savings",
+                        "source": t.get("source") or "",
+                        "destination": t.get("destination") or ""})
+                    break
         if claims:
             claimed[j] = claims[0]
             if len(claims) > 1:
@@ -324,14 +342,20 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     spent = round(sum(_amount(t) for t in withdrawals
                       if _in(t, last_date, today) and not is_savings(t)), 2)
     reverse_total = round(reverse_total, 2)
-    left = None if overdue else round(spendable - spent, 2)
+    # A truncated read biases `spent` DOWN and therefore `left` UP — an
+    # overstatement of what is safe to spend, from a window already recorded
+    # as partial. The month block suppressed its totals for exactly this
+    # reason; the headline number has to obey the same rule.
+    if not window_complete:
+        spent = None
+    left = None if (overdue or not window_complete) else round(spendable - spent, 2)
 
     # ---- guidance (only when the ledger can support it) ------------------
     per_day = None
     if left is not None and fresh and days_to_next > 0:
         per_day = round(max(left, 0.0) / days_to_next, 2)
 
-    if overdue:
+    if overdue or not window_complete:
         state = "unknown"
     elif left < 0:
         state = "over"
@@ -341,7 +365,11 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         state = "ok"
 
     money = lambda v: f"${v:,.0f}"  # noqa: E731
-    if overdue:
+    if not window_complete:
+        text = ("More transactions exist in this window than were read, so what's "
+                "left of this paycheck can't be stated — a partial read would "
+                "overstate it.")
+    elif overdue:
         text = (f"A paycheck was expected around {next_payday.isoformat()} and isn't in "
                 "the ledger yet, so what's left of it can't be worked out. "
                 "Import your latest transactions.")
@@ -383,6 +411,10 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             # first rule wins so nothing is double-counted, but the ambiguity
             # is surfaced rather than hidden.
             "allocation_overlaps": overlaps,
+            # Movements whose DESCRIPTION matches a savings rule but whose
+            # accounts do not. Direction is unknowable from a description, so
+            # these are reported for review rather than guessed at either way.
+            "unmatched_savings": unmatched_savings,
             "spendable": spendable,
             "spent": spent,
             "left": left,

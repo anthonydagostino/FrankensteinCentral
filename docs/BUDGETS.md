@@ -216,8 +216,17 @@ The rule now:
 | both ends | same account; no net movement |
 | neither (no account data at all) | fall back to description/category — the only case where a description may decide |
 
-A description reading "Savings" says nothing about direction, so it is
-consulted **only** when neither account is named.
+A description reading "Savings" says nothing about direction — the same word
+appears on the way in and on the way out — so it is consulted **only** when
+neither account is named.
+
+**This means allocations should match on the account name, not the
+description.** If a movement's description matches a rule but neither of its
+accounts does, direction is unknowable: it is counted neither way and reported
+as `unmatched_savings`, shown on the card. Ignoring it silently would
+understate savings and push "left to spend" **up**, which is the dangerous
+direction — the same class of error as the defect this section fixes, pointed
+the other way.
 
 **Each movement is claimed by at most one allocation**, in configuration
 order. Two rules that both matched "savings" used to deduct the same transfer
@@ -229,8 +238,11 @@ smaller number.
 
 `/cycle` pages Firefly under a cap. Hitting that cap means the window is a
 **partial view**, not a small ledger, so `window.complete` is published and the
-engine treats it exactly like a stale ledger: month totals go `null` and
-per-day guidance is suppressed, with the reason stated. Undercounting spending
+engine treats it exactly like a stale ledger: month totals go `null`, and
+`spent`, `left`, per-day guidance and the calm `state` are all suppressed with
+the reason stated. `left` is `paycheck − savings − spent`, so a truncated
+withdrawal read biases it **upward** — publishing it from a window already
+recorded as partial is the one number that must not survive. Undercounting spending
 confidently is the failure mode this prevents.
 
 ### What it refuses to claim

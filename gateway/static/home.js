@@ -335,12 +335,17 @@
         ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
       // An ambiguous allocation config would otherwise just look like a
       // smaller number.
+      // A transfer whose description says "savings" but whose accounts don't.
+      // Direction can't be read from a description, so it is named here rather
+      // than guessed — silently ignoring it would push "left to spend" up.
+      const unmatched = (pay.unmatched_savings || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
       const overlap = (pay.allocation_overlaps || []).length
         ? `<br><span class="sub warn">⚠ ${esch(pay.allocation_overlaps[0])} — counted once, under the first rule. Fix the match terms in Settings.</span>` : "";
       payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
         − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;

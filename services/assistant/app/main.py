@@ -702,6 +702,7 @@ def _paycheck_brief(pay: dict) -> dict:
         # config — both surfaced rather than folded silently into a total.
         "from_savings": c.get("from_savings"),
         "allocation_overlaps": c.get("allocation_overlaps", []),
+        "unmatched_savings": c.get("unmatched_savings", []),
         "window_complete": pay.get("window_complete", True),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),

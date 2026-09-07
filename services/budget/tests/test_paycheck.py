@@ -467,3 +467,92 @@ def test_a_complete_window_is_unaffected():
     assert d["window_complete"] is True
     assert d["month"]["complete"] is True
     assert d["cycle"]["per_day"] is not None
+
+
+# ---- peer review of 2acceff (Protocol Agent) ----------------------------
+# Two gaps in the P2 fix, both reproduced against 2acceff before fixing.
+
+def test_a_truncated_window_suppresses_left_not_just_the_month():
+    """`left` is paycheck − savings − spent, so a truncated withdrawal read
+    biases it UPWARD: 2acceff suppressed the month block and per_day but still
+    published "$1,750 left to spend" from a window it had recorded as
+    partial, in the calm `ok` style."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    d = paycheck_cycle(
+        cfg=cfg, today=date(2026, 9, 7),
+        month=month_of(date(2026, 9, 7)),
+        deposits=[txn(date(2026, 9, 4), "ACME PAYROLL", 2000.0)],
+        withdrawals=[txn(date(2026, 9, 5), "Groceries", 250.0,
+                         source="Checking", destination="Store")],
+        transfers=[],
+        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+                   "ledger_latest_txn": "2026-09-07", "window_complete": False})
+    c = d["cycle"]
+    assert c["left"] is None            # the number that must not survive
+    assert c["spent"] is None
+    assert c["per_day"] is None
+    assert c["state"] == "unknown"      # not the calm style
+    assert "partial read would overstate" in c["text"]
+
+
+def test_a_complete_window_still_publishes_left():
+    """The control: suppression must be caused by incompleteness, nothing else."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    c = paycheck_cycle(
+        cfg=cfg, today=date(2026, 9, 7), month=month_of(date(2026, 9, 7)),
+        deposits=[txn(date(2026, 9, 4), "ACME PAYROLL", 2000.0)],
+        withdrawals=[txn(date(2026, 9, 5), "Groceries", 250.0,
+                         source="Checking", destination="Store")],
+        transfers=[],
+        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+                   "ledger_latest_txn": "2026-09-07"})["cycle"]
+    assert c["spent"] == 250.0
+    assert c["left"] == 1750.0
+    assert c["state"] == "ok"
+
+
+def test_savings_by_description_alone_is_flagged_not_dropped():
+    """A transfer described "Savings" whose accounts are Checking -> Fidelity
+    matches the rule by description only. Direction is unknowable from a
+    description, so it is counted neither way — but it must not vanish
+    silently, because dropping it understates savings and pushes `left` up."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    c = run(date(2026, 9, 7), cfg=cfg,
+            deposits=[txn(date(2026, 9, 4), "ACME PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 9, 5), "Savings", 150.0,
+                           source="Checking", destination="Fidelity")])["cycle"]
+    assert c["savings_total"] == 0.0            # not guessed at
+    assert len(c["unmatched_savings"]) == 1     # and not silent
+    u = c["unmatched_savings"][0]
+    assert u["amount"] == 150.0 and u["rule"] == "Savings"
+
+
+def test_a_description_never_overrules_the_accounts():
+    """The reason the description cannot decide: "Savings withdrawal" moving
+    Fidelity -> Checking is money coming OUT. Reading direction from the
+    description would call it a contribution."""
+    assert pc._savings_role(
+        {"desc": "Savings withdrawal", "source": "Fidelity",
+         "destination": "Checking", "category": ""}, ["savings"]) is None
+    # while the accounts, when they do carry the term, decide unambiguously
+    assert pc._savings_role(
+        {"desc": "x", "source": "Checking", "destination": "Savings",
+         "category": ""}, ["savings"]) == "contribution"
+    assert pc._savings_role(
+        {"desc": "x", "source": "Savings", "destination": "Checking",
+         "category": ""}, ["savings"]) == "reverse"
+
+
+def test_account_matched_savings_is_not_flagged_as_unmatched():
+    """A rule that matches the account name works normally and raises nothing."""
+    cfg = {**CFG, "allocations": [{"name": "Fidelity", "amount": 0,
+                                   "match": ["fidelity"]}]}
+    c = run(date(2026, 9, 7), cfg=cfg,
+            deposits=[txn(date(2026, 9, 4), "ACME PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 9, 5), "Savings", 150.0,
+                           source="Checking", destination="Fidelity")])["cycle"]
+    assert c["savings_total"] == 150.0
+    assert c["unmatched_savings"] == []
