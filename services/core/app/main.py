@@ -94,6 +94,28 @@ DEFAULT_SETTINGS = {
     # categories: [firefly category names]}. The budget service computes
     # spend/pace/warnings from these; nothing else is stored.
     "budgets": [],
+    # The pay cycle: which deposits are a paycheck, and the savings that come
+    # out of it before the rest is spendable. The budget service turns this
+    # plus Firefly's ledger into "left to spend this paycheck"; no amounts
+    # are stored anywhere else.
+    #   match            deposit description/account terms, case-insensitive
+    #   min_amount       deposits below this are never a paycheck
+    #   cadence_days     fallback when the ledger shows only one paycheck
+    #   allocations      money that leaves the spendable pot on payday.
+    #                    already_withheld: the employer takes it before the
+    #                    deposit lands, so it is shown but NOT subtracted.
+    "paycheck": {
+        "enabled": True,
+        "match": ["payroll", "paycheck", "direct dep", "salary"],
+        "min_amount": 500,
+        "cadence_days": 14,
+        "allocations": [
+            {"name": "Fidelity", "amount": 1100, "match": ["fidelity"],
+             "already_withheld": False},
+            {"name": "Marcus", "amount": 500, "match": ["marcus"],
+             "already_withheld": False},
+        ],
+    },
 }
 
 NUTRITION_RATIO = {"poor": 0.34, "okay": 0.67, "good": 1.0}

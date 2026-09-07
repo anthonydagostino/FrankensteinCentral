@@ -141,6 +141,84 @@ fuller engine exists.
 - Categorized-but-unbudgeted spending is listed ("Not in any budget: Gas $79")
   so nothing disappears between the budgets.
 
+## The pay cycle — "what I spent" and "what's left to spend"
+
+Monthly budgets answer *am I on plan for this category*. They do not answer
+the two questions the homepage is actually asked:
+
+1. **What did I spend this month?** — month-to-date withdrawals, **minus the
+   money that only moved to savings**. A $1,100 transfer to Fidelity is not
+   $1,100 of spending, and if the import books it as a plain withdrawal
+   rather than a transfer it must still not read as one.
+2. **How much of this paycheck is left?** — the paycheck that landed, minus
+   the savings that come out of it, minus what has been spent since it
+   landed.
+
+Both are computed by `services/budget/app/paycheck.py` (pure,
+unit-tested) from `firefly /cycle` — a read-only window that spans **both**
+the current pay cycle and the calendar month, so the same
+savings-vs-spending classification applies to both numbers instead of two
+windows quietly disagreeing.
+
+### Configuration (core settings → `paycheck`)
+
+```json
+{"enabled": true,
+ "match": ["payroll", "direct dep"],
+ "min_amount": 500,
+ "cadence_days": 14,
+ "allocations": [
+   {"name": "Fidelity", "amount": 1100, "match": ["fidelity"],
+    "already_withheld": false},
+   {"name": "Marcus", "amount": 500, "match": ["marcus"]}]}
+```
+
+Matching is case-insensitive and looks at a transaction's **description,
+source account, destination account and category** — a Firefly transfer is
+often described just "Savings" while only the destination account says
+"Fidelity", so the description alone is not enough.
+
+### Formulas
+
+| value | definition |
+|---|---|
+| paycheck | Σ matching deposits **on the most recent paycheck date** (split direct deposits are one paycheck) |
+| allocation (each) | the **observed** matching transfer/withdrawal in the cycle if there is one; otherwise the **configured** amount, labelled `expected` |
+| savings_total | Σ allocations (an `already_withheld` allocation contributes **0** — the deposit is already net of it) |
+| spendable | paycheck − savings_total |
+| spent | Σ withdrawals since the paycheck date, **excluding** allocation-matched ones |
+| left | spendable − spent |
+| per_day | max(left, 0) / days to next payday |
+| month.spent | Σ month-to-date withdrawals excluding allocation-matched ones |
+| month.savings | Σ allocation-matched outflows this month (shown, never counted as spending) |
+
+The next payday is `last paycheck + cadence`, where cadence is the **observed**
+gap between the last two paychecks when it is plausible (5–40 days) and the
+configured `cadence_days` otherwise.
+
+### What it refuses to claim
+
+- **Expected ≠ observed.** An allocation the ledger hasn't seen yet still
+  shapes the number — it is the user's stated plan — but it is always
+  labelled `expected`, never presented as a transfer that happened.
+- **Double-subtraction is guarded twice.** An allocation-matched withdrawal
+  is savings, not spending, so the same $1,100 can never be taken out as a
+  deduction *and* again as spend. `already_withheld` covers the opposite
+  case (employer withholds pre-deposit, so the deposit is already net).
+- **A missing paycheck is not an overspend.** Past `next payday +
+  OVERDUE_GRACE_DAYS` with no newer deposit, `left` is `null` with the
+  reason — a ledger that is behind is not a user who is $2,000 in the hole.
+  The grace days exist because paydays drift across weekends.
+- **Stale ingestion pauses guidance, not totals.** Same rule as budgets:
+  `spent`/`left` still display (true as of the ledger, and the UI says
+  through which date), while `per_day` goes `null`. With no ingestion signal
+  at all, nothing is treated as fresh.
+- **An empty month is unknown, not $0** — `month.spent` is `null` when
+  nothing has been imported since the month began.
+- **"Left to spend" is a pay-cycle figure, not a bank balance** and not
+  "Safe to Spend": it does not know about bills due later in the cycle. It
+  sits beside Budget Room on the Money card, both explicitly scoped.
+
 ## Bills
 
 Firefly's own bills API is the source of truth (`firefly /bills` — name,
