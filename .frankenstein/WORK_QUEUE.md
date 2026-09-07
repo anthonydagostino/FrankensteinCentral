@@ -9,7 +9,12 @@
 >
 > | branch | tip | vs production | suite |
 > |---|---|---|---|
-> | `claude/FC-008-weekly-calendar` (FC-008) | `ce713da` | +4, **fast-forward** | **1513 pass + 5 node** |
+> | `claude/FC-008-weekly-calendar` (FC-008) | `a137d6d` | fast-forward | **1518 pass, 0 skipped + 5 node** |
+>
+> `a137d6d` answers Codex's correction at epoch `f1a56bd` (two P1 fixes:
+> a disconnected calendar rendering as a healthy empty week, and the decor
+> toggle leaving month motifs on). **The merged candidate `8be0cd2` predates
+> it and carries neither fix** — re-merge onto `a137d6d` before promoting.
 >
 > Go-live steps and the two blocking gates: `.frankenstein/FC-008/GO_LIVE.md`.
 > CI red on this branch is inherited from the baseline, reproduced on
