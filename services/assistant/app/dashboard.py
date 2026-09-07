@@ -152,12 +152,13 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
         that the Calendar API is reachable, in scope, or actually syncing.
 
     So `ok` is reserved for POSITIVE, Calendar-specific evidence, supplied by
-    the caller as `calendar_evidence`. Nothing in today's read-only path
-    produces it — `GET /events` returns local Postgres rows and answers
-    identically whether Google is connected or not — so in production this
-    currently resolves to `unknown`, which is the honest answer rather than a
-    comfortable one. The parameter exists so that a real read-only Calendar
-    health surface can make `ok` reachable without reworking callers.
+    the caller as `calendar_evidence`. `GET /events` cannot supply it: it
+    returns local Postgres rows and answers identically whether Google is
+    connected or not. The schedule service's read-only `GET /calendar-health`
+    can, and `main.py` fetches it in the same gather as everything else — it
+    is the only call on this path that actually talks to Calendar. When that
+    probe is absent or failed, the answer is `unknown`, which is the honest
+    answer rather than a comfortable one.
 
     The one thing gmail CAN establish is the absence of a credential:
     `mode == "disconnected"` means no OAuth consent exists at all, so Calendar

@@ -1,65 +1,50 @@
-# Implementation Handoff
+# Implementation Handoff — FC-008 (seven-day weekly calendar)
 
-Task ID: —
-Implementation Commit: —
-Status: no handoff yet
+This file is the in-branch record. The canonical, reviewable handoff — with
+the exact final SHA — is published on the `handoff` branch, because a commit
+cannot contain its own SHA and fabricating a self-referential one would be a
+lie in the bookkeeping.
 
-> **No implementation handoff has been written.**
->
-> This file belongs to **Claude** and is filled in at the end of an authorized
-> task, immediately before handing control back to the Product Owner. It is
-> intentionally empty now: no product task has been authorized or implemented
-> under this protocol, and a handoff must never describe work that did not
-> happen.
->
-> Remember: this document is explanatory metadata. The repository diff, the
-> tests, and the running behavior are the authoritative evidence.
->
-> Keep the headings below when writing a handoff; delete this blockquote.
+| | |
+|---|---|
+| Task | FC-008 |
+| Authorization epoch | `6033de85290a25fda38d5f98b613f6c2be80c991` |
+| directive_commit | `7599cb195ee204ca2821a39cd7d6c3a9946fc6ce` |
+| Task branch | `claude/FC-008-weekly-calendar` |
+| Candidate Codex reviewed | `5f6b9bf0f35e0debc3b72a42730eb20d3c3e7ec5` |
+| Integrated production | `e7adf839e0e2e225e50550f5564de7dd93d85512` |
+| Deployment Authorization | `none` — pushed for review, nothing deployed |
 
-## Summary
+## Correction 2 — what this round answers
 
-_What was built, in a few sentences._
+**1. P1: `schedule_state` returned `ok` on evidence that did not support it.**
+Gmail keeps `mode="live"` while serving cached mail after a failed fetch
+(`services/gmail/app/main.py`, `sync_status="failed"` alongside), and a shared
+credential proves nothing about Calendar API access. `ok` now requires
+positive, Calendar-specific evidence: `services/schedule/app/gcal.py` gains a
+read-only `probe()`, exposed as `GET /calendar-health`, which the assistant
+fetches in its existing parallel gather. Precedence — no schedule payload →
+`unreachable`; positive probe → `ok`; no token, or gmail `disconnected` →
+`disconnected`; everything else, including `live` with `sync_status` failed or
+never → `unknown`, keeping local commitments and the caveat. Gmail is negative
+evidence only. Tests use the actual cached-failure shape and separate a
+healthy inbox from confirmed Calendar health. No new scopes, no writes.
 
-## What Changed
+**2. The metadata contradiction is resolved.** `tests/test_protocol.py` was
+ported to assert consistency rather than the bootstrap state, and this branch
+now carries its real authorization: `STATE.json`, `PRODUCT_DIRECTIVE.md` and
+`AUTHORIZING_CONTROL_COMMIT` are bound to epoch `6033de8` with FC-008
+identity, replacing the FC-001 placeholders that were still in place. No
+FC-002 release code was imported and no binding check was weakened.
 
-_Behavior differences a reviewer would notice._
+**3. The canonical handoff is rewritten** around the final candidate on the
+`handoff` branch. Prior reports remain in git history.
 
-## Files / Components Changed
+## What is NOT claimed
 
-_Paths and what each change does._
-
-## Architecture / Technical Decisions
-
-_Choices made inside the authorized scope, and why._
-
-## Tests Run
-
-_Exact commands and results. Failures reported as failures._
-
-## Live Verification
-
-_What was verified against real running services, and what was not. Never
-report live results that were not actually observed._
-
-## Known Limitations
-
-_What is incomplete, approximate, or degrades under specific conditions._
-
-## Deviations From Directive
-
-_For each deviation: what changed, why, whether behavior differs from the
-acceptance criteria, and whether there is user/product impact. If there were
-none, state **"No deviations"** explicitly._
-
-## Security / Data Notes
-
-_Credential handling, data exposure, permissions, read/write boundaries._
-
-## Questions / Product Decisions Needed
-
-_Anything requiring a Product Owner decision before further work._
-
-## Recommended Next Steps
-
-_Recommendations only. Claude does not choose the next task._
+- Nothing was promoted or deployed; Deployment Authorization is `none`.
+- Neither `control` nor `production` was written.
+- `PO_REVIEW_e7adf83.md`'s money findings remain open and untouched — they are
+  not authorized under this directive.
+- FC-002 remains paused and unaccepted. Its historical handoff is preserved in
+  git history and was not edited.
