@@ -199,12 +199,92 @@ def test_promote_does_not_gate_on_acceptance_or_authorization():
             "deliberately and must not return")
 
 
-def test_promote_accepts_a_plain_commit_and_reports_a_fast_forward():
-    """The whole happy path: name a commit, get a promotion plan, no approval."""
-    r = sh("bash", str(PROMOTE), "--dry-run", "HEAD", cwd=ROOT, check=False)
+@pytest.fixture
+def promote_repo(tmp_path):
+    """A throwaway repo with its own origin, carrying a COPY of promote.sh.
+
+    Hermetic on purpose. Earlier versions of these tests ran promote.sh against
+    the live repository and asserted on its output, which made them a function
+    of whatever origin/production happened to be at that moment. That is not a
+    test, it is a reading of the environment: one version passed in a worktree
+    and failed on the box, aborting the deploy of the commit that contained it,
+    and the next failed the moment another agent moved production.
+
+    promote.sh cd's to its own parent, so pointing it at another repo means
+    copying it there — which is exactly what makes the state controllable.
+    """
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    sh("git", "init", "--bare", "-b", "production", str(remote))
+    sh("git", "init", "-b", "production", str(work))
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+
+    (work / "scripts").mkdir()
+    (work / "scripts" / "promote.sh").write_text(PROMOTE.read_text())
+    (work / "seed.txt").write_text("base\n")
+    sh("git", "add", "-A", cwd=work, env=env)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base",
+       cwd=work, env=env)
+    sh("git", "remote", "add", "origin", str(remote), cwd=work, env=env)
+    sh("git", "push", "-q", "origin", "production", cwd=work, env=env)
+
+    def advance(msg="candidate"):
+        (work / "seed.txt").write_text(msg + "\n")
+        sh("git", "add", "-A", cwd=work, env=env)
+        sh("git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg,
+           cwd=work, env=env)
+        return git("rev-parse", "HEAD", cwd=work)
+
+    def run(*args):
+        return sh("bash", str(work / "scripts" / "promote.sh"), *args,
+                  cwd=work, env=env, check=False)
+
+    return {"work": work, "remote": remote, "advance": advance, "run": run}
+
+
+def test_promote_accepts_a_plain_commit_without_asking_anyone(promote_repo):
+    """The happy path: name a commit ahead of production, get a promotion plan,
+    and be asked for nobody's approval."""
+    sha = promote_repo["advance"]()
+    r = promote_repo["run"]("--dry-run", sha)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "REFUSED" not in r.stdout
+    assert "Fast-forward" in r.stdout
     assert "dry run" in r.stdout
+
+
+def test_promote_says_so_when_there_is_nothing_to_do(promote_repo):
+    """Production already IS the candidate — the state the box is in while it
+    deploys that candidate. It must exit 0, not refuse."""
+    head = git("rev-parse", "HEAD", cwd=promote_repo["work"])
+    r = promote_repo["run"]("--dry-run", head)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Already promoted" in r.stdout
+    assert "REFUSED" not in r.stdout
+
+
+def test_promote_actually_moves_production_with_no_approval_anywhere(promote_repo):
+    """Not a dry run. There is no STATE.json and no directive in this repo at
+    all, so if any approval were still consulted this could not succeed."""
+    sha = promote_repo["advance"]("shipped")
+    r = promote_repo["run"](sha)
+    assert r.returncode == 0, r.stdout + r.stderr
+    remote_head = git("rev-parse", "production", cwd=promote_repo["remote"])
+    assert remote_head == sha, "promote.sh did not move production"
+
+
+def test_promote_still_refuses_a_non_fast_forward(promote_repo):
+    """The one guard that survived. Rewriting production history stays refused
+    even though nothing else does."""
+    work, env = promote_repo["work"], None
+    promote_repo["advance"]("a")
+    promote_repo["run"](git("rev-parse", "HEAD", cwd=work))       # ship it
+    sh("git", "reset", "-q", "--hard", "HEAD~1", cwd=work)         # go backwards
+    r = promote_repo["run"](git("rev-parse", "HEAD", cwd=work))
+    assert r.returncode != 0
+    assert "not a fast-forward" in r.stdout
 
 
 def test_the_protocol_files_that_carried_the_gate_are_gone():
@@ -243,14 +323,15 @@ def test_the_fast_forward_guard_is_unconditional():
         "the fast-forward check became conditional on something"
 
 
-def test_legacy_override_flags_are_inert_not_errors():
+def test_legacy_override_flags_are_inert_not_errors(promote_repo):
     """--force and --bootstrap used to skip the gates. Scripts and habits still
     pass them; they must be accepted and do nothing, never crash a deploy."""
-    src = PROMOTE.read_text()
-    assert "--force|--bootstrap" in src
-    r = sh("bash", str(PROMOTE), "--dry-run", "--force", "HEAD", cwd=ROOT, check=False)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "REFUSED" not in r.stdout
+    assert "--force|--bootstrap" in PROMOTE.read_text()
+    sha = promote_repo["advance"]()
+    for flag in ("--force", "--bootstrap"):
+        r = promote_repo["run"]("--dry-run", flag, sha)
+        assert r.returncode == 0, f"{flag}: " + r.stdout + r.stderr
+        assert "REFUSED" not in r.stdout
 
 
 def test_the_test_gate_is_not_an_approval_layer_and_survives():
