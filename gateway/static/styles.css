@@ -475,3 +475,23 @@ body {
   .vgrid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
   .bstats { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---- spending donut: hover / focus ------------------------------------
+ * Colour is never the only signal. Pointing at a wedge also writes it into
+ * the centre readout and highlights its legend row, so the chart is usable
+ * without distinguishing eight hues — and every wedge is tab-reachable with
+ * a visible focus ring for the same reason. */
+.dn-slice { cursor: pointer; transition: opacity .12s ease, transform .12s ease; transform-origin: 100px 100px; }
+.dn-active .dn-slice { opacity: .38; }
+.dn-active .dn-slice.is-on { opacity: 1; transform: scale(1.045); }
+.dn-slice:focus-visible { outline: 2px solid var(--text, #fff); outline-offset: 2px; }
+.dn-row { border-radius: 6px; transition: background .12s ease; }
+.dn-row.is-on { background: rgba(255, 255, 255, .07); }
+.dn-row:focus-visible { outline: 2px solid var(--text, #fff); outline-offset: 1px; }
+.dn-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; }
+.dn-total, .dn-cap { pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dn-slice { transition: none; }
+  .dn-active .dn-slice.is-on { transform: none; }
+}
