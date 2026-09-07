@@ -9,7 +9,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (deadline_rows, firefly_state, low_balance_accounts,
+                        parse_event_dt, portfolio_alerts, upcoming_events)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -731,6 +732,24 @@ def _budget_brief(status) -> dict:
     }
 
 
+async def _deadline_rows(limit: int = 40) -> list[dict]:
+    """The deadlines the sync already files, read for the HOME screen.
+
+    These rows have existed and accumulated since the pipeline was written; the
+    only endpoint that exposed them was `/space`, i.e. only the legacy lounge.
+    Read here directly rather than over HTTP -- it is this service's own table.
+    """
+    try:
+        async with pool.connection() as conn:
+            conn.row_factory = dict_row
+            cur = await conn.execute(
+                "SELECT title, due_at, source FROM deadlines "
+                "ORDER BY due_at NULLS LAST LIMIT %s", (limit,))
+            return await cur.fetchall()
+    except Exception:  # noqa: BLE001 - a card that cannot load is not a 500
+        return []
+
+
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
     if (not fresh and cached["data"] and cached["at"]
@@ -738,10 +757,14 @@ async def build_home(fresh: bool = False) -> dict:
         return cached["data"]
 
     async with httpx.AsyncClient() as client:
-        (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
+        (settings, core, weekly, emails_r, avail, finance, budget, firefly,
+         spending, networth, schedule, deals, stocks, vault,
+         captures) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
+            # Built, tested, and referenced by nothing in the frontend until
+            # now (PRODUCT_IDEAS #17).
+            _get(client, f"{CORE_URL}/weekly-review"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
             _get(client, f"{GMAIL_URL}/thread-availability"),
             _get(client, f"{FINANCE_URL}/summary"),
@@ -780,16 +803,43 @@ async def build_home(fresh: bool = False) -> dict:
         **t,
         "briefing": _briefing_line(core, inbox, stocks, money, events),
         "big3": (core or {}).get("big3", []),
+        # The attention feed AUDIT.md section 3 promised. core._nudges()
+        # computes it -- severity, icon, title, detail and a typed action per
+        # item -- on every /today, which this function already fetches, and it
+        # was dropped on the floor here while the home screen rendered a single
+        # do_next instead. The feed existed the whole time; nothing asked for it.
+        "nudges": (core or {}).get("nudges", []),
+        # Written on every sync since the pipeline was built, readable only
+        # from the demoted lounge until now.
+        "deadlines": deadline_rows(await _deadline_rows(), now_local, LOCAL_TZ),
+        # Computed by core on request and referenced by no frontend at all.
+        "weekly_review": weekly or None,
+        # finance.low_balance has been in DEFAULT_SETTINGS and consumed nowhere.
+        "low_balance": {
+            "floor": (settings.get("finance", {}) or {}).get("low_balance"),
+            "accounts": low_balance_accounts(
+                ((firefly or {}).get("accounts") or []),
+                (settings.get("finance", {}) or {}).get("low_balance")),
+        },
         "do_next": _do_next(core, inbox, money, events, settings, t),
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
-        "portfolio": stocks or {"configured": False},
+        # "Alert on move >= (%)" has been settable in the UI and read by
+        # nothing, so the alert it promised was never produced.
+        "portfolio": dict(
+            stocks or {"configured": False},
+            alerts=portfolio_alerts(
+                stocks, (settings.get("market", {}) or {}).get("move_threshold_pct")),
+            move_threshold_pct=(settings.get("market", {}) or {}).get("move_threshold_pct")),
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
             "water": (core or {}).get("water", {}),
             "nutrition": (core or {}).get("nutrition", {}),
+            # core has reported this on every /today and nothing carried it
+            # to a screen, so the sleep column stayed null forever.
+            "sleep": (core or {}).get("sleep", {}),
         },
         "score": (core or {}).get("score", {"score": 0, "parts": {}}),
         "captures": (captures.get("items", []) if captures else [])[:8],
