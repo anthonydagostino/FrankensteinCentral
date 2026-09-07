@@ -1,7 +1,8 @@
 # DRAFT — proposed directive for FC-002
 
 **This file is not a directive.** It is a draft prepared at the Product Owner's
-request, sitting on a task branch. It authorizes nothing: `STATE.json` still
+request, sitting in `docs/` on a task branch — deliberately **not** under
+`.frankenstein/`, which only the protocol agent owns. It authorizes nothing: `STATE.json` still
 reads `turn: product_owner` / `status: awaiting_directive`, and
 `PRODUCT_DIRECTIVE.md` is untouched.
 
