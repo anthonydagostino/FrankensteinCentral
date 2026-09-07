@@ -136,6 +136,8 @@
     renderWeeklyReview(d.weekly_review);
     renderWeek(d);
     renderDoNext(d.do_next, d);
+    renderAttention(d.nudges);
+    renderDeadlines(d.deadlines);
     renderInbox(d.inbox);
     renderMoney(d.money, d.budget);
     renderPortfolio(d.portfolio);
@@ -196,9 +198,9 @@
   // a reply is the single most actionable thing the pipeline produces, and it
   // used to be dropped before it ever reached the page.
   const CAL_STATUS = {
-    confirmed: { dot: "🟢", label: "confirmed" },
-    pending:   { dot: "🟡", label: "offered — awaiting reply" },
-    countered: { dot: "🟠", label: "they countered — needs your yes" },
+    confirmed: { label: "confirmed" },
+    pending:   { label: "offered — awaiting reply" },
+    countered: { label: "they countered — needs your yes" },
   };
   // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
   // The footer used to compute its claim from `d.systems`, which the assistant
@@ -319,6 +321,12 @@
   const AMBIENCE_KEY = "cc.ambience";
   const ambienceOn = () => localStorage.getItem(AMBIENCE_KEY) !== "off";
 
+  // Each commitment gets its own colour, so a day reads as a set of distinct
+  // things instead of one grey block, and so a recurring event keeps the same
+  // colour week after week. The rules live in evcolor.js, where node --test
+  // holds them to it.
+  const eventColor = (e) => EventColor.of(e);
+
   function evRow(e) {
     const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
     const cls = [
@@ -327,13 +335,16 @@
       e.conflict ? "clash" : "",
       e.ongoing ? "live" : "",
       e.all_day ? "allday" : "",
+      e.from_google ? "from-google" : "",
     ].filter(Boolean).join(" ");
-    // The status word is spelled out, never carried by the dot alone.
+    // The status word is spelled out, never carried by the colour alone.
     const tag = e.status && e.status !== "confirmed"
       ? `<span class="wk-tag">${esch(st.label)}</span>` : "";
     const when = e.end_label
       ? `${esch(e.time_label)}<span class="wk-dash">–</span>${esch(e.end_label)}`
       : esch(e.time_label);
+    const where = e.location
+      ? `<span class="wk-ev-where">${esch(e.location)}</span>` : "";
     const flags = [
       e.ongoing ? `<span class="wk-flag live">now</span>` : "",
       // "Overlaps" on its own is baffling when the other commitment is in a
@@ -343,15 +354,15 @@
         : "Overlaps another commitment this day"}">⚠ overlaps${
         e.conflict_offday ? ` ${esch(e.conflict_neighbour)} day` : ""}</span>` : "",
     ].filter(Boolean).join("");
-    return `<li class="${cls}">
-      <span class="wk-ev-dot" aria-hidden="true">${st.dot}</span>
+    const origin = e.from_google ? "From your Google Calendar" : "Added in FrankensteinCentral";
+    return `<li class="${cls}" style="--ev:${eventColor(e)}" title="${esch(origin)}">
       <span class="wk-ev-when mono">${when}</span>
       <span class="wk-ev-title">${esch(e.title || "Untitled")}</span>
-      ${flags}${tag}
+      ${where}${flags}${tag}
     </li>`;
   }
 
-  function dayCard(day) {
+  function dayCard(day, index) {
     const season = SEASONS[day.season] || SEASONS.jan;
     const cls = [
       "wk-day",
@@ -361,6 +372,10 @@
       day.conflicts ? "has-clash" : "",
     ].filter(Boolean).join(" ");
 
+    // "Today" replaces the weekday rather than sitting next to it: on the two
+    // cards that have one it is the more useful of the pair, and the two
+    // together were the only thing that made this line wrap onto a second row.
+    // The full weekday and date stay in the card's aria-label regardless.
     const rel = day.relative_label
       ? `<span class="wk-rel">${esch(day.relative_label)}</span>` : "";
     const count = day.counts.total
@@ -369,23 +384,32 @@
     const body = day.counts.total
       ? `<ul class="wk-evs">${day.events.map(evRow).join("")}</ul>`
       : `<p class="wk-clear">Clear</p>`;
+    // The month appears only where the window actually crosses into a new one.
+    // `starts_month` is also true on the first card, but the range beside the
+    // "This week" heading already names that month, and the first card is the
+    // one carrying the TODAY pill — the least room and the least need.
+    const month = day.starts_month && index > 0
+      ? `<span class="wk-mo">${esch(day.month_short)}</span>` : "";
 
     // aria-label carries the full date so the column is announced as
     // "Wednesday, October 1st, 2026", not as a bare "1".
     const label = `${day.long_label}${day.counts.total
       ? `, ${day.counts.total} scheduled` : ", nothing scheduled"}${
       day.conflicts ? ", has overlapping commitments" : ""}`;
+    // The date is a small marker in the top-left corner, not the headline: what
+    // matters on a day is what is happening on it. The number was 26px and took
+    // the widest line in the card, which pushed the actual commitments down and
+    // made every column look the same from across the room.
     return `<article class="${cls}" data-season="${esch(day.season)}"
         role="listitem" tabindex="0" aria-label="${esch(label)}">
       <header class="wk-hd">
         <div class="wk-hd-top">
-          <span class="wk-dow">${esch(day.weekday)}</span>${count}
+          <time class="wk-date" datetime="${esch(day.iso)}">
+            <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
+          </time>
+          ${rel ? "" : `<span class="wk-dow">${esch(day.weekday_short)}</span>`}
+          ${month}${rel}${count}
         </div>
-        <time class="wk-date" datetime="${esch(day.iso)}">
-          <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
-          ${rel}
-          <span class="wk-mo">${esch(day.month)}</span>
-        </time>
         ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
       </header>
       ${body}
@@ -434,40 +458,62 @@
       week.beyond ? `<span class="wk-note">+${week.beyond} later</span>` : "",
     ].filter(Boolean).join("");
 
-    // Three ways the grid can be incomplete, said differently, because they
-    // call for different actions: reconnect, wait, or nothing.
+    // Four ways the grid can be incomplete, said differently, because they
+    // call for different actions: reconnect, re-consent, wait, or nothing.
     const CAVEAT = {
       disconnected: {
-        cls: "warn",
+        cls: "warn", icon: "⚠", fix: true,
         text: `Google Calendar isn't connected, so only commitments stored
                here are shown. A clear day may not be a free day.`,
       },
+      needs_consent: {
+        cls: "warn", icon: "⚠", fix: true,
+        text: `Google is refusing this account's calendar. The saved Google
+               login was approved for mail only, and a login keeps the
+               permissions it was granted — so this will not fix itself.
+               Reconnect and approve calendar access to see your real
+               schedule here.`,
+      },
       unknown: {
-        cls: "muted",
+        cls: "muted", icon: "◔", fix: false,
         text: `Couldn't confirm the calendar connection, so anything that
                lives only in Google may be missing from this week.`,
       },
     };
-    const caveat = CAVEAT[week.state]
-      ? `<p class="wk-caveat ${CAVEAT[week.state].cls}">${
-          week.state === "disconnected" ? "⚠" : "◔"} ${esch(
-          CAVEAT[week.state].text.replace(/\s+/g, " ").trim())}</p>`
+    const cv = CAVEAT[week.state];
+    // The repair is a link, not a sentence telling you to go and find one.
+    // /api/gmail/auth/login redirects to Google's consent screen; approving
+    // there mints a credential that carries the calendar scope.
+    const caveat = cv
+      ? `<p class="wk-caveat ${cv.cls}">${cv.icon} ${esch(
+          cv.text.replace(/\s+/g, " ").trim())}${cv.fix
+          ? ` <a class="wk-fix" href="/api/gmail/auth/login">Connect Google Calendar →</a>`
+          : ""}</p>`
+      : "";
+
+    // Positive evidence, and the only kind that means anything here: a count
+    // of what actually came out of Google. `state === "ok"` only says a probe
+    // got an answer — it says that just as cheerfully when nothing has ever
+    // been imported.
+    const synced = week.state === "ok"
+      ? `<span class="wk-note synced" title="Events on this week's grid that came from your Google Calendar">${
+          week.from_google ? `📅 ${week.from_google} from Google` : "📅 Google Calendar connected"}</span>`
       : "";
 
     el.innerHTML = `
-      <div class="wk-top">
+      <div class="wk-top" data-season="${esch(first.season)}">
         <h3>This week</h3>
         <span class="wk-range">${esch(range)}</span>
         <span class="wk-season" title="Seasonal theme">${
           ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
-        ${notes}
+        ${synced}${notes}
         <button class="wk-amb" id="wk-amb" type="button"
           aria-pressed="${ambienceOn()}" title="Seasonal decoration">
           ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
       </div>
       ${caveat}
       <div class="wk-grid" role="list" data-season="${esch(first.season)}">
-        ${days.map(dayCard).join("")}
+        ${days.map((day, i) => dayCard(day, i)).join("")}
         <div class="wk-amb-layer" aria-hidden="true"></div>
       </div>
       <div class="hx-btns" style="margin-top:12px">${openBtn}</div>`;
@@ -535,6 +581,92 @@
       </div>`;
     if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
   }
+
+  // ---- Needs attention ------------------------------------------------------
+  // AUDIT.md section 3 promised a unified attention feed with Important/FYI
+  // severity. core._nudges() has been building exactly that on every /today --
+  // icons, severity, detail lines, typed actions -- and nothing ever rendered
+  // it. Do-Next shows the single most urgent thing; this is everything else
+  // that is still waiting, which is the difference between a prompt and a list
+  // you can actually clear.
+  function renderAttention(nudges) {
+    const el = q("#cc-attention");
+    if (!el) return;
+    const items = Array.isArray(nudges) ? nudges : [];
+    if (!items.length) {
+      // Empty because nothing needs attention is a real state and worth
+      // saying, but it does not need a whole card competing for the eye.
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    // Important first, then FYI, each keeping the order core produced.
+    const rank = (n) => (n.severity === "important" ? 0 : 1);
+    const sorted = items.slice().sort((a, b) => rank(a) - rank(b));
+    const important = sorted.filter((n) => n.severity === "important").length;
+    const rows = sorted.map((n, i) => {
+      const sev = n.severity === "important" ? "important" : "fyi";
+      const btn = n.action
+        ? `<button class="att-btn" data-nudge="${i}">${esch(actionLabel(n.action))}</button>`
+        : "";
+      return `<div class="att-row ${sev}">
+          <span class="att-icon" aria-hidden="true">${esch(n.icon || "•")}</span>
+          <span class="att-text">
+            <b>${esch(n.title || "")}</b>
+            ${n.detail ? `<em>${esch(n.detail)}</em>` : ""}
+          </span>
+          <span class="att-sev" title="${sev === "important" ? "Important" : "FYI"}">${sev === "important" ? "Important" : "FYI"}</span>
+          ${btn}
+        </div>`;
+    }).join("");
+    el.hidden = false;
+    el.innerHTML = `<h3>Needs attention`
+      + (important ? ` <span class="att-count">${important} important</span>` : "")
+      + `</h3>${rows}`;
+    // Reuse the Do-Next executor rather than a second copy of the same
+    // vocabulary -- the two must not drift into doing different things for
+    // the same action type.
+    el.querySelectorAll("[data-nudge]").forEach((b) => {
+      b.onclick = () => handleAction(sorted[Number(b.dataset.nudge)].action);
+    });
+  }
+
+  // ---- Deadlines ------------------------------------------------------------
+  // The assistant has been extracting interview times and bill due dates on
+  // every sync and filing them since the pipeline was written. Until now the
+  // only page that could display them was the legacy lounge.
+  function renderDeadlines(dl) {
+    const el = q("#cc-deadlines");
+    if (!el) return;
+    const d = dl || {};
+    const overdue = d.overdue || [], upcoming = d.upcoming || [], undated = d.undated || [];
+    if (!overdue.length && !upcoming.length && !undated.length) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    const when = (iso) => {
+      const t = new Date(iso);
+      if (isNaN(t)) return "";
+      return t.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    };
+    const row = (x, cls, note) => `<div class="dl-row ${cls}">
+        <span class="dl-text"><b>${esch(x.title)}</b>${x.source ? `<em>${esch(x.source)}</em>` : ""}</span>
+        <span class="dl-when">${esch(note || when(x.due_at))}</span>
+      </div>`;
+    // Overdue is its own state and is never sorted in with upcoming. An
+    // undated row says so rather than being rendered as due today -- the
+    // extractor stores a null when the email carried no date, and inventing
+    // one would be the "unknown rendered as a value" mistake again.
+    const html = overdue.map((x) => row(x, "overdue")).join("")
+      + upcoming.map((x) => row(x, "upcoming")).join("")
+      + undated.map((x) => row(x, "undated", "no date found")).join("");
+    el.hidden = false;
+    el.innerHTML = `<h3>Deadlines`
+      + (overdue.length ? ` <span class="dl-count">${overdue.length} overdue</span>` : "")
+      + `</h3>${html}`;
+  }
+
 
   function actionLabel(a) {
     if (!a) return "";
@@ -860,6 +992,14 @@
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
       return;
     }
+    // The "Alert on move >= (%)" setting finally produces an alert.
+    const alerts = p.alerts || [];
+    const alertLine = alerts.length
+      ? `<div class="pf-alert">⚡ ${alerts.length} past your ${esch(String(p.move_threshold_pct))}% alert: `
+        + alerts.slice(0, 4).map((a) =>
+            `<b class="${a.direction}">${esch(a.symbol)} ${a.change_pct >= 0 ? "+" : ""}${a.change_pct}%</b>`).join(", ")
+        + (alerts.length > 4 ? ` +${alerts.length - 4} more` : "") + `</div>`
+      : "";
     const dc = p.day_change || 0, cls = dc >= 0 ? "up" : "down", arrow = dc >= 0 ? "▲" : "▼";
     const mv = p.movers || {};
     const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b></span><span class="${x.change_pct >= 0 ? "up" : "down"} mono">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}% · ${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
@@ -879,6 +1019,7 @@
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
         ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>` : ""}
+      ${alertLine}
       ${moverRow(mv.up, "▲")}${moverRow(mv.down, "▼")}
       <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
   }
@@ -890,10 +1031,21 @@
     const studyPct = st.goal_min ? Math.min(100, Math.round((st.today_min / st.goal_min) * 100)) : 0;
     const waterPct = w.goal ? Math.min(100, Math.round((w.oz / w.goal) * 100)) : 0;
     const fmtH = (m) => `${Math.floor((m || 0) / 60)}h ${(m || 0) % 60}m`;
-    const focusBtns = (st.presets || [25, 45, 60]).map((m) => `<button class="hx-btn" data-focus="${m}">${m}m</button>`).join("");
+    // `focus_sessions.label` is in the schema and the UI only ever wrote
+    // "Study", so a column built to tell sessions apart held one value.
+    const focusBtns = (st.presets || [25, 45, 60]).map((m) => `<button class="hx-btn" data-focus="${m}">${m}m</button>`).join("")
+      + `<input class="cc-input hx-label" id="hx-focus-label" list="hx-focus-labels" placeholder="Study" title="What is this session for?" />`
+      + `<datalist id="hx-focus-labels"><option>Study</option><option>Deep work</option><option>Reading</option><option>Job hunt</option><option>Admin</option></datalist>`;
     const waterBtns = (w.presets || [8, 16, 24]).map((oz) => `<button class="hx-btn" data-water="${oz}">+${oz}</button>`).join("");
     const rating = nut.rating;
     const nutBtns = ["poor", "okay", "good"].map((r) => `<button class="hx-btn ${rating === r ? "on" : ""}" data-nut="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join("");
+    // Sleep: column, model, POST /sleep and a score component all shipped with
+    // no control anywhere, so the value stayed null and the component could
+    // never contribute. Unlogged reads as "not logged", never as 0 hours.
+    const sleepHours = (d.health && d.health.sleep && d.health.sleep.hours != null)
+      ? d.health.sleep.hours : null;
+    const sleepBtnsHtml = [6, 7, 8, 9].map((h) =>
+      `<button class="hx-btn ${sleepHours === h ? "on" : ""}" data-sleep="${h}">${h}h</button>`).join("");
     const exam = st.exam;
     const parts = score.parts || {};
     // An untracked component is drawn as an empty, muted track labelled "not
@@ -942,24 +1094,49 @@
           <div class="hx-head"><span class="l">🍽️ Nutrition today</span></div>
           <div class="hx-btns">${nutBtns}</div>
         </div>
+        <div class="hx-row">
+          <div class="hx-head"><span class="l">😴 Sleep</span><span class="v">${sleepHours == null ? "not logged" : sleepHours + "h"}</span></div>
+          <div class="hx-btns">${sleepBtnsHtml}</div>
+        </div>
       </div>`;
-    q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, "Study")));
+    const focusLabel = () => (q("#hx-focus-label") && q("#hx-focus-label").value.trim()) || "Study";
+    q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, focusLabel())));
     q("#cc-health").querySelectorAll("[data-water]").forEach((b) => (b.onclick = async () => { await post("/core/water", { oz: +b.dataset.water }); toast(`+${b.dataset.water} oz`); refresh(true); }));
     q("#cc-health").querySelector("[data-gym]").onclick = async () => { await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); };
     q("#cc-health").querySelectorAll("[data-nut]").forEach((b) => (b.onclick = async () => { await post("/core/nutrition", { rating: b.dataset.nut }); refresh(true); }));
+    // `daily_log.sleep_hours`, POST /sleep and the `sleep` score component all
+    // existed with no control anywhere in the UI, so the column stayed null
+    // forever and the component could never contribute.
+    const sleepBtns = q("#cc-health").querySelectorAll("[data-sleep]");
+    sleepBtns.forEach((b) => (b.onclick = async () => {
+      await post("/core/sleep", { hours: +b.dataset.sleep });
+      toast(`${b.dataset.sleep}h sleep logged`);
+      refresh(true);
+    }));
   }
 
   function renderCapture(items) {
     items = items || [];
+    // `captures.kind` and `CapturePatch.kind` have been in the schema from the
+    // start; the UI only ever wrote 'note', so the column carried one value.
+    const KINDS = { note: "📝", task: "✓", idea: "💡" };
     const list = items.map((c) =>
-      `<div class="cap-item" data-id="${c.id}"><span>•</span><span>${esch(c.text)}</span><button class="x" title="done">✕</button></div>`).join("");
+      `<div class="cap-item" data-id="${c.id}"><span title="${esch(c.kind || "note")}">${KINDS[c.kind] || "•"}</span><span>${esch(c.text)}</span><button class="x" title="done">✕</button></div>`).join("");
     q("#cc-capture").innerHTML = `
       <h3>Quick capture</h3>
-      <div class="cap-form"><input class="cc-input" id="cap-input" placeholder="What's on your mind?" /><button class="hx-btn" id="cap-add">Add</button></div>
+      <div class="cap-form">
+        <select class="cc-input cap-kind" id="cap-kind" title="What kind of thing is this?">
+          <option value="note">📝 Note</option>
+          <option value="task">✓ Task</option>
+          <option value="idea">💡 Idea</option>
+        </select>
+        <input class="cc-input" id="cap-input" placeholder="What's on your mind?" /><button class="hx-btn" id="cap-add">Add</button>
+      </div>
       <div class="cap-list">${list}</div>`;
     const add = async () => {
       const v = q("#cap-input").value.trim(); if (!v) return;
-      await post("/core/capture", { text: v }); q("#cap-input").value = ""; refresh(true);
+      const kind = (q("#cap-kind") || {}).value || "note";
+      await post("/core/capture", { text: v, kind }); q("#cap-input").value = ""; refresh(true);
     };
     q("#cap-add").onclick = add;
     q("#cap-input").onkeydown = (e) => { if (e.key === "Enter") add(); };
@@ -1150,6 +1327,12 @@
       tiles.push(`<a class="launch-tile" href="${links._importer}" target="_blank" rel="noopener" title="Firefly data importer">
         <span class="ic">📥</span><span class="nm">Importer</span><span class="dot"></span><span class="ext">↗</span></a>`);
     }
+    // jobs.html shipped in gateway/static and was linked ONLY from the legacy
+    // lounge, so demoting that page took the job-hunt board offline with it.
+    // A static page rather than a registered service, so it gets a tile of its
+    // own rather than a registry entry.
+    tiles.push(`<a class="launch-tile" href="/jobs.html" title="Job hunt board">
+      <span class="ic">💼</span><span class="nm">Job hunt</span><span class="dot"></span></a>`);
     grid.innerHTML = tiles.join("") || '<p class="att-empty">No apps registered.</p>';
     grid.querySelectorAll(".launch-tile[data-key]").forEach((el) => {
       el.onclick = (e) => {

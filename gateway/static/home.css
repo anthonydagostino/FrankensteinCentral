@@ -315,8 +315,18 @@ body.cc[data-mode="evening"] {
 .wk-range { color: var(--text); font-size: 13px; font-weight: 600; }
 .wk-season {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+  font-size: 11px; font-weight: 600;
+  color: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 78%, var(--text));
+  background: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sn-accent, var(--accent-2)) 38%, var(--line));
+  border-radius: 999px; padding: 2px 9px;
+}
+/* Green because it is good news and it is rare: it appears only when the
+   Calendar import has actually produced something. */
+.wk-note.synced {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
 }
 .wk-note {
   font-size: 11px; color: var(--muted); border: 1px solid var(--line);
@@ -339,10 +349,25 @@ body.cc[data-mode="evening"] {
 .wk-day {
   position: relative; z-index: 1;
   display: flex; flex-direction: column; min-width: 0;
-  background: color-mix(in srgb, var(--panel-2) 86%, transparent);
-  border: 1px solid var(--line); border-radius: 12px;
+  /* The month's wash over the panel, on EVERY card. The season tokens existed
+     and were spent almost entirely on the one "today" card, so eleven months
+     of the year the grid was the same grey as the rest of the page and the
+     theme was only nameable, never visible. */
+  background:
+    linear-gradient(165deg, var(--sn-wash, transparent), transparent 62%),
+    color-mix(in srgb, var(--panel-2) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sn-accent, var(--line)) 22%, var(--line));
+  border-radius: 12px;
   padding: 10px 10px 12px;
   overflow: hidden;
+}
+/* A rule of the month's colour across the top of every column. */
+.wk-day::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 3px; z-index: 2;
+  background: linear-gradient(90deg,
+    var(--sn-accent, var(--accent-2)),
+    color-mix(in srgb, var(--sn-accent, var(--accent-2)) 35%, transparent));
+  opacity: .85;
 }
 .wk-day:focus-visible { outline: 2px solid var(--sn-accent, var(--accent-2)); outline-offset: 2px; }
 .wk-day.is-weekend {
@@ -365,68 +390,107 @@ body.cc[data-mode="evening"] {
 .wk-day.month-start .wk-mo { color: var(--sn-accent, var(--accent-2)); font-weight: 700; }
 .wk-day.has-clash { border-color: color-mix(in srgb, var(--imp) 40%, var(--line)); }
 
-.wk-hd { position: relative; margin-bottom: 8px; }
-.wk-hd-top { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+/* One line: date, weekday, month-when-it-changes, Today, count. The date
+   number leads it because it is the corner marker you scan for, and it is
+   small because the events under it are what the card is for. */
+.wk-hd { position: relative; margin-bottom: 7px; }
+/* Pinned right so the count can never be what pushes this line onto a second
+   row: the date, weekday and TODAY pill are the only things competing for the
+   width, and the count sits out of their way entirely. */
+.wk-hd-top {
+  display: flex; align-items: baseline; gap: 5px; min-height: 17px;
+  flex-wrap: wrap; padding-right: 24px;
+}
+.wk-date { display: inline-flex; align-items: baseline; gap: 1px; }
+.wk-num {
+  font-size: 14px; font-weight: 800; line-height: 1; letter-spacing: -.4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sn-accent, var(--accent-2));
+}
+.wk-date sup { font-size: 8px; font-weight: 700; color: var(--muted); }
 .wk-dow {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
   color: var(--muted); white-space: nowrap;
-  /* No ellipsis: "Wednesday" clipped to "WEDNESD…" fails the one job this
-     line has. The Today pill moved to the date row to make the space. */
 }
 .wk-day.is-today .wk-dow { color: var(--sn-accent, var(--accent-2)); }
+.wk-mo {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 70%, var(--muted));
+  white-space: nowrap;
+}
+/* 8px, and deliberately so: this is the last thing on the line and the only
+   thing that ever pushed it onto a second row at the narrow end of the
+   seven-column range. Nothing is lost at that size — the full weekday, date
+   and year stay in the card's aria-label, which is what actually gets read
+   out. */
 .wk-rel {
-  align-self: center; margin-left: 5px; font-size: 9px; font-weight: 800; letter-spacing: .06em;
+  font-size: 8px; font-weight: 800; letter-spacing: .02em;
   text-transform: uppercase; color: var(--bg);
   background: var(--sn-accent, var(--accent-2));
-  border-radius: 4px; padding: 1px 5px; white-space: nowrap;
+  border-radius: 4px; padding: 1px 4px; white-space: nowrap;
 }
 .wk-count {
-  margin-left: auto; font-size: 10px; font-weight: 700;
-  color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+  position: absolute; top: -1px; right: 0; z-index: 3;
+  font-size: 10px; font-weight: 700;
+  color: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 80%, var(--text));
+  background: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 14%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--sn-accent, var(--accent-2)) 30%, var(--line));
   border-radius: 999px; min-width: 17px; text-align: center; padding: 0 5px;
 }
-.wk-date { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; margin-top: 3px; }
-.wk-num { font-size: 26px; font-weight: 700; line-height: 1.05; letter-spacing: -1px;
-  font-variant-numeric: tabular-nums; color: var(--text); }
-.wk-date sup { font-size: 11px; font-weight: 700; color: var(--muted); }
-.wk-mo { width: 100%; font-size: 11px; color: var(--muted); }
 
-/* Month motif: a watermark behind the header, never over the text. */
+/* Month motif: a watermark in the card's bottom corner, behind everything.
+   It used to sit in the header's top-right, which is also where the event
+   count lives — so on any day with something scheduled the two were drawn on
+   top of each other. Down here it has the corner to itself, and on a clear
+   day it is the only thing in it. */
 .wk-motif {
-  position: absolute; right: -4px; top: -6px; font-size: 30px; line-height: 1;
-  opacity: .13; pointer-events: none; z-index: 0; filter: saturate(1.1);
+  position: absolute; right: -2px; bottom: -8px; font-size: 34px; line-height: 1;
+  opacity: .1; pointer-events: none; z-index: 0; filter: saturate(1.1);
 }
-.wk-day.is-today .wk-motif { opacity: .2; }
+.wk-day.is-today .wk-motif { opacity: .16; }
 
-.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+/* ---- the events themselves: the point of the card -----------------------
+   Each row carries its own colour in --ev, set inline from the event's title
+   (see home.js eventColor), so the same recurring commitment is the same
+   colour every week and a busy day reads as several distinct things rather
+   than one grey block. Colour is never the only carrier: the status word, the
+   overlap flag and the time all remain in text. */
+.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .wk-ev {
-  display: grid; grid-template-columns: auto 1fr; gap: 2px 5px; align-items: baseline;
-  padding: 5px 6px; border-radius: 7px;
-  background: rgba(255,255,255,0.025);
-  border-left: 2px solid transparent;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 7px; border-radius: 7px;
+  background: color-mix(in srgb, var(--ev, var(--accent-2)) 13%, transparent);
+  border-left: 3px solid var(--ev, var(--accent-2));
 }
-.wk-ev-dot { font-size: 8px; line-height: 1.6; }
 /* Wraps rather than truncating. An ellipsised "10:30 AM – 11:3…" has thrown
    away the one fact the line exists to carry; two short lines have not. */
-.wk-ev-when { grid-column: 2; color: var(--muted); font-size: 10.5px;
-  white-space: normal; }
+.wk-ev-when {
+  color: color-mix(in srgb, var(--ev, var(--accent-2)) 55%, var(--text));
+  font-size: 10px; font-weight: 600; letter-spacing: .2px; white-space: normal;
+}
 .wk-dash { padding: 0 2px; }
 .wk-ev-title {
-  grid-column: 2; color: var(--text); font-weight: 600; font-size: 12px; line-height: 1.3;
+  color: var(--text); font-weight: 650; font-size: 12.5px; line-height: 1.3;
   overflow-wrap: anywhere;
 }
-.wk-ev.allday { background: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 12%, transparent); }
-.wk-ev.needs-you { border-left-color: var(--imp); }
-.wk-ev.clash { border-left-color: var(--imp); background: rgba(255,122,122,0.08); }
-.wk-ev.live { border-left-color: var(--accent); }
+.wk-ev-where {
+  color: var(--muted); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere;
+}
+.wk-ev-where::before { content: "📍 "; }
+.wk-ev.allday { border-left-style: double; border-left-width: 5px; }
+/* Attention states override the event's own colour — an overlap or a slot
+   waiting on you is a fact about the day, not a property of the event. */
+.wk-ev.needs-you { --ev: var(--imp); }
+.wk-ev.clash { --ev: var(--imp); }
+.wk-ev.live { --ev: var(--accent); }
 .wk-flag {
-  grid-column: 2; justify-self: start; font-size: 9px; font-weight: 800;
+  align-self: flex-start; margin-top: 2px; font-size: 9px; font-weight: 800;
   text-transform: uppercase; letter-spacing: .05em; border-radius: 3px; padding: 0 4px;
 }
 .wk-flag.live { color: var(--bg); background: var(--accent); }
 .wk-flag.clash { color: var(--imp); border: 1px solid currentColor; }
 .wk-tag {
-  grid-column: 2; justify-self: start; font-size: 9px; text-transform: uppercase;
+  align-self: flex-start; margin-top: 2px; font-size: 9px; text-transform: uppercase;
   letter-spacing: .04em; line-height: 1.5; color: var(--muted);
   border: 1px solid currentColor; border-radius: 7px; padding: 1px 6px;
   max-width: 100%; text-wrap: balance;
@@ -445,18 +509,18 @@ body.cc[data-mode="evening"] {
 /* ---- seasonal decoration -------------------------------------------------
    Accent + motif only. These never touch --text, --panel or --line, so
    contrast is identical in every month of the year. */
-.wk-grid[data-season="jan"], .wk-day[data-season="jan"] { --sn-accent: #7dd3fc; --sn-wash: rgba(125,211,252,0.13); }
-.wk-grid[data-season="feb"], .wk-day[data-season="feb"] { --sn-accent: #fda4af; --sn-wash: rgba(253,164,175,0.13); }
-.wk-grid[data-season="mar"], .wk-day[data-season="mar"] { --sn-accent: #6ee7b7; --sn-wash: rgba(110,231,183,0.13); }
-.wk-grid[data-season="apr"], .wk-day[data-season="apr"] { --sn-accent: #93c5fd; --sn-wash: rgba(147,197,253,0.13); }
-.wk-grid[data-season="may"], .wk-day[data-season="may"] { --sn-accent: #f9a8d4; --sn-wash: rgba(249,168,212,0.13); }
-.wk-grid[data-season="jun"], .wk-day[data-season="jun"] { --sn-accent: #fcd34d; --sn-wash: rgba(252,211,77,0.13); }
-.wk-grid[data-season="jul"], .wk-day[data-season="jul"] { --sn-accent: #fca5a5; --sn-wash: rgba(252,165,165,0.13); }
-.wk-grid[data-season="aug"], .wk-day[data-season="aug"] { --sn-accent: #67e8f9; --sn-wash: rgba(103,232,249,0.13); }
-.wk-grid[data-season="sep"], .wk-day[data-season="sep"] { --sn-accent: #fde047; --sn-wash: rgba(253,224,71,0.13); }
-.wk-grid[data-season="oct"], .wk-day[data-season="oct"] { --sn-accent: #fb923c; --sn-wash: rgba(251,146,60,0.15); }
-.wk-grid[data-season="nov"], .wk-day[data-season="nov"] { --sn-accent: #f59e0b; --sn-wash: rgba(245,158,11,0.13); }
-.wk-grid[data-season="dec"], .wk-day[data-season="dec"] { --sn-accent: #5eead4; --sn-wash: rgba(94,234,212,0.13); }
+.wk-grid[data-season="jan"], .wk-day[data-season="jan"], .wk-top[data-season="jan"] { --sn-accent: #7dd3fc; --sn-wash: rgba(125,211,252,0.13); }
+.wk-grid[data-season="feb"], .wk-day[data-season="feb"], .wk-top[data-season="feb"] { --sn-accent: #fda4af; --sn-wash: rgba(253,164,175,0.13); }
+.wk-grid[data-season="mar"], .wk-day[data-season="mar"], .wk-top[data-season="mar"] { --sn-accent: #6ee7b7; --sn-wash: rgba(110,231,183,0.13); }
+.wk-grid[data-season="apr"], .wk-day[data-season="apr"], .wk-top[data-season="apr"] { --sn-accent: #93c5fd; --sn-wash: rgba(147,197,253,0.13); }
+.wk-grid[data-season="may"], .wk-day[data-season="may"], .wk-top[data-season="may"] { --sn-accent: #f9a8d4; --sn-wash: rgba(249,168,212,0.13); }
+.wk-grid[data-season="jun"], .wk-day[data-season="jun"], .wk-top[data-season="jun"] { --sn-accent: #fcd34d; --sn-wash: rgba(252,211,77,0.13); }
+.wk-grid[data-season="jul"], .wk-day[data-season="jul"], .wk-top[data-season="jul"] { --sn-accent: #fca5a5; --sn-wash: rgba(252,165,165,0.13); }
+.wk-grid[data-season="aug"], .wk-day[data-season="aug"], .wk-top[data-season="aug"] { --sn-accent: #67e8f9; --sn-wash: rgba(103,232,249,0.13); }
+.wk-grid[data-season="sep"], .wk-day[data-season="sep"], .wk-top[data-season="sep"] { --sn-accent: #fde047; --sn-wash: rgba(253,224,71,0.13); }
+.wk-grid[data-season="oct"], .wk-day[data-season="oct"], .wk-top[data-season="oct"] { --sn-accent: #fb923c; --sn-wash: rgba(251,146,60,0.15); }
+.wk-grid[data-season="nov"], .wk-day[data-season="nov"], .wk-top[data-season="nov"] { --sn-accent: #f59e0b; --sn-wash: rgba(245,158,11,0.13); }
+.wk-grid[data-season="dec"], .wk-day[data-season="dec"], .wk-top[data-season="dec"] { --sn-accent: #5eead4; --sn-wash: rgba(94,234,212,0.13); }
 
 /* Drifting glyphs, behind every card and non-interactive. */
 .wk-amb-layer {
@@ -477,7 +541,12 @@ body.cc[data-mode="evening"] {
    Seven columns need room. Below that the grid scrolls inside its own card
    (never the page), and on a phone it stacks into rows so a day is readable
    without pinching. */
-@media (max-width: 1080px) {
+/* 1180, not 1080. Seven fixed columns below about 1180px leaves a day card
+   too narrow for its own header — the date, the TODAY pill and the count stop
+   fitting on one line, and the card that wraps starts its events lower than
+   its neighbours, which reads as a rendering fault. The scroller below this
+   width gives each day a guaranteed 168px instead of an ever-thinner share. */
+@media (max-width: 1180px) {
   .wk-grid {
     grid-auto-flow: column; grid-auto-columns: minmax(168px, 1fr);
     grid-template-columns: none;
@@ -492,16 +561,14 @@ body.cc[data-mode="evening"] {
     grid-template-columns: minmax(0, 1fr);
     overflow-x: visible; gap: 6px;
   }
-  .wk-day { flex-direction: row; align-items: flex-start; gap: 12px; padding: 9px 10px; }
-  .wk-hd { flex: 0 0 96px; margin-bottom: 0; }
-  .wk-date { margin-top: 1px; }
-  .wk-num { font-size: 20px; }
-  .wk-evs { flex: 1 1 auto; min-width: 0; }
-  .wk-clear { margin-top: 4px; }
-  /* Anchor the motif to the row's own top-right corner instead of the
-     narrow header column, where it landed on top of the date. */
-  .wk-hd { position: static; }
-  .wk-motif { right: 8px; top: 6px; transform: none; font-size: 22px; opacity: .1; }
+  /* The header used to be a 96px column beside the events, to make room for a
+     26px date. It is one short line now, so it reads better as a full-width
+     strip above them — and the events get the whole width instead of ~60%. */
+  .wk-day { flex-direction: column; gap: 6px; padding: 9px 10px; }
+  .wk-hd { margin-bottom: 0; }
+  .wk-evs { min-width: 0; }
+  .wk-clear { margin-top: 0; }
+  .wk-motif { right: 4px; bottom: -4px; font-size: 26px; opacity: .09; }
   /* Falling decoration reads as clutter in a tall stacked list. */
   .wk-amb-layer { display: none; }
 }
@@ -535,6 +602,14 @@ body.cc[data-mode="evening"] {
   color: var(--muted); background: rgba(255,255,255,0.02);
   border: 1px solid var(--line); border-left: 3px solid var(--muted);
 }
+/* The repair, inline with the sentence that describes the problem. */
+.wk-fix {
+  display: inline-block; margin-left: 4px; white-space: nowrap;
+  font-weight: 700; color: var(--bg); background: var(--accent-2);
+  border-radius: 6px; padding: 2px 9px; text-decoration: none;
+}
+.wk-fix:hover { background: var(--accent); }
+.wk-fix:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
 /* ---- weekly review (PRODUCT_IDEAS #5) -----------------------------------
    Sits above the calendar all week and takes the top of the page on Sunday
@@ -582,4 +657,71 @@ body.cc[data-mode="evening"] {
 .score-of { display: block; margin-top: .35rem; font-size: .72rem; opacity: .6; }
 .score-ring.untracked { opacity: .5; }
 .cc-score-pill.untracked .n { opacity: .55; }
+/* Needs attention — the feed AUDIT.md §3 promised (PRODUCT_IDEAS #17).
+   Severity is carried by a word as well as a colour, so the distinction
+   survives a colour-blind reader and a greyscale screenshot. */
+#cc-attention .att-row {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .5rem 0; border-top: 1px solid var(--line, rgba(128,128,128,.18));
+}
+#cc-attention .att-row:first-of-type { border-top: 0; }
+#cc-attention .att-icon { font-size: 1.1rem; flex: 0 0 auto; }
+#cc-attention .att-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+#cc-attention .att-text b { font-weight: 600; }
+#cc-attention .att-text em { font-style: normal; font-size: .76rem; opacity: .65; }
+#cc-attention .att-sev {
+  flex: 0 0 auto; font-size: .64rem; letter-spacing: .04em; text-transform: uppercase;
+  padding: .1rem .4rem; border-radius: 999px; border: 1px solid currentColor; opacity: .8;
+}
+#cc-attention .att-row.important .att-sev { color: var(--imp, #e0574a); }
+#cc-attention .att-row.fyi .att-sev { color: var(--muted, #8a8a8a); }
+#cc-attention .att-count {
+  font-size: .68rem; font-weight: 600; color: var(--imp, #e0574a);
+  border: 1px solid currentColor; border-radius: 999px; padding: .05rem .4rem; margin-left: .4rem;
+}
+#cc-attention .att-btn {
+  flex: 0 0 auto; cursor: pointer; font: inherit; font-size: .74rem;
+  padding: .25rem .6rem; border-radius: 8px;
+  border: 1px solid var(--line, rgba(128,128,128,.3)); background: transparent; color: inherit;
+}
+#cc-attention .att-btn:hover { border-color: var(--accent-2, #6aa6ff); }
+@media (max-width: 520px) {
+  #cc-attention .att-row { flex-wrap: wrap; }
+  #cc-attention .att-text { flex-basis: 100%; order: 2; }
+}
+
+/* Deadlines and the weekly review (PRODUCT_IDEAS #17) — both built long ago
+   and reachable from nothing the user looks at. */
+#cc-deadlines .dl-row, #cc-weekly .wk-row {
+  display: flex; align-items: center; gap: .6rem; padding: .4rem 0;
+  border-top: 1px solid var(--line, rgba(128,128,128,.18));
+}
+#cc-deadlines .dl-row:first-of-type, #cc-weekly .wk-row:first-of-type { border-top: 0; }
+#cc-deadlines .dl-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+#cc-deadlines .dl-text em { font-style: normal; font-size: .72rem; opacity: .55; }
+#cc-deadlines .dl-when { flex: 0 0 auto; font-size: .74rem; opacity: .75; }
+#cc-deadlines .dl-row.overdue .dl-when { color: var(--imp, #e0574a); font-weight: 600; }
+#cc-deadlines .dl-row.undated .dl-when { opacity: .5; font-style: italic; }
+#cc-deadlines .dl-count {
+  font-size: .68rem; font-weight: 600; color: var(--imp, #e0574a);
+  border: 1px solid currentColor; border-radius: 999px; padding: .05rem .4rem; margin-left: .4rem;
+}
+#cc-weekly .wk-row span:first-child { flex: 0 0 4.2rem; font-size: .78rem; }
+#cc-weekly .wk-row .track {
+  flex: 1 1 auto; height: 6px; border-radius: 3px;
+  background: var(--line, rgba(128,128,128,.2)); overflow: hidden;
+}
+#cc-weekly .wk-row .fill { height: 100%; background: var(--accent-2, #6aa6ff); }
+#cc-weekly .wk-row em { flex: 0 0 auto; font-style: normal; font-size: .72rem; opacity: .7; }
+#cc-weekly .wk-row.untracked .track { opacity: .35; }
+#cc-weekly .wk-delta { font-size: .7rem; font-weight: 600; }
+#cc-weekly .wk-delta.up { color: var(--ok, #4caf82); }
+#cc-weekly .wk-delta.down { color: var(--imp, #e0574a); }
+
+/* Small orphan wirings (PRODUCT_IDEAS #17). */
+.pf-alert { font-size: .76rem; margin: .3rem 0 .5rem; opacity: .9; }
+.pf-alert b.up { color: var(--ok, #4caf82); }
+.pf-alert b.down { color: var(--imp, #e0574a); }
+.cap-form .cap-kind { flex: 0 0 auto; max-width: 6.5rem; }
+.hx-btns .hx-label { flex: 1 1 6rem; min-width: 5rem; font-size: .76rem; padding: .2rem .4rem; }
 
