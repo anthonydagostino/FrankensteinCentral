@@ -309,6 +309,66 @@ average amount, next expected date, paid-this-month). If the user hasn't
 configured bills in Firefly, the section simply doesn't render
 (`supported:false`); no parallel bill database exists here.
 
+## Recurring charges (recurring.py — pure and unit-tested)
+
+Firefly holds every transaction, so recurrence is a property of the system
+rather than a script you run by hand. `firefly /history` reads 13 months of
+**withdrawals** (transfers are not purchases, and the $1,100 to Fidelity every
+payday is a perfect monthly pattern that is not a subscription) plus Firefly's
+declared bills; `budget /recurring` turns that into an inventory and, more
+importantly, into **events**.
+
+| event | claim |
+|---|---|
+| `appeared` | something started charging you that wasn't charging before |
+| `changed` | a known charge moved price |
+| `resumed` | one you believed cancelled charged again after a gap |
+
+The card shows events only. The value of the feature is its false-positive
+rate: a card that announces a new subscription every time you buy coffee twice
+gets ignored, and an ignored card is worse than none — the month something
+real appears, you scroll past that too. So the rules are refusals:
+
+- **A cadence must be a rhythm.** The median interval sets it; every other
+  interval must be that rhythm or a whole multiple of it (a skipped month is
+  not a disproof). Anything else — three days when the rhythm is thirty — is a
+  merchant you use often, not a commitment, and it is dropped entirely rather
+  than reported at low confidence.
+- **"Appeared" requires history before it.** If the first charge sits within a
+  cadence of `window.start`, the honest answer is "I can't see far enough
+  back", not "this is new". `history_before_days` carries the evidence.
+- **"New" has a shelf life** (`APPEARED_WINDOW_DAYS`), and a cadence too slow
+  to establish itself inside that shelf life can never be new. This is what
+  kills the signature false positive of the genre — an annual renewal seen
+  twice, announced as a brand-new subscription — and it kills it by
+  arithmetic, not by demanding a third charge that a monthly subscription
+  would never produce in time.
+- **A resumption is only news while it is fresh.** The gap stays in the
+  history forever; without this, the card would announce "it came back!" every
+  day for the rest of time.
+- **A price change must clear both a relative and an absolute floor**
+  (2% *and* $0.50), so card-rounding drift is not an announcement and a $1.99
+  charge doesn't "change price" over a dime. The established price is the
+  **mode**, not the mean and not the latest, so one promotional month does not
+  redefine what a thing costs.
+- **A bill declared in Firefly is never a discovery.** Firefly stays the
+  source of truth; the detector only reports what the user hasn't already
+  said.
+
+### Honesty under a truncated read
+
+Same rule as everywhere else here (see *Freshness*): `window.complete = false`
+suppresses `appeared` and `resumed` **entirely**, because both are claims
+about what *isn't* in the data and a partial read cannot support one. Price
+changes survive — those are two charges that were actually read. The response
+says `absence_claims_suppressed: true` rather than implying there were none,
+and the card drops the "$X/mo across N subscriptions" line rather than
+publishing a floor as a total.
+
+Low-confidence items (two charges — a cadence, but only one interval) are
+listed and hedged on screen, and are **excluded** from the monthly-equivalent
+total rather than estimated into it.
+
 ## Future path (architected, not built)
 
 - **Month templates / irregular months**: budgets are evaluated against the

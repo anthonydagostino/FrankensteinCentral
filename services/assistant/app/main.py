@@ -730,7 +730,10 @@ def _budget_brief(status) -> dict:
     """The homepage's budget signal: budget room, the single worst warning,
     and whether everything is on track — never the whole budget database."""
     if not status or not status.get("available"):
-        return {"available": False, "configured": bool(status and status.get("configured"))}
+        return {"available": False,
+                "configured": bool(status and status.get("configured")),
+                "recurring": (status or {}).get("recurring")
+                             or {"available": False, "events": []}}
     warns = status.get("warnings", [])
     counts = status.get("state_counts", {})
     freshness = status.get("freshness") or {}
@@ -748,6 +751,10 @@ def _budget_brief(status) -> dict:
         "budget_count": len(status.get("budgets", [])),
         "days_left": (status.get("month") or {}).get("days_left"),
         "uncat_flag": (status.get("uncategorized") or {}).get("low_confidence", False),
+        # Subscriptions that appeared, moved price, or came back. Passed
+        # through as the budget service framed it — this layer must not
+        # turn an unavailable read into an empty one.
+        "recurring": status.get("recurring") or {"available": False, "events": []},
     }
 
 

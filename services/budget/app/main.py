@@ -13,10 +13,19 @@ of the current paycheck after the savings that come out of it. That math is
 in paycheck.py (also pure + unit-tested), fed by the firefly service's
 /cycle endpoint; config lives in core settings (paycheck: {...}).
 
-All math lives in engine.py / paycheck.py (pure + unit-tested); formulas and
-thresholds are documented in docs/BUDGETS.md. Stale ledgers pause
-current-period guidance rather than pretending $0 = "on track".
+It also serves **recurring charges** (/recurring, summarised in /status):
+subscriptions that appeared, moved price, or resumed after you thought they
+were cancelled. That math is in recurring.py (pure), fed by the firefly
+service's /history endpoint — a thirteen-month read, cached hard on both
+sides because it is expensive and barely moves within a day.
+
+All math lives in engine.py / paycheck.py / recurring.py (pure and
+unit-tested); formulas and thresholds are documented in docs/BUDGETS.md.
+Stale ledgers pause current-period guidance rather than pretending that $0
+means "on track".
 """
+import asyncio
+import contextlib
 import os
 import time
 
@@ -25,6 +34,7 @@ from fastapi import FastAPI
 
 from .engine import budget_status
 from .paycheck import paycheck_cycle
+from .recurring import detect_recurring
 
 app = FastAPI(title="Budget Service")
 
@@ -33,6 +43,16 @@ CORE_URL = os.environ.get("CORE_URL", "http://core:8000").rstrip("/")
 
 _CACHE: dict = {"at": 0.0, "data": None}
 _TTL = 60  # seconds; /status?fresh=1 bypasses
+
+# Recurrence is computed off a 13-month read, so it gets its own much longer
+# cache: paying for that round trip on every /status would make the dashboard
+# slow to answer a question whose answer changes about once a month.
+_RECUR_CACHE: dict = {"at": 0.0, "data": None}
+_RECUR_TTL = 900
+_RECUR_TASK: dict = {"task": None}
+# How many events the money card can show before it is a list rather than a
+# headline. The full set is always at /recurring.
+STATUS_EVENT_LIMIT = 3
 
 
 async def _get(client, url, timeout=25):
@@ -68,6 +88,9 @@ async def _build(fresh: bool = False) -> dict:
             "paycheck": {"configured": bool(paycheck_cfg), "available": False,
                          "reason": "firefly not connected", "month": None,
                          "cycle": None},
+            "recurring": {"available": False, "events": [], "event_count": 0,
+                          "reason": "firefly not connected" if month
+                                    else "firefly unreachable"},
         }
         _CACHE.update(at=now, data=data)
         return data
@@ -86,6 +109,7 @@ async def _build(fresh: bool = False) -> dict:
     )
     status.update({
         "paycheck": _paycheck(paycheck_cfg, cycle),
+        "recurring": _recurring_summary(_recurring_warm()),
         "available": True,
         "connected": True,
         "configured": bool(budgets_cfg),
@@ -98,6 +122,91 @@ async def _build(fresh: bool = False) -> dict:
     })
     _CACHE.update(at=now, data=status)
     return status
+
+
+async def _recurring(fresh: bool = False) -> dict:
+    """Subscriptions and their changes, over a long window.
+
+    Kept off the /status hot path by its own cache. When firefly can't answer,
+    this reports unavailable — it never reports "no subscriptions found",
+    which is a claim about the world rather than about the read.
+    """
+    now = time.time()
+    if not fresh and _RECUR_CACHE["data"] and now - _RECUR_CACHE["at"] < _RECUR_TTL:
+        return _RECUR_CACHE["data"]
+    async with httpx.AsyncClient() as client:
+        hist = await _get(client, f"{FIREFLY_SVC_URL}/history", timeout=60)
+    if not hist or not hist.get("connected"):
+        # Not cached: an outage should not persist as an answer for 15 minutes.
+        return {"available": False, "items": [], "events": [],
+                "reason": "firefly not connected" if hist else "firefly unreachable"}
+    window = hist.get("window") or {}
+    data = detect_recurring(
+        charges=hist.get("withdrawals", []),
+        today=hist.get("today"),
+        window_start=window.get("start"),
+        known_bills=hist.get("bills") or [],
+        # A truncated read cannot support "this is new" or "this came back":
+        # both are statements about what ISN'T there.
+        complete=bool(window.get("complete", True)),
+    )
+    data["lookback_days"] = window.get("lookback_days")
+    _RECUR_CACHE.update(at=now, data=data)
+    return data
+
+
+async def _warm_recurring() -> None:
+    """Fill the recurrence cache in the background. Nothing awaits this, so it
+    swallows its own failures: an unretrieved task exception would surface as
+    a noisy asyncio warning and nothing else, and the next request retries
+    anyway (a failed read is deliberately never cached)."""
+    with contextlib.suppress(Exception):
+        await _recurring()
+
+
+def _recurring_warm() -> dict:
+    """The recurrence answer, but only if it is already computed.
+
+    /status is the homepage's hot path and the read behind this is thirteen
+    months of transactions — on a cold cache that is tens of sequential
+    round trips to Firefly, and awaiting it here would hang the whole
+    dashboard on the first load after a restart. So a cold cache starts the
+    work in the background and this request answers "not yet" rather than
+    waiting: the card shows one fewer line for one refresh instead of the
+    homepage showing nothing for a minute.
+    """
+    now = time.time()
+    if _RECUR_CACHE["data"] and now - _RECUR_CACHE["at"] < _RECUR_TTL:
+        return _RECUR_CACHE["data"]
+    task = _RECUR_TASK["task"]
+    if task is None or task.done():
+        with contextlib.suppress(RuntimeError):   # no running loop (sync test)
+            _RECUR_TASK["task"] = asyncio.create_task(_warm_recurring())
+    return {"available": False, "warming": True,
+            "reason": "reading your transaction history"}
+
+
+def _recurring_summary(rec: dict) -> dict:
+    """The headline the money card shows: what changed, and how much of the
+    month is already committed. The full inventory stays at /recurring."""
+    if not rec.get("available"):
+        return {"available": False, "reason": rec.get("reason"),
+                "warming": rec.get("warming", False),
+                "events": [], "event_count": 0}
+    events = rec.get("events") or []
+    return {
+        "available": True,
+        "complete": rec.get("complete", True),
+        "absence_claims_suppressed": rec.get("absence_claims_suppressed", False),
+        "event_count": len(events),
+        "events": [{k: e[k] for k in ("event", "name", "amount", "cadence",
+                                      "confidence", "last_seen")
+                    if k in e} | ({"from": e["from"], "to": e["to"]}
+                                  if e.get("event") == "changed" else {})
+                   for e in events[:STATUS_EVENT_LIMIT]],
+        "tracked": len(rec.get("items") or []),
+        "monthly_equivalent": rec.get("monthly_equivalent"),
+    }
 
 
 def _paycheck(cfg: dict, cycle: dict | None) -> dict:
@@ -143,6 +252,13 @@ async def paycheck(fresh: int = 0):
     return {**s.get("paycheck", {}), "importer_url": s.get("importer_url")}
 
 
+@app.get("/recurring")
+async def recurring(fresh: int = 0):
+    """Every recurring charge detected, with the events worth telling you
+    about. /status carries only the headline."""
+    return await _recurring(fresh=bool(fresh))
+
+
 @app.get("/summary")
 async def summary():
     """Compat shim for older consumers (legacy lounge overview/briefing)."""
@@ -154,5 +270,6 @@ async def summary():
 
 @app.get("/")
 async def root():
-    return {"app": "Budget", "endpoints": ["/status", "/paycheck", "/summary", "/health"],
+    return {"app": "Budget", "endpoints": ["/status", "/paycheck", "/recurring", "/summary",
+                          "/health"],
             "note": "time-aware budgets over Firefly; config lives in core settings"}

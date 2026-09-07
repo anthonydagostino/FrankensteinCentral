@@ -657,12 +657,41 @@
     } else if (bud.available && !bud.configured) {
       budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
     }
+    // ---- subscriptions: what changed since you last looked --------------
+    // Only ever events. A list of every subscription belongs in the budget
+    // app; the card's job is to say what you didn't already know. An
+    // unavailable read renders nothing at all rather than "none found" —
+    // silence about an unread ledger beats a false all-clear.
+    const rec = bud.recurring || {};
+    let recLine = "";
+    if (rec.available && (rec.events || []).length) {
+      const verb = { appeared: "started charging", resumed: "charged again after a break" };
+      const per = { weekly: "wk", fortnightly: "2wk", monthly: "mo",
+                    quarterly: "qtr", annual: "yr" };
+      const bits = rec.events.map((e) => {
+        // Two charges set a cadence but not a fact. Every event inferred from
+        // one interval says so, including a price move — "Netflix went up" off
+        // two charges could as easily be two unrelated purchases.
+        const hedge = e.confidence === "low" ? " (seen twice — may not be a pattern)" : "";
+        if (e.event === "changed")
+          return `<b>${esch(e.name)}</b> ${money(e.from, 2)} → <b>${money(e.to, 2)}</b>${hedge}`;
+        return `<b>${esch(e.name)}</b> ${money(e.amount, 2)}/${esch(per[e.cadence] || e.cadence || "")} — ${verb[e.event] || "changed"}${hedge}`;
+      });
+      const more = rec.event_count > bits.length
+        ? ` · ${rec.event_count - bits.length} more` : "";
+      recLine = `<p class="mny-sub mny-rec">🔁 ${bits.join(" · ")}${more}</p>`;
+    }
     // Secondary context: a rolling window and remaining budget capacity.
     // Neither is a bank balance and neither is "left to spend".
     const subBits = [];
     if (m.last_30 != null) subBits.push(`Past 30 days <b>${money(m.last_30)}</b>${trend30}${through30}`);
     if (bud.fresh && bud.budget_room != null)
       subBits.push(`Budget room <b>${money(bud.budget_room)}</b> ${esch(bud.budget_room_scope || "across active budgets")}`);
+    // Committed spending, stated as a monthly figure so it is comparable to
+    // the other numbers on the card. Suppressed when the read was truncated:
+    // a floor presented as a total is the failure docs/BUDGETS.md forbids.
+    if (rec.available && rec.complete !== false && rec.monthly_equivalent)
+      subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
@@ -710,7 +739,7 @@
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
-      ${payLine}${budLine}${subLine}
+      ${payLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
@@ -760,7 +789,7 @@
     q("#cc-portfolio").innerHTML = `
       <h3>Portfolio · what changed</h3>
       ${live.length ? `<div class="mny-hero">
-        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">Today · ${dc >= 0 ? "+" : ""}${money(dc)}</div></div>
+        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">${esch(p.session_label || "Last session")} · ${dc >= 0 ? "+" : ""}${money(dc)}${p.session_label ? "" : `<br><span style="font-size:10px">as-of date unavailable</span>`}</div></div>
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
         ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>` : ""}

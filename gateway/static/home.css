@@ -514,6 +514,11 @@ body.cc[data-mode="evening"] {
 /* ---- Firefly figures on the money card ---------------------------------- */
 .mny-ff { margin-top: 10px; }
 .mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }
+
+/* Subscription changes on the money card. It carries .mny-sub for colour on
+   purpose — this is news, not a warning: "Netflix went up $2.50" does not
+   deserve the same weight as being over budget. Only the spacing differs. */
+.mny-rec { margin-top: 6px; line-height: 1.55; }
 /* Why the week grid may be incomplete. Distinct from .wk-down, which is a
    total outage: these render ABOVE a real grid, because local commitments
    are still real when an external integration is disconnected. */
