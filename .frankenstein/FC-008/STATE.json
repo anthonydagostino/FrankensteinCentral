@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "task_id": "FC-008",
+  "turn": "product_owner",
+  "status": "awaiting_review",
+  "directive_commit": "71dba66c8814646a16b3d244e76a4a074e812c20",
+  "implementation_commit": "176e72b3fcf065ada0df82e840d3ec82b7ef0fe0",
+  "last_actor": "claude",
+  "updated_at": "2026-09-07T02:52:00Z"
+}

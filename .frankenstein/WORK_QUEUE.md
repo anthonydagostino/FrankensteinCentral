@@ -1,4 +1,25 @@
-# Unshipped work queue — surveyed 2026-09-06
+# Unshipped work queue — surveyed 2026-09-06, amended 2026-09-07
+
+> ## Amendment 2026-09-07 — FC-008 awaiting review
+>
+> Anthony authorized **FC-008** (seven-day weekly calendar on the main
+> dashboard) directly, as Product Owner, on 2026-09-07, and instructed Claude
+> to record the directive on `control`. Control epoch
+> `c60c297`, directive `71dba66`.
+>
+> | branch | tip | vs production | suite |
+> |---|---|---|---|
+> | `claude/FC-008-weekly-calendar` (FC-008) | `176e72b` | +1, **fast-forward** | **1510 pass** |
+>
+> Handoff: `.frankenstein/FC-008/`. Deployment Authorization: **none**.
+>
+> This knowingly overrides `PRODUCT_VISION.md` priority 0 ("No feature
+> initiative interrupts FC-002") and the FC-002 directive's "no new product
+> features" limit. **FC-002 is paused, not abandoned and not accepted** — its
+> work is intact on `claude/po-handoff-release` and advanced independently to
+> `5c5d64f` while FC-008 was in flight; its canonical handoff files below were
+> not moved or modified by FC-008. Codex retains acceptance authority over both.
+
 
 Anthony asked for a check that other agents' work is pushed and can actually
 be deployed while the Product Owner is unavailable.
