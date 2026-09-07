@@ -8,14 +8,14 @@ see the box, which I cannot. Verify rather than trust.
 | | |
 |---|---|
 | branch | `claude/hermetic-deploy-gate` |
-| SHA | **`6d9b6591358bdb50972c2e9edd50e561310eb94b`** |
-| base | fast-forward from production `b75546d` — dry run confirms `b75546d -> 6d9b659` |
+| SHA | **`b3f452e0f84b3f853598e7ec48fea52b32d7e430`** |
+| base | fast-forward from production `67361bd` — dry run confirms `67361bd -> b3f452e` |
 | CI | **green**, run 34156961819 |
-| suite | **6928 passed, 0 skipped**, exit 0, `FRANKENSTEIN_REQUIRE_SANDBOX=1`, re-run after the rebase |
+| suite | **6956 passed, 0 skipped**, exit 0, `FRANKENSTEIN_REQUIRE_SANDBOX=1`, re-run after each rebase |
 | size | two files, one fix |
 
 ```bash
-bash scripts/promote.sh 6d9b6591358bdb50972c2e9edd50e561310eb94b
+bash scripts/promote.sh b3f452e0f84b3f853598e7ec48fea52b32d7e430
 ```
 
 ## The bug
@@ -78,3 +78,18 @@ in my session and reports a clean fast-forward; the real push is denied by the
 permission classifier. That boundary looks deliberate, so I am not routing
 around it. The `.claude/settings.json` that landed in production allowing
 `scripts/promote.sh` does not lift it for this session.
+
+
+## Rebase log
+
+Production has moved five times since this fix was written
+(`be294dd` → `850278e` → `b75546d` → `67361bd`). Each time: merge production
+in, re-run the full suite from scratch, push, update this file. The suite
+figure above is always from the run **after** the most recent merge, never
+carried forward.
+
+Current: **`b3f452e`**, 6956 passed, fast-forward from `67361bd`.
+
+The bug is still live on `67361bd` — checked immediately before this rebase,
+not assumed. The change stays two files in the allocation loop and has merged
+cleanly every time.
