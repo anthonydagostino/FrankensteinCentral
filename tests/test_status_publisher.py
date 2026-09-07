@@ -80,7 +80,8 @@ def world(tmp_path):
         "running_commit": prod, "last_success_at": "2026-09-06T02:00:00+00:00",
         "test_gate": {"result": "passed", "commit": prod,
                       "at": "2026-09-06T02:00:00+00:00"},
-        "verification": {"result": "not_run", "commit": prod,
+        "running_state": "started", "last_success_commit": prod,
+        "verification": {"result": "pass", "commit": prod,
                          "at": "2026-09-06T02:00:00+00:00"}}))
     return {"remote": remote, "tmp": tmp_path, "state": state_dir,
             "prod": prod, "ctl": ctl}
@@ -118,7 +119,9 @@ def test_it_publishes_the_record_to_the_status_branch(world):
     # A deploy started containers; it did not prove the app is healthy.
     assert doc["test_gate"]["result"] == "passed"
     assert doc["test_gate"]["commit"] == world["prod"]
-    assert doc["verification"]["result"] == "not_run"
+    assert doc["verification"]["result"] == "pass"
+    assert doc["verification"]["required"] is True
+    assert doc["verification"]["confirms_deployment"] is True
 
 
 def test_promotion_and_deployment_are_distinguished(world):
@@ -296,15 +299,16 @@ def test_a_promoted_commit_with_no_confirmed_deployment_demands_attention(world)
 
 
 def test_a_healthy_deployment_needs_no_attention(world):
-    """The flag must not be permanently on, or it means nothing."""
+    """The flag must not be permanently on, or it means nothing.
+
+    Healthy now means VERIFIED: the deployment succeeded and a readiness check
+    passed on that same commit. That state, and only that state, is all-clear.
+    """
     assert run_publisher(world).returncode == 0
     doc = published(world)
     assert doc["deployment_evidence"] == "ok"
     assert doc["test_gate"]["result"] == "passed"
-    # "not_run" is the truth: nothing performs a post-deploy health check yet.
-    # It must NOT hold attention_required on forever, and must NOT be dressed
-    # up as a pass.
-    assert doc["verification"]["result"] == "not_run"
+    assert doc["verification"]["result"] == "pass"
     assert doc["failures"] == []
     assert doc["attention_required"] is False
 
@@ -374,10 +378,139 @@ def test_a_verification_without_a_commit_is_unknown_not_a_pass(world):
     assert doc["verification"]["result"] == "unknown"
 
 
-def test_no_recorded_verification_reads_as_not_run(world):
+def test_no_recorded_verification_holds_attention(world):
+    """THE REGRESSION Codex reproduced: a successful deployment with no
+    verification record came out result=not_run, attention_required=false.
+
+    An earlier revision of this test asserted the opposite, on the reasoning
+    that not_run is honest and should not latch the flag on forever. Honest it
+    is; all-clear it is not. The question the flag answers is "is this
+    deployment confirmed working?", and for a deployment nobody checked, the
+    answer is no. It does not latch forever because deploy.sh now moves a
+    successful deploy through pending -> pass/fail, so a lasting not_run means
+    the check genuinely never ran or crashed -- exactly the case worth seeing.
+    """
     with_deployment(world)
     assert run_publisher(world).returncode == 0
     doc = published(world)
     assert doc["verification"]["result"] == "not_run"
-    assert doc["attention_required"] is False, \
-        "not_run is honest, not an alarm; it must not latch attention on forever"
+    assert doc["verification"]["required"] is True
+    assert doc["verification"]["confirms_deployment"] is False
+    assert doc["attention_required"] is True, \
+        "an unverified deployment was published as needing no attention"
+    assert any(f["result"] == "verification_not_run" for f in doc["failures"])
+
+
+def test_a_readiness_crash_recorded_as_not_run_holds_attention(world):
+    """deploy.sh records not_run when the check produced nothing usable."""
+    with_deployment(world, verification={
+        "result": "not_run", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00",
+        "detail": "readiness check produced no usable result"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "not_run"
+    assert doc["attention_required"] is True
+
+
+def test_a_pending_verification_is_not_ready(world):
+    """deploy.sh marks a fresh success pending until readiness reports.
+
+    Without this transition the record briefly said "deployed successfully"
+    with last time's pass still attached -- a new deployment reading as
+    verified before anything had looked at it.
+    """
+    with_deployment(world, verification={
+        "result": "pending", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00",
+        "detail": "readiness check has not reported yet"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "pending"
+    assert doc["verification"]["confirms_deployment"] is False
+    assert doc["attention_required"] is True
+
+
+@pytest.mark.parametrize("verification,why", [
+    ("a string", "verification is not an object"),
+    ([{"result": "pass"}], "verification is a list"),
+    ({"result": "green", "commit": "b" * 40}, "result is not a verdict"),
+    ({"result": True, "commit": "b" * 40}, "result is not even a string"),
+])
+def test_a_malformed_verification_is_never_a_pass(world, verification, why):
+    with_deployment(world, verification=verification)
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "malformed", why
+    assert doc["verification"]["confirms_deployment"] is False, why
+    assert doc["attention_required"] is True, why
+
+
+# ══ a partial compose failure is not a preserved old deployment ═══════
+#
+# Codex FC-002 correction 2, finding 3: compose can already have replaced some
+# containers before it fails. Carrying the previous success forward as
+# running_commit asserted a rollback that never happened.
+
+
+def test_a_partial_compose_failure_does_not_claim_the_old_sha_is_running(world):
+    with_deployment(world, last_result="compose_failed",
+                    last_attempt_commit="c" * 40,
+                    running_commit=None,
+                    running_state="unknown_partial_start",
+                    last_success_commit=world["prod"],
+                    verification={"result": "unknown", "commit": None,
+                                  "at": "2026-09-06T02:30:00+00:00"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["deployment"]["running_commit"] is None, \
+        "a partial compose failure was published as the old SHA still running"
+    assert doc["deployment"]["running_state"] == "unknown_partial_start"
+    # The previous success is still a known fact -- just a different one.
+    assert doc["deployment"]["last_success_commit"] == world["prod"]
+    assert doc["verification"]["result"] == "unknown"
+    assert doc["attention_required"] is True
+
+
+# ══ the release service runs from a copy ══════════════════════════════
+#
+# Codex FC-002 correction 2, finding 6: a release-service checkout does not
+# update when production moves, so the gate enforcing a release can be older
+# code than the release. The installed source SHA and the candidate SHA are
+# different facts and are published as different fields.
+
+
+def test_the_release_source_commit_is_published_separately(world):
+    (world["state"] / "release" / "releases.jsonl").write_text(
+        json.dumps({"at": "2026-09-06T03:00:00Z", "mode": "run",
+                    "result": "released", "released": world["prod"],
+                    "detail": "", "source_commit": "d" * 40}) + "\n")
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["release_service"]["source_commit"] == "d" * 40
+    assert doc["release_service"]["matches_production"] is False, \
+        "a release service running older code than production read as current"
+    assert doc["promotion"]["last_released_sha"] == world["prod"], \
+        "the candidate SHA was conflated with the release service's own SHA"
+
+
+def test_a_release_source_matching_production_is_reported_as_current(world):
+    (world["state"] / "release" / "releases.jsonl").write_text(
+        json.dumps({"at": "2026-09-06T03:00:00Z", "mode": "run",
+                    "result": "released", "released": world["prod"],
+                    "detail": "", "source_commit": world["prod"]}) + "\n")
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["release_service"]["matches_production"] is True
+
+
+def test_an_absent_release_source_is_unknown_not_a_match(world):
+    """Older records carry no source_commit. Missing must not read as equal."""
+    (world["state"] / "release" / "releases.jsonl").write_text(
+        json.dumps({"at": "2026-09-06T03:00:00Z", "mode": "run",
+                    "result": "released", "released": world["prod"],
+                    "detail": ""}) + "\n")
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["release_service"]["source_commit"] is None
+    assert doc["release_service"]["matches_production"] is None

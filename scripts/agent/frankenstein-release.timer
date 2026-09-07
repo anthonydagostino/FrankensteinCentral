@@ -7,5 +7,9 @@ OnBootSec=2min
 OnUnitActiveSec=2min
 AccuracySec=30s
 
+# Named explicitly rather than relying on systemd's same-name default,
+# so the template says which unit it starts.
+Unit=frankenstein-release.service
+
 [Install]
 WantedBy=timers.target

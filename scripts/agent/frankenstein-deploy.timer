@@ -1,0 +1,12 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED. See frankenstein-deploy.service.
+[Unit]
+Description=Poll the production branch for a new deployment
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=frankenstein-deploy.service
+
+[Install]
+WantedBy=timers.target

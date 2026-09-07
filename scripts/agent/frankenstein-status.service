@@ -15,11 +15,23 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=fcstatus
+Environment=FRANKENSTEIN_DIR=/home/fcstatus/FrankensteinCentral
 Environment=FRANKENSTEIN_STATE_DIR=/home/fcstatus/.frankenstein
 Environment=FRANKENSTEIN_REPO_URL=https://github.com/anthonydagostino/FrankensteinCentral.git
 # It must READ the deploy record the poller writes, and the release record the
 # release service writes. Read-only in both cases; it never writes either.
-Environment=FRANKENSTEIN_DEPLOYED=/home/antdag3/.frankenstein/deployed.json
+#
+# These are the FULL-SEPARATION paths: the deployer is fcdeploy (see
+# frankenstein-deploy.service), not Anthony's own account. This template
+# previously read /home/antdag3/.frankenstein/deployed.json, which quietly
+# assumed the Tier 1 single-user arrangement inside a unit whose whole premise
+# is that the actors are different users. Under Tier 1 the override is a
+# drop-in, and a declared deviation:
+#
+#   /etc/systemd/system/frankenstein-status.service.d/tier1.conf
+#     [Service]
+#     Environment=FRANKENSTEIN_DEPLOYED=/home/antdag3/.frankenstein/deployed.json
+Environment=FRANKENSTEIN_DEPLOYED=/home/fcdeploy/.frankenstein/deployed.json
 Environment=FRANKENSTEIN_RELEASE_DIR=/home/fcrelease/.frankenstein/release
 TimeoutStartSec=300
 ExecStart=/usr/bin/env bash /home/fcstatus/FrankensteinCentral/scripts/status-publisher.sh

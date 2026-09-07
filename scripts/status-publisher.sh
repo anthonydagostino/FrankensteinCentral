@@ -169,6 +169,11 @@ except Exception:
     pass
 real = [r for r in releases if r.get("mode") == "run"]
 last_release = real[-1] if real else None
+release_source = None
+for r in reversed(releases):
+    release_source = sha_or_none(r.get("source_commit"))
+    if release_source:
+        break
 
 accepted = sha_or_none(state.get("implementation_commit"))
 rollback = sha_or_none(state.get("rollback_to"))
@@ -186,7 +191,8 @@ if evidence == "ok" and not isinstance(deploy_result, (str, type(None))):
     evidence = "malformed"
 
 test_gate = deployed.get("test_gate") if isinstance(deployed.get("test_gate"), dict) else None
-post_verify = deployed.get("verification") if isinstance(deployed.get("verification"), dict) else None
+raw_verify = deployed.get("verification")
+post_verify = raw_verify if isinstance(raw_verify, dict) else None
 
 # Post-deploy verification is reported ONLY if something actually performed
 # one, AND only if it was performed on the commit whose health is in question.
@@ -195,11 +201,35 @@ post_verify = deployed.get("verification") if isinstance(deployed.get("verificat
 verify_commit = sha_or_none((post_verify or {}).get("commit"))
 subject = running or attempted        # the commit whose health is being asked about
 
+# A deployment that happened is a deployment whose health someone has to be
+# able to state. Absent evidence is not a clean bill: "the check never ran",
+# "the check crashed", "the record is nonsense" and "the verdict is about a
+# different commit" are all the SAME answer to the only question that matters
+# -- is this deployment confirmed working? -- and that answer is NO.
+verification_required = bool(subject) or evidence != "ok"
+
 if evidence != "ok":
     verification_result, verification_source = "unknown", "no usable deployment record"
-elif not post_verify or post_verify.get("result") not in ("pass", "fail"):
+elif raw_verify is not None and post_verify is None:
+    verification_result = "malformed"
+    verification_source = "the verification record is not an object"
+elif post_verify and post_verify.get("result") == "pending":
+    # deploy.sh sets this the moment containers start, and the readiness check
+    # clears it. Until then the deployment is NOT ready, it is unconfirmed.
+    verification_result = "pending"
+    verification_source = ("the readiness check for %s has not reported yet"
+                           % ((verify_commit or subject or "?")[:7]))
+elif not post_verify or post_verify.get("result") in (None, "not_run"):
     verification_result = "not_run"
     verification_source = "no post-deploy readiness result was recorded"
+elif post_verify.get("result") == "unknown":
+    verification_result = "unknown"
+    verification_source = scrub(post_verify.get("detail")) or \
+        "the readiness result is recorded as unknown"
+elif post_verify.get("result") not in ("pass", "fail"):
+    verification_result = "malformed"
+    verification_source = ("the readiness result is %s, which is not a verdict"
+                           % scrub(str(post_verify.get("result")), 40))
 elif not verify_commit:
     verification_result = "unknown"
     verification_source = "a readiness result was recorded without a commit"
@@ -211,6 +241,8 @@ elif subject and verify_commit != subject:
 else:
     verification_result = post_verify["result"]
     verification_source = "post-deploy readiness check"
+
+verification_confirms = (verification_result == "pass")
 
 failures = []
 for r in real[-10:]:
@@ -227,7 +259,7 @@ if evidence != "ok":
         "result": "deployment_evidence_" + evidence,
         "detail": "the deployment record is %s; what is running cannot be "
                   "confirmed from this box" % evidence})
-elif verification_result in ("fail", "stale"):
+elif verification_required and not verification_confirms:
     failures.append({
         "at": (post_verify or {}).get("at"),
         "result": "verification_" + verification_result,
@@ -254,6 +286,14 @@ doc = {
     "implementation_commit": accepted,
     "rollback_to": rollback,
   },
+  # The release service runs from its OWN checkout, which is a copy and does
+  # not follow production. Reporting only the released SHA hid the possibility
+  # that the gate enforcing the release was older code than the release itself.
+  "release_service": {
+    "source_commit": release_source,
+    "matches_production": (bool(release_source and prod and release_source == prod)
+                           if release_source else None),
+  },
   "promotion": {
     "production_commit": prod,
     "accepted_is_promoted": bool(accepted and prod and accepted == prod),
@@ -269,7 +309,14 @@ doc = {
     "last_attempt_commit": attempted,
     "last_attempt_at": deployed.get("last_attempt_at"),
     "last_result": scrub(str(deploy_result), 60) if deploy_result else None,
+    # The last commit that ever started successfully is a DIFFERENT fact from
+    # what is running now. After a partial compose failure the first is still
+    # known and the second is not; reporting the first as the second claimed a
+    # rollback that never happened.
+    "last_success_commit": sha_or_none(deployed.get("last_success_commit")),
     "last_success_at": deployed.get("last_success_at"),
+    "running_state": (deployed.get("running_state")
+                      if isinstance(deployed.get("running_state"), str) else None),
   },
   "deployment_evidence": evidence,
   # THREE DIFFERENT FACTS, never collapsed. A passing test gate says the code
@@ -283,6 +330,8 @@ doc = {
   },
   "verification": {
     "result": verification_result,
+    "required": verification_required,
+    "confirms_deployment": verification_confirms,
     "source": verification_source,
     "commit": verify_commit,
     "at": (post_verify or {}).get("at"),
@@ -294,12 +343,16 @@ doc = {
 
 # One field the Product Owner can branch on, so a missing check in a prompt
 # cannot silently mean "all clear".
+# An unverified deployment must not read as a healthy one. Anything other
+# than a pass ON THIS COMMIT -- missing, not_run, pending, unknown, malformed
+# or stale -- holds attention until valid evidence arrives.
 doc["attention_required"] = bool(
     doc["failures"]
     or doc["deployment"]["promoted_but_not_running"]
     or doc["deployment_evidence"] != "ok"
-    or doc["verification"]["result"] in ("fail", "stale")
-    or doc["test_gate"]["result"] == "failed")
+    or (verification_required and not verification_confirms)
+    or doc["test_gate"]["result"] == "failed"
+    or doc["deployment"]["running_state"] == "unknown_partial_start")
 
 with open(out, "w") as fh:
     fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")

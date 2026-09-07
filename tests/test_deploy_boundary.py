@@ -399,11 +399,11 @@ DEPLOY = ROOT / "scripts" / "deploy.sh"
 
 
 def test_failed_deploy_never_advances_running_commit():
-    """Invariant: running_commit = last SUCCESSFULLY deployed commit."""
+    """Invariant: running_commit may only ever advance on a success."""
     src = DEPLOY.read_text()
     record_fn = src[src.index("record() {"):src.index("echo \"==> Deploying")]
-    assert 'local running="$prev"' in record_fn
-    assert '[ "$result" = "success" ] && running="$sha"' in record_fn, \
+    assert 'running, running_state = sha, "started"' in record_fn
+    assert 'if result == "success":' in record_fn, \
         "running_commit may only advance on success"
 
 
@@ -884,9 +884,12 @@ def test_compose_failure_is_recorded_rather_than_aborting_silently():
     """set -euo pipefail aborted before record(), so the record kept showing
     the PREVIOUS success and a failed deploy looked healthy."""
     src = DEPLOY.read_text()
-    assert "compose_failed" in src, "a Compose failure is not recorded at all"
+    assert 'record "compose_failed"' in src, \
+        "a Compose failure is not recorded at all"
     up = src.index("up -d --build")
-    assert src.index("compose_failed") > up, \
+    # The CALL, not record()'s own handling of the result name, which
+    # legitimately appears earlier in the file.
+    assert src.index('record "compose_failed"') > up, \
         "the Compose failure must be recorded after the attempt"
     assert re.search(r"if\s*!\s*\$DC up -d --build", src), \
         "the Compose result must be captured, not left to set -e"
@@ -906,3 +909,89 @@ def test_readiness_runs_after_compose_and_is_recorded():
     ready = src.index("readiness.sh")
     assert ready > up, "readiness must be checked after the stack is started"
     assert "record_verification" in src
+
+
+# ---- a partial compose failure is not a preserved old deployment --------
+#
+# Codex FC-002 correction 2, finding 3. `docker compose up` can already have
+# replaced SOME containers by the time it fails, so the previously running SHA
+# is not uniformly running any more. Carrying it forward as running_commit
+# asserted a rollback that never happened, and the box could not tell the
+# Product Owner it did not know what was up.
+
+
+def test_a_partial_compose_failure_marks_the_running_state_unknown(tmp_path):
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "compose_failed" "' + "b" * 40 + '"'], disposition="passed")
+    assert doc["last_result"] == "compose_failed"
+    assert doc["running_commit"] is None, \
+        "a partial compose failure claimed the previous SHA was still running"
+    assert doc["running_state"] == "unknown_partial_start"
+    assert doc["last_attempt_commit"] == "b" * 40
+
+
+def test_a_partial_compose_failure_still_remembers_the_last_success(tmp_path):
+    """Unknown-now and never-succeeded are different, and both must be sayable."""
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "compose_failed" "' + "b" * 40 + '"'], disposition="passed")
+    assert doc["last_success_commit"] == "a" * 40
+    assert doc["last_success_at"], "the successful deploy's timestamp was lost"
+
+
+def test_a_partial_compose_failure_invalidates_the_previous_verification(tmp_path):
+    """An old pass must not describe a stack nobody has looked at since."""
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "compose_failed" "' + "b" * 40 + '"'], disposition="passed")
+    assert doc["verification"]["result"] == "unknown"
+    assert doc["verification"]["commit"] is None
+
+
+def test_a_failed_test_gate_leaves_the_running_commit_alone(tmp_path):
+    """The gate runs BEFORE anything is touched, so this case genuinely does
+    still have the old SHA running -- unlike a partial compose failure."""
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "tests_failed" "' + "b" * 40 + '" "failed"'], disposition="passed")
+    assert doc["running_commit"] == "a" * 40
+    assert doc["running_state"] == "started"
+    assert doc["last_success_commit"] == "a" * 40
+
+
+def test_a_new_success_is_pending_verification_not_ready(tmp_path):
+    """Containers starting is not the application working. Until readiness
+    reports, a fresh deployment is unconfirmed -- and must never inherit the
+    previous commit's pass."""
+    doc = run_record(tmp_path, ['record "success" "' + "a" * 40 + '"'],
+                     disposition="passed")
+    assert doc["verification"]["result"] == "pending"
+    assert doc["verification"]["commit"] == "a" * 40
+
+
+def test_a_second_success_does_not_inherit_the_first_verification(tmp_path):
+    """The window the transition closes: deploy, verify, deploy again. Between
+    the second compose and the second readiness check the record used to still
+    carry the FIRST commit's pass."""
+    src = DEPLOY.read_text()
+    fn = src[src.index("record() {"):src.index('echo "==> Deploying')]
+    vfn = src[src.index("record_verification() {"):src.index("# Support both")]
+    record_json = tmp_path / "deployed.json"
+    harness = tmp_path / "h.sh"
+    ready = json.dumps({"result": "pass", "degraded": [], "required_failed": []})
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -uo pipefail\n"
+        f'RECORD="{record_json}"\nBRANCH="production"\nTEST_DISPOSITION="passed"\n'
+        + fn + "\n" + vfn + "\n"
+        'record "success" "' + "a" * 40 + '"\n'
+        f"""record_verification "{'a' * 40}" '{ready}'\n"""
+        'record "success" "' + "b" * 40 + '"\n')
+    r = subprocess.run(["bash", str(harness)], capture_output=True, text=True,
+                       timeout=60)
+    assert record_json.exists(), r.stderr
+    doc = json.loads(record_json.read_text())
+    assert doc["running_commit"] == "b" * 40
+    assert doc["verification"]["result"] == "pending", \
+        "the new deployment inherited the previous commit's readiness pass"
+    assert doc["verification"]["commit"] == "b" * 40

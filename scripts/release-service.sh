@@ -62,13 +62,21 @@ flock -n 9 || noop "another release cycle is in flight"
 REPO_URL="${FRANKENSTEIN_REPO_URL:-$(git -C "$PROD_DIR" remote get-url origin 2>/dev/null)}"
 [ -n "$REPO_URL" ] || fail "no repository URL: set FRANKENSTEIN_REPO_URL"
 
+# THE CODE THIS SERVICE IS ITSELF RUNNING. A release-service checkout is a
+# COPY; it does not move when production does, so the service can be enforcing
+# an older revision of its own nine-point check than the one under review. That
+# is a different fact from the commit being released and is recorded as one.
+SOURCE_COMMIT="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" \
+                   rev-parse HEAD 2>/dev/null || echo unknown)"
+
 record() {  # result, released_sha, detail
-  python3 - "$RELEASE_DIR/releases.jsonl" "$1" "$2" "$3" "$MODE" <<'PY' 2>/dev/null
+  python3 - "$RELEASE_DIR/releases.jsonl" "$1" "$2" "$3" "$MODE" "$SOURCE_COMMIT" <<'PY' 2>/dev/null
 import json, sys, datetime
-path, result, sha, detail, mode = sys.argv[1:6]
+path, result, sha, detail, mode, source = sys.argv[1:7]
 rec = {"at": datetime.datetime.now(datetime.timezone.utc)
               .isoformat(timespec="seconds").replace("+00:00", "Z"),
-       "mode": mode, "result": result, "released": sha or None, "detail": detail}
+       "mode": mode, "result": result, "released": sha or None, "detail": detail,
+       "source_commit": source or None}
 with open(path, "a") as fh:
     fh.write(json.dumps(rec) + "\n")
 PY

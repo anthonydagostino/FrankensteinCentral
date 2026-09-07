@@ -26,25 +26,48 @@ RECORD="$STATE_DIR/deployed.json"
 TEST_DISPOSITION="skipped"
 
 record() {  # record <result> <sha> [test disposition]
-  local result="$1" sha="$2" disposition="${3:-$TEST_DISPOSITION}" prev=""
-  [ -f "$RECORD" ] && prev="$(python3 -c "
-import json,sys
-try: print(json.load(open('$RECORD')).get('running_commit') or '')
-except Exception: print('')
-" 2>/dev/null)"
-  local running="$prev"
-  [ "$result" = "success" ] && running="$sha"
-  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" "$disposition" <<'PY'
+  local result="$1" sha="$2" disposition="${3:-$TEST_DISPOSITION}"
+  python3 - "$RECORD" "$result" "$sha" "$BRANCH" "$disposition" <<'PY'
 import json, sys, datetime
-path, result, sha, running, branch, disposition = sys.argv[1:7]
+path, result, sha, branch, disposition = sys.argv[1:6]
 try:
     doc = json.load(open(path))
 except Exception:
     doc = {}
+if not isinstance(doc, dict):
+    doc = {}
 now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+prev_running = doc.get("running_commit")
+prev_success = doc.get("last_success_commit")
+if not prev_success and doc.get("last_result") == "success":
+    prev_success = prev_running          # records written before this field
+
+# WHAT IS RUNNING, after each kind of outcome. These are NOT the same fact and
+# collapsing them is how a failed deploy came to look healthy:
+#
+#   success        the images this SHA describes were started.
+#   tests_failed   the gate ran BEFORE anything was touched, so whatever was
+#                  running is still running, unchanged.
+#   compose_failed compose can already have replaced SOME containers before it
+#                  gave up. The old SHA is NOT uniformly running any more, and
+#                  nothing here has looked at the box to find out what is. That
+#                  is UNKNOWN, and it must not be reported as the previous
+#                  success. Confirming it is the readiness check's job;
+#                  reverting it is the Product Owner's.
+if result == "success":
+    running, running_state = sha, "started"
+    prev_success = sha
+elif result == "compose_failed":
+    running, running_state = None, "unknown_partial_start"
+else:
+    running = prev_running
+    running_state = "started" if prev_running else "none_confirmed"
+
 doc.update({"production_branch": branch, "last_attempt_commit": sha,
             "last_attempt_at": now, "last_result": result,
-            "running_commit": running or None})
+            "running_commit": running, "running_state": running_state,
+            "last_success_commit": prev_success or None})
 # Three DIFFERENT facts, each tied to the commit it is about:
 #   test_gate     what scripts/test.sh actually did for this commit
 #   last_result   what the deploy attempt itself did
@@ -55,7 +78,21 @@ doc.update({"production_branch": branch, "last_attempt_commit": sha,
 # DEPLOY_SKIP_TESTS=1 the suite never ran, and inferring "passed" from a
 # successful compose claimed a gate that did not happen.
 doc["test_gate"] = {"result": disposition, "commit": sha, "at": now}
-doc.setdefault("verification", {"result": "not_run", "commit": None, "at": None})
+
+# Verification is about ONE commit and one deployment. A new attempt
+# invalidates the old verdict immediately, rather than leaving last time's
+# pass in place until the readiness check happens to overwrite it -- a window
+# in which a brand new deployment reads as verified ready.
+if result == "success":
+    doc["verification"] = {"result": "pending", "commit": sha, "at": now,
+                           "detail": "readiness check has not reported yet"}
+elif result == "compose_failed":
+    doc["verification"] = {"result": "unknown", "commit": None, "at": now,
+                           "detail": "compose did not complete; what is "
+                                     "running was not established"}
+else:
+    doc.setdefault("verification", {"result": "not_run", "commit": None,
+                                    "at": None})
 if result == "success":
     doc["last_success_at"] = now
 json.dump(doc, open(path, "w"), indent=2)

@@ -1,0 +1,41 @@
+# TEMPLATE — NOT INSTALLED, NOT ENABLED.
+# The deploy poller: watches the production branch and calls scripts/deploy.sh
+# when it moves. This is the ONLY supported deployment path.
+#
+#   sudo cp scripts/agent/frankenstein-deploy.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now frankenstein-deploy.timer
+#
+# The unit is templated here because docs/DEPLOYMENT-BASELINE.md documents a
+# frankenstein-deploy.service that exists on the box but had no template in the
+# repository — so the installed unit and the reviewable one could drift with
+# nothing to catch it, and the status publisher's template pointed at a
+# deployment record path that no template in this directory produced.
+#
+# THE DEPLOYER HOLDS NO GITHUB WRITE CREDENTIAL. The repository is public, so
+# it fetches production anonymously. It can restart containers; it cannot move
+# a ref. That separation is the point: promoting is the release service's job
+# and deploying is this one's, and neither can do the other's.
+[Unit]
+Description=FrankensteinCentral deploy poller (one poll)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fcdeploy
+Environment=FRANKENSTEIN_DIR=/home/fcdeploy/FrankensteinCentral
+Environment=FRANKENSTEIN_STATE_DIR=/home/fcdeploy/.frankenstein
+Environment=FRANKENSTEIN_BRANCH=production
+TimeoutStartSec=1800
+ExecStart=/usr/bin/env bash /home/fcdeploy/FrankensteinCentral/scripts/autopull.sh
+
+# It drives the container runtime, so it cannot be confined as tightly as the
+# release and status units. It still never needs root and never writes outside
+# its own state directory and checkout.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/fcdeploy
+ReadWritePaths=/home/fcdeploy/.frankenstein /home/fcdeploy/FrankensteinCentral
