@@ -30,7 +30,11 @@ if ! python3 -c "import pytest, fastapi, httpx" 2>/dev/null; then
 fi
 
 echo "== python: engine, service + protocol tests =="
-python3 -m pytest services/ tests/ -q "$@"
+# gateway/ is in the list because the gateway is a service too: its proxy is
+# the single path every browser call to every sub-app goes through, and a bug
+# there (a dropped redirect header, say) takes out a feature in a way none of
+# the sub-app suites can see.
+python3 -m pytest services/ tests/ gateway/ -q "$@"
 
 echo
 echo "== javascript: syntax =="

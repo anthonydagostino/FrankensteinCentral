@@ -130,9 +130,9 @@
   // a reply is the single most actionable thing the pipeline produces, and it
   // used to be dropped before it ever reached the page.
   const CAL_STATUS = {
-    confirmed: { dot: "🟢", label: "confirmed" },
-    pending:   { dot: "🟡", label: "offered — awaiting reply" },
-    countered: { dot: "🟠", label: "they countered — needs your yes" },
+    confirmed: { label: "confirmed" },
+    pending:   { label: "offered — awaiting reply" },
+    countered: { label: "they countered — needs your yes" },
   };
   // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
   // The footer used to compute its claim from `d.systems`, which the assistant
@@ -253,6 +253,12 @@
   const AMBIENCE_KEY = "cc.ambience";
   const ambienceOn = () => localStorage.getItem(AMBIENCE_KEY) !== "off";
 
+  // Each commitment gets its own colour, so a day reads as a set of distinct
+  // things instead of one grey block, and so a recurring event keeps the same
+  // colour week after week. The rules live in evcolor.js, where node --test
+  // holds them to it.
+  const eventColor = (e) => EventColor.of(e);
+
   function evRow(e) {
     const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
     const cls = [
@@ -261,13 +267,16 @@
       e.conflict ? "clash" : "",
       e.ongoing ? "live" : "",
       e.all_day ? "allday" : "",
+      e.from_google ? "from-google" : "",
     ].filter(Boolean).join(" ");
-    // The status word is spelled out, never carried by the dot alone.
+    // The status word is spelled out, never carried by the colour alone.
     const tag = e.status && e.status !== "confirmed"
       ? `<span class="wk-tag">${esch(st.label)}</span>` : "";
     const when = e.end_label
       ? `${esch(e.time_label)}<span class="wk-dash">–</span>${esch(e.end_label)}`
       : esch(e.time_label);
+    const where = e.location
+      ? `<span class="wk-ev-where">${esch(e.location)}</span>` : "";
     const flags = [
       e.ongoing ? `<span class="wk-flag live">now</span>` : "",
       // "Overlaps" on its own is baffling when the other commitment is in a
@@ -277,15 +286,15 @@
         : "Overlaps another commitment this day"}">⚠ overlaps${
         e.conflict_offday ? ` ${esch(e.conflict_neighbour)} day` : ""}</span>` : "",
     ].filter(Boolean).join("");
-    return `<li class="${cls}">
-      <span class="wk-ev-dot" aria-hidden="true">${st.dot}</span>
+    const origin = e.from_google ? "From your Google Calendar" : "Added in FrankensteinCentral";
+    return `<li class="${cls}" style="--ev:${eventColor(e)}" title="${esch(origin)}">
       <span class="wk-ev-when mono">${when}</span>
       <span class="wk-ev-title">${esch(e.title || "Untitled")}</span>
-      ${flags}${tag}
+      ${where}${flags}${tag}
     </li>`;
   }
 
-  function dayCard(day) {
+  function dayCard(day, index) {
     const season = SEASONS[day.season] || SEASONS.jan;
     const cls = [
       "wk-day",
@@ -295,6 +304,10 @@
       day.conflicts ? "has-clash" : "",
     ].filter(Boolean).join(" ");
 
+    // "Today" replaces the weekday rather than sitting next to it: on the two
+    // cards that have one it is the more useful of the pair, and the two
+    // together were the only thing that made this line wrap onto a second row.
+    // The full weekday and date stay in the card's aria-label regardless.
     const rel = day.relative_label
       ? `<span class="wk-rel">${esch(day.relative_label)}</span>` : "";
     const count = day.counts.total
@@ -303,23 +316,32 @@
     const body = day.counts.total
       ? `<ul class="wk-evs">${day.events.map(evRow).join("")}</ul>`
       : `<p class="wk-clear">Clear</p>`;
+    // The month appears only where the window actually crosses into a new one.
+    // `starts_month` is also true on the first card, but the range beside the
+    // "This week" heading already names that month, and the first card is the
+    // one carrying the TODAY pill — the least room and the least need.
+    const month = day.starts_month && index > 0
+      ? `<span class="wk-mo">${esch(day.month_short)}</span>` : "";
 
     // aria-label carries the full date so the column is announced as
     // "Wednesday, October 1st, 2026", not as a bare "1".
     const label = `${day.long_label}${day.counts.total
       ? `, ${day.counts.total} scheduled` : ", nothing scheduled"}${
       day.conflicts ? ", has overlapping commitments" : ""}`;
+    // The date is a small marker in the top-left corner, not the headline: what
+    // matters on a day is what is happening on it. The number was 26px and took
+    // the widest line in the card, which pushed the actual commitments down and
+    // made every column look the same from across the room.
     return `<article class="${cls}" data-season="${esch(day.season)}"
         role="listitem" tabindex="0" aria-label="${esch(label)}">
       <header class="wk-hd">
         <div class="wk-hd-top">
-          <span class="wk-dow">${esch(day.weekday)}</span>${count}
+          <time class="wk-date" datetime="${esch(day.iso)}">
+            <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
+          </time>
+          ${rel ? "" : `<span class="wk-dow">${esch(day.weekday_short)}</span>`}
+          ${month}${rel}${count}
         </div>
-        <time class="wk-date" datetime="${esch(day.iso)}">
-          <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
-          ${rel}
-          <span class="wk-mo">${esch(day.month)}</span>
-        </time>
         ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
       </header>
       ${body}
@@ -368,40 +390,62 @@
       week.beyond ? `<span class="wk-note">+${week.beyond} later</span>` : "",
     ].filter(Boolean).join("");
 
-    // Three ways the grid can be incomplete, said differently, because they
-    // call for different actions: reconnect, wait, or nothing.
+    // Four ways the grid can be incomplete, said differently, because they
+    // call for different actions: reconnect, re-consent, wait, or nothing.
     const CAVEAT = {
       disconnected: {
-        cls: "warn",
+        cls: "warn", icon: "⚠", fix: true,
         text: `Google Calendar isn't connected, so only commitments stored
                here are shown. A clear day may not be a free day.`,
       },
+      needs_consent: {
+        cls: "warn", icon: "⚠", fix: true,
+        text: `Google is refusing this account's calendar. The saved Google
+               login was approved for mail only, and a login keeps the
+               permissions it was granted — so this will not fix itself.
+               Reconnect and approve calendar access to see your real
+               schedule here.`,
+      },
       unknown: {
-        cls: "muted",
+        cls: "muted", icon: "◔", fix: false,
         text: `Couldn't confirm the calendar connection, so anything that
                lives only in Google may be missing from this week.`,
       },
     };
-    const caveat = CAVEAT[week.state]
-      ? `<p class="wk-caveat ${CAVEAT[week.state].cls}">${
-          week.state === "disconnected" ? "⚠" : "◔"} ${esch(
-          CAVEAT[week.state].text.replace(/\s+/g, " ").trim())}</p>`
+    const cv = CAVEAT[week.state];
+    // The repair is a link, not a sentence telling you to go and find one.
+    // /api/gmail/auth/login redirects to Google's consent screen; approving
+    // there mints a credential that carries the calendar scope.
+    const caveat = cv
+      ? `<p class="wk-caveat ${cv.cls}">${cv.icon} ${esch(
+          cv.text.replace(/\s+/g, " ").trim())}${cv.fix
+          ? ` <a class="wk-fix" href="/api/gmail/auth/login">Connect Google Calendar →</a>`
+          : ""}</p>`
+      : "";
+
+    // Positive evidence, and the only kind that means anything here: a count
+    // of what actually came out of Google. `state === "ok"` only says a probe
+    // got an answer — it says that just as cheerfully when nothing has ever
+    // been imported.
+    const synced = week.state === "ok"
+      ? `<span class="wk-note synced" title="Events on this week's grid that came from your Google Calendar">${
+          week.from_google ? `📅 ${week.from_google} from Google` : "📅 Google Calendar connected"}</span>`
       : "";
 
     el.innerHTML = `
-      <div class="wk-top">
+      <div class="wk-top" data-season="${esch(first.season)}">
         <h3>This week</h3>
         <span class="wk-range">${esch(range)}</span>
         <span class="wk-season" title="Seasonal theme">${
           ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
-        ${notes}
+        ${synced}${notes}
         <button class="wk-amb" id="wk-amb" type="button"
           aria-pressed="${ambienceOn()}" title="Seasonal decoration">
           ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
       </div>
       ${caveat}
       <div class="wk-grid" role="list" data-season="${esch(first.season)}">
-        ${days.map(dayCard).join("")}
+        ${days.map((day, i) => dayCard(day, i)).join("")}
         <div class="wk-amb-layer" aria-hidden="true"></div>
       </div>
       <div class="hx-btns" style="margin-top:12px">${openBtn}</div>`;

@@ -166,3 +166,77 @@ def _async(value):
 def _epoch(iso):
     from datetime import datetime
     return datetime.fromisoformat(iso).timestamp()
+
+
+# --- what the credential is actually allowed to do --------------------------
+#
+# Gmail and Calendar share one OAuth consent here: the schedule service borrows
+# this service's token rather than running a second flow. That works right up
+# until the token predates the day calendar.events was added to SCOPES — which
+# is exactly the case when GOOGLE_REFRESH_TOKEN is set from the PowerBuy app,
+# the setup docs' recommended fast path. A refresh token keeps the grant it was
+# minted with forever, so Gmail keeps working, Calendar 403s forever, and
+# nothing anywhere could tell the difference. Google reports the granted scopes
+# on every refresh; these lock down that we read and pass them on.
+
+CAL = "https://www.googleapis.com/auth/calendar.events"
+MAIL = "https://www.googleapis.com/auth/gmail.modify"
+
+
+def test_scopes_are_unknown_until_google_has_told_us(monkeypatch):
+    """Three states, not two. Reporting "no calendar access" before a token has
+    ever been minted would put a reconnect banner over a healthy connection."""
+    monkeypatch.setattr(gm, "_ACCESS", {})
+    assert gm.granted_scopes() == []
+    assert gm.has_calendar_scope() is None
+
+
+def test_a_mail_only_credential_is_reported_as_such(monkeypatch):
+    """The live failure: PowerBuy's token, reused here, carries gmail.modify
+    alone."""
+    monkeypatch.setattr(gm, "_ACCESS", {"token": "t", "scope": MAIL})
+    assert gm.granted_scopes() == [MAIL]
+    assert gm.has_calendar_scope() is False
+
+
+def test_a_re_consented_credential_reports_calendar_access(monkeypatch):
+    monkeypatch.setattr(gm, "_ACCESS", {"token": "t", "scope": f"{MAIL} {CAL}"})
+    assert gm.has_calendar_scope() is True
+    assert set(gm.granted_scopes()) == {MAIL, CAL}
+    # Order in Google's reply is not guaranteed; the answer must not depend on it.
+    monkeypatch.setattr(gm, "_ACCESS", {"token": "t", "scope": f"{CAL} {MAIL}"})
+    assert gm.has_calendar_scope() is True
+
+
+def test_scope_parsing_survives_whatever_google_sends(monkeypatch):
+    for raw in ("", None, "   ", "  " + MAIL + "   "):
+        monkeypatch.setattr(gm, "_ACCESS", {"token": "t", "scope": raw})
+        assert all(s for s in gm.granted_scopes()), raw
+        assert gm.has_calendar_scope() in (None, False), raw
+
+
+def test_a_refresh_records_the_scopes_it_was_granted(monkeypatch):
+    """The scopes have to be captured where the token is, or they go stale the
+    moment a refresh returns a narrower grant than the last one."""
+    monkeypatch.setattr(gm, "_ACCESS", {})
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"access_token": "fresh", "expires_in": 3600, "scope": f"{MAIL} {CAL}"}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(gm.httpx, "AsyncClient", FakeClient)
+    assert asyncio.run(gm._access_token()) == "fresh"
+    assert gm.has_calendar_scope() is True
