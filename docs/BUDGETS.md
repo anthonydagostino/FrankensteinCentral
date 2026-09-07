@@ -267,6 +267,12 @@ carried **independently of the pay cycle**: a truncated window with no matching
 paycheck takes the unavailable path and loses every cycle field, so a headline
 relying on those would silently print a partial read as an exact total.
 
+**The boundary case:** at exactly `cap × 50` rows every page read was full and
+the cap is spent, so the next page might hold one more row or none. There is
+no evidence either way, and no evidence must not read as complete — so that
+case is reported incomplete. A short final page is the only proof the ledger
+ended inside the window.
+
 `/month` publishes the same signal, and the **monthly budget engine** consumes
 it: a truncated month read understates spend, which would make every budget
 look healthier than it is, so it pauses guidance with
