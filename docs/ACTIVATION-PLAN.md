@@ -1,100 +1,148 @@
-# Activation plan: status publisher and release verification
+# Activation plan: full credential separation
 
-**Nothing in this document has been executed.** It is a proposal. Actual state
-is reported separately, below, and is distinguished from proposed state
-throughout.
+The target is **enforced runtime credential separation with restricted writer
+capabilities**. Tier 1 — everything running as `antdag3` with Anthony's
+personal `gh` credential — is a stopgap that is already installed, and it is
+not the plan. This document is the plan for replacing it.
 
-## Actual state, and how it is known
+Proposed state and measured state are kept apart throughout, and every
+measurement says how it was established.
 
-| component | state | how this was established |
+## Measured state
+
+| component | state | how established |
 |---|---|---|
-| Release service units | **installed** in `/etc/systemd/system/` | `systemctl list-units 'frankenstein-release*'` |
-| Release timer | **enabled and active**, every 2 min | `systemctl list-timers` |
-| Release `ENABLED` flag | **present** | `ls ~/.frankenstein/release/ENABLED` |
-| Release behaviour | **verified live** — fetched `control` through the systemd sandbox and held on non-accepted state | `journalctl -u frankenstein-release.service` |
-| Release credential | Anthony's personal `gh` credential (Tier 1) | `~/.gitconfig` delegates to `gh auth git-credential` |
-| Status publisher | **NOT installed**, no unit, no timer | no unit file in `/etc/systemd/system/` |
-| Readiness check | **implemented and exercised against the live stack** (15 apps, all services up); **not yet run inside a real deploy** | manual invocation |
-| GitHub rulesets | **none** — `rulesets: 0`, `production` unprotected, `0` deploy keys | GitHub API |
-| Separate Unix users | **none** — `fcrelease`/`fcstatus` do not exist | `useradd` never run |
+| Release service units | installed in `/etc/systemd/system/` | `systemctl list-units 'frankenstein-release*'` |
+| Release timer | enabled, active, 2 min | `systemctl list-timers` |
+| Release `ENABLED` flag | present | file exists |
+| Release behaviour | **verified live** — read `control`, held on non-accepted state | `journalctl -u frankenstein-release.service` |
+| **Release source SHA** | **`e73e4c4`** | `git -C ~/.frankenstein/release/src rev-parse HEAD` |
+| Production | `0a5d24a` | `git ls-remote` |
+| Candidate under review | see the handoff | — |
+| Status publisher | **not installed**, no unit, no timer | no unit file present |
+| Readiness check | implemented; **verified against the live stack**; **never run inside a real deploy** | manual invocation |
+| GitHub rulesets | none — `rulesets: 0`, `production` unprotected, `0` deploy keys | GitHub API |
+| `fcrelease` / `fcstatus` users | do not exist | never created |
 
-**Provenance caveat:** the authenticated identity behind a push cannot be
-determined from git author or committer fields. Every commit on `control` is
-authored `anthonydagostino`, which establishes nothing about which agent or
-credential performed it. Nothing in this plan infers authorization identity
-from commit attribution.
+### The release source is stale, and that is a live defect
 
-## Minimal activation — status publisher
+`~/.frankenstein/release/src` is a **pinned copy** at `e73e4c4`. It does not
+follow production and did not move when production did. The running release
+service is therefore executing release logic that predates the corrections in
+this task, including the rollback-idempotence and epoch fixes.
 
-Publishing `status` is what lets the Product Owner see deployment outcomes
-without Anthony relaying them. It holds **no production credential** and its
-clone's pre-push hook permits exactly one ref.
+**The installed release-source SHA is a separate fact from the candidate SHA
+and from production, and must be reported as such every time.** A copied
+checkout is not a deployment target; nothing updates it.
 
-Under Tier 1 it can run as `antdag3`:
+Proposed fix, not yet executed: the release unit should run from a checkout
+that is explicitly refreshed to a named ref before each cycle, or the
+installation step must be re-run whenever the release logic changes. The
+former is preferable — a service whose code silently ages is a service whose
+behaviour nobody can state.
+
+### On identity
+
+No authenticated identity is inferred from git author or committer fields
+anywhere in this plan. Every commit on `control` is authored
+`anthonydagostino`; that establishes nothing about which agent or credential
+performed the push. Author fields are metadata a client sets freely.
+
+**A shared account label does not prove separation is impossible.** What the
+boundary requires is that the production credential is *unreachable* at
+runtime by any process that is not the release service, and that the writer's
+capability is restricted at the server. Both are achievable whatever the
+account is called.
+
+## Target architecture
+
+```
+implementation authority  ≠  acceptance authority  ≠  release credential
+Claude (worker)              Codex (control)          fcrelease (production)
+```
+
+| boundary | mechanism | why the label alone is not enough |
+|---|---|---|
+| runtime credential | the production token is a `0600` file owned by `fcrelease`; no agent runs as that user | a token readable by the agent user is not separated, whatever it is named |
+| writer capability | a GitHub ruleset restricting `production` pushes, force-push and deletion blocked | the pre-push hook is defence in depth, not a barrier — it lives in the clone it is meant to constrain |
+| control writes | a ruleset restricting `control` to the Product Owner's identity | without this, any process holding a repo-write credential can forge a directive |
+| status writes | `fcstatus`, no production credential, one ref | reporting must not require release authority |
+
+## Minimal owner-consent setup
+
+Each step needs Anthony; none can be performed by an agent. Grouped so it is
+one sitting.
+
+**1. Two service accounts on the box** (sudo):
 
 ```bash
-# 1. verify by hand first — publishes nothing
-bash scripts/status-publisher.sh --dry-run
+sudo useradd -m -s /usr/sbin/nologin fcrelease
+sudo useradd -m -s /usr/sbin/nologin fcstatus
+```
 
-# 2. install (paths for the Tier 1, single-user arrangement)
+**2. One GitHub machine account** with a fine-grained PAT scoped to this
+repository only, `Contents: read and write`, nothing else. Stored as:
+
+```
+/home/fcrelease/.frankenstein/release-token     mode 0600, owner fcrelease
+```
+
+Never in a unit file, never in the repository, never in an `Environment=`
+line.
+
+**3. Rulesets** (browser, one visit):
+
+- `production`: restrict pushes to the machine account; block force-push and
+  deletion.
+- `control`: restrict pushes to the Product Owner's identity.
+
+**Measured caveat:** GitHub's bypass-actor type `DeployKey` takes
+`actor_id: null` — it is blanket and matches *every* deploy key on the
+repository. It cannot express "this one key". Use a machine **account** with
+the `User` actor type for anything that must be a single identity.
+
+**4. Revoke Tier 1** once the above works: remove the `ENABLED` flag from the
+`antdag3` release directory and disable that timer, so the shared-credential
+path stops existing rather than merely being unused.
+
+## Credential-safe validation
+
+Every check below is read-only and prints no secret material.
+
+| # | check | command | expected |
+|---|---|---|---|
+| 1 | the token file is unreadable by the agent user | `sudo -u antdag3 test -r /home/fcrelease/.frankenstein/release-token; echo $?` | non-zero |
+| 2 | no agent process runs as the release user | `ps -u fcrelease -o comm=` | only the release unit, only while it runs |
+| 3 | the release clone can push exactly one ref | `git push --dry-run --force origin <sha>:refs/heads/control` from its work clone | `REFUSED` |
+| 4 | the ruleset is present | `gh api repos/:owner/:repo/rulesets --jq 'length'` | non-zero |
+| 5 | production rejects a direct push from the agent user | dry-run push as `antdag3` | rejected by the server, not only by a hook |
+| 6 | the status publisher holds no production credential | its unit has no token path and its hook permits only `refs/heads/status` | both true |
+| 7 | release source freshness | `git -C <release source> rev-parse HEAD` | matches the intended release ref |
+
+Check 5 is the one that actually proves the boundary. Until it fails from
+`antdag3`, the separation is process, not enforcement.
+
+## Status publisher activation
+
+It holds no production credential in either arrangement and its clone may push
+exactly one ref. Under the target it runs as `fcstatus`; the shipped templates
+in `scripts/agent/` name that user and those paths consistently.
+
+```bash
+bash scripts/status-publisher.sh --dry-run     # publishes nothing
 sudo cp scripts/agent/frankenstein-status.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-
-# 3. one manual run, checked before any timer exists
 sudo systemctl start frankenstein-status.service
 journalctl -u frankenstein-status.service -n 20 --no-pager
 git ls-remote origin refs/heads/status
-
-# 4. only then, the timer
 sudo systemctl enable --now frankenstein-status.timer
 ```
 
-The shipped unit targets the `fcstatus` user of the full design. For Tier 1 it
-must be edited to `User=antdag3` with
-`FRANKENSTEIN_STATE_DIR=/home/antdag3/.frankenstein`, which is a **declared
-deviation**, not an approved one.
+Validation: a second run with unchanged inputs must log `status unchanged` and
+must not move the ref; a forced push of any other ref from its work clone must
+be `REFUSED`.
 
-## Validation — how to know it worked
+## Explicitly not proposed
 
-| # | check | expected |
-|---|---|---|
-| 1 | `--dry-run` output | valid JSON, `schema: 2`, epoch equals control's `STATE.json` commit |
-| 2 | first service run | `refs/heads/status` exists |
-| 3 | second run, unchanged | logs `status unchanged — nothing published`, ref does not move |
-| 4 | hook | a forced push of any other ref from its work clone is `REFUSED` |
-| 5 | after a real deploy | `verification.result` is `pass`/`fail` and `verification.commit` equals `deployment.running_commit` |
-| 6 | stale case | if they differ, `verification.result` is `stale` and `attention_required` is true |
-
-Checks 1–4 need no deploy. Checks 5–6 require an actual release, which is
-gated on Product Owner acceptance and is **not** part of this correction.
-
-## Release verification path — what remains unproven
-
-The readiness check has been exercised against the live stack, but **never
-inside a deploy**, because no deploy has run since it was written. Until a
-release actually happens:
-
-- `verification` in `deployed.json` stays `not_run` for the running commit
-- the end-to-end loop remains undemonstrated
-
-The first accepted release is what validates this, and it is Codex's decision.
-
-## Explicitly not proposed here
-
-Creating Unix users, machine accounts, tokens or deploy keys; changing GitHub
-rulesets or repository settings; enabling the worker; spending money; or
-promoting anything. Those need Anthony's explicit consent, and the identity
-problem below should be settled first.
-
-## The blocker that changes the design
-
-Codex writes `control` as `anthonydagostino`, not a distinct identity. The
-Tier 2 plan assumed a `control` ruleset could restrict pushes to Codex and
-exclude Claude lanes. It cannot, because those are the same GitHub identity as
-Anthony's own account and as any Claude lane using his `gh` credential.
-
-This is not a deferred hardening step — it is a designed boundary that does
-not work as specified. Options: a dedicated machine account for the Product
-Owner, or an explicit decision to accept that `control` is protected by
-process rather than by authentication. **That is a Product Owner and owner
-decision, not an implementation detail.**
+Creating users, accounts, tokens, deploy keys or rulesets; enabling the
+worker; spending money; promoting anything. This document is planning only.

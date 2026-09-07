@@ -884,9 +884,12 @@ def test_compose_failure_is_recorded_rather_than_aborting_silently():
     """set -euo pipefail aborted before record(), so the record kept showing
     the PREVIOUS success and a failed deploy looked healthy."""
     src = DEPLOY.read_text()
-    assert "compose_failed" in src, "a Compose failure is not recorded at all"
+    assert 'record "compose_failed"' in src, \
+        "a Compose failure is never recorded"
     up = src.index("up -d --build")
-    assert src.index("compose_failed") > up, \
+    # The CALL must follow the attempt. record() also mentions compose_failed
+    # while classifying the running state, and that definition sits earlier.
+    assert src.index('record "compose_failed"') > up, \
         "the Compose failure must be recorded after the attempt"
     assert re.search(r"if\s*!\s*\$DC up -d --build", src), \
         "the Compose result must be captured, not left to set -e"
@@ -906,3 +909,52 @@ def test_readiness_runs_after_compose_and_is_recorded():
     ready = src.index("readiness.sh")
     assert ready > up, "readiness must be checked after the stack is started"
     assert "record_verification" in src
+
+
+# ---- what is RUNNING is a claim needing evidence (Codex correction 2, #3) --
+#
+# record() kept the previous running_commit on any failure. But Compose can
+# already have replaced some containers before it fails, so asserting the old
+# SHA is still uniformly running is a claim the record cannot support.
+
+
+def test_a_partial_compose_failure_does_not_claim_the_old_sha_is_running(tmp_path):
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "compose_failed" "' + "b" * 40 + '"',
+    ], disposition="passed")
+    assert doc["last_result"] == "compose_failed"
+    assert doc["running_commit"] is None, \
+        "a partial Compose failure asserted the old SHA was still running"
+    assert doc["running_state"] == "unknown_partial_start"
+    assert doc["last_success_commit"] == "a" * 40, \
+        "the last known-good deployment must be preserved separately"
+
+
+def test_a_failed_test_gate_leaves_the_old_deployment_running(tmp_path):
+    """The gate runs BEFORE any container is touched, so unlike a Compose
+    failure the previous commit genuinely is still running."""
+    doc = run_record(tmp_path, [
+        'record "success" "' + "a" * 40 + '"',
+        'record "tests_failed" "' + "b" * 40 + '" "failed"',
+    ], disposition="passed")
+    assert doc["running_commit"] == "a" * 40
+    assert doc["running_state"] == "unchanged_gate_failed_before_start"
+    assert doc["last_success_commit"] == "a" * 40
+
+
+def test_a_successful_deploy_records_itself_as_running(tmp_path):
+    doc = run_record(tmp_path, ['record "success" "' + "c" * 40 + '"'],
+                     disposition="passed")
+    assert doc["running_commit"] == "c" * 40
+    assert doc["running_state"] == "confirmed_started"
+    assert doc["last_success_commit"] == "c" * 40
+
+
+def test_verification_is_marked_pending_before_the_check_runs():
+    """A crash mid-check must not leave the previous verdict standing, and a
+    successful compose must never be presented as verified."""
+    src = DEPLOY.read_text()
+    pending = src.index('record_verification "$DEPLOYED_SHA" "" pending')
+    ready = src.index("readiness.sh")
+    assert pending < ready, "the pending state must be recorded before checking"

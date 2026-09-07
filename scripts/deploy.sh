@@ -43,8 +43,30 @@ except Exception:
     doc = {}
 now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 doc.update({"production_branch": branch, "last_attempt_commit": sha,
-            "last_attempt_at": now, "last_result": result,
-            "running_commit": running or None})
+            "last_attempt_at": now, "last_result": result})
+
+# WHAT IS RUNNING is a claim that needs evidence, and the answer differs by
+# how the attempt failed:
+#
+#   success        -> this commit is running
+#   tests_failed   -> the gate runs BEFORE any container is touched, so the
+#                     previous commit is genuinely still running
+#   compose_failed -> Compose may already have replaced some containers before
+#                     it failed. The stack is MIXED, and asserting the old SHA
+#                     is still running would be a claim with no evidence.
+if result == "success":
+    doc["running_commit"] = sha
+    doc["running_state"] = "confirmed_started"
+    doc["last_success_commit"] = sha
+elif result == "compose_failed":
+    doc["running_commit"] = None
+    doc["running_state"] = "unknown_partial_start"
+else:
+    doc["running_commit"] = running or None
+    doc["running_state"] = "unchanged_gate_failed_before_start"
+# The last commit KNOWN to have fully deployed, kept separately so a failed
+# attempt never erases it.
+doc.setdefault("last_success_commit", running or None)
 # Three DIFFERENT facts, each tied to the commit it is about:
 #   test_gate     what scripts/test.sh actually did for this commit
 #   last_result   what the deploy attempt itself did
@@ -62,15 +84,22 @@ json.dump(doc, open(path, "w"), indent=2)
 PY
 }
 
-record_verification() {  # deployed_sha, readiness json
-  python3 - "$RECORD" "$1" "$2" <<'PY' 2>/dev/null
+record_verification() {  # deployed_sha, readiness json, [state]
+  python3 - "$RECORD" "$1" "$2" "${3:-}" <<'PY' 2>/dev/null
 import json, sys, datetime
-path, sha, raw = sys.argv[1:4]
+path, sha, raw, state = sys.argv[1:5]
 try:
     doc = json.load(open(path))
 except Exception:
     doc = {}
 now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+if state == "pending":
+    # The check is in flight. Recording this BEFORE running it means a crash
+    # mid-check leaves "pending", not the previous verdict.
+    doc["verification"] = {"result": "pending", "commit": sha, "at": now,
+                           "detail": "readiness check in progress"}
+    json.dump(doc, open(path, "w"), indent=2)
+    raise SystemExit
 try:
     ready = json.loads(raw)
 except Exception:
@@ -173,6 +202,10 @@ record "success" "$DEPLOYED_SHA"
 # rollback: reverting unattended is its own hazard and belongs to the Product
 # Owner through the ordinary rollback authorization.
 echo "==> Checking the deployed dashboard is actually serving"
+# Mark the check IN FLIGHT first. If this process dies mid-check, the record
+# says "pending" rather than leaving the previous verdict standing, so a
+# successful compose is never presented as verified before the check finishes.
+record_verification "$DEPLOYED_SHA" "" pending
 READY_JSON="$(bash scripts/readiness.sh --json-only 2>/dev/null || true)"
 record_verification "$DEPLOYED_SHA" "$READY_JSON"
 

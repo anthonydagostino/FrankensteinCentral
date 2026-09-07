@@ -295,16 +295,16 @@ def test_a_promoted_commit_with_no_confirmed_deployment_demands_attention(world)
     assert any(f["result"] == "no_confirmed_deployment" for f in doc["failures"])
 
 
-def test_a_healthy_deployment_needs_no_attention(world):
+def test_a_verified_deployment_needs_no_attention(world):
     """The flag must not be permanently on, or it means nothing."""
+    with_deployment(world, verification={
+        "result": "pass", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00"})
     assert run_publisher(world).returncode == 0
     doc = published(world)
     assert doc["deployment_evidence"] == "ok"
     assert doc["test_gate"]["result"] == "passed"
-    # "not_run" is the truth: nothing performs a post-deploy health check yet.
-    # It must NOT hold attention_required on forever, and must NOT be dressed
-    # up as a pass.
-    assert doc["verification"]["result"] == "not_run"
+    assert doc["verification"]["result"] == "pass"
     assert doc["failures"] == []
     assert doc["attention_required"] is False
 
@@ -379,5 +379,45 @@ def test_no_recorded_verification_reads_as_not_run(world):
     assert run_publisher(world).returncode == 0
     doc = published(world)
     assert doc["verification"]["result"] == "not_run"
-    assert doc["attention_required"] is False, \
-        "not_run is honest, not an alarm; it must not latch attention on forever"
+    # THE REGRESSION: a successful deployment with no verification used to
+    # read as "nothing to see". A deployment that reported success REQUIRES
+    # confirmation, so an absent check is an open question until evidence
+    # for that exact commit arrives.
+    assert doc["verification"]["required"] is True
+    assert doc["attention_required"] is True, \
+        "a successful deployment with no verification silently cleared attention"
+    assert any(f["result"] == "verification_not_run" for f in doc["failures"])
+
+
+def test_verification_is_not_required_when_no_deployment_succeeded(world):
+    """The flag must not latch on forever where nothing was deployed."""
+    with_deployment(world, last_result="tests_failed",
+                    running_state="unchanged_gate_failed_before_start")
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["required"] is False
+
+
+def test_a_check_still_in_flight_is_pending_not_ready(world):
+    """Deployment success must not be presented as readiness."""
+    with_deployment(world, verification={
+        "result": "pending", "commit": world["prod"],
+        "at": "2026-09-06T02:00:00+00:00"})
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["verification"]["result"] == "pending"
+    assert doc["attention_required"] is True
+
+
+def test_a_partial_compose_failure_does_not_claim_the_old_sha_is_running(world):
+    """Containers may already have been replaced when Compose failed."""
+    with_deployment(world, last_result="compose_failed", running_commit=None,
+                    running_state="unknown_partial_start",
+                    last_success_commit=world["prod"])
+    assert run_publisher(world).returncode == 0
+    doc = published(world)
+    assert doc["deployment"]["running_commit"] is None
+    assert doc["deployment"]["running_state"] == "unknown_partial_start"
+    assert doc["deployment"]["last_success_commit"] == world["prod"], \
+        "the last known-good deployment must be kept separately"
+    assert doc["attention_required"] is True

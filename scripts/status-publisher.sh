@@ -195,8 +195,18 @@ post_verify = deployed.get("verification") if isinstance(deployed.get("verificat
 verify_commit = sha_or_none((post_verify or {}).get("commit"))
 subject = running or attempted        # the commit whose health is being asked about
 
+# A deployment that reported success REQUIRES confirmation. Until valid
+# evidence for that exact commit arrives, "we never checked" is an open
+# question, not an all-clear -- which is how a missing verification came to
+# silently clear attention.
+verification_required = deploy_result == "success"
+
 if evidence != "ok":
     verification_result, verification_source = "unknown", "no usable deployment record"
+elif (post_verify or {}).get("result") == "pending":
+    verification_result = "pending"
+    verification_source = ("a readiness check was started and has not reported; "
+                           "deployment success is not readiness")
 elif not post_verify or post_verify.get("result") not in ("pass", "fail"):
     verification_result = "not_run"
     verification_source = "no post-deploy readiness result was recorded"
@@ -232,6 +242,12 @@ elif verification_result in ("fail", "stale"):
         "at": (post_verify or {}).get("at"),
         "result": "verification_" + verification_result,
         "detail": verification_source})
+elif verification_required and verification_result != "pass":
+    failures.append({
+        "at": (post_verify or {}).get("at"),
+        "result": "verification_" + verification_result,
+        "detail": "deployment of %s reported success but is unconfirmed: %s"
+                  % ((subject or "?")[:7], verification_source)})
 elif prod and not running:
     failures.append({
         "at": None, "result": "no_confirmed_deployment",
@@ -270,6 +286,12 @@ doc = {
     "last_attempt_at": deployed.get("last_attempt_at"),
     "last_result": scrub(str(deploy_result), 60) if deploy_result else None,
     "last_success_at": deployed.get("last_success_at"),
+    # After a partial Compose failure some containers may already have been
+    # replaced, so "the old SHA is still running" is not a claim the record
+    # can support. The state says which situation this is.
+    "running_state": (deployed.get("running_state")
+                      if isinstance(deployed.get("running_state"), str) else None),
+    "last_success_commit": sha_or_none(deployed.get("last_success_commit")),
   },
   "deployment_evidence": evidence,
   # THREE DIFFERENT FACTS, never collapsed. A passing test gate says the code
@@ -283,6 +305,7 @@ doc = {
   },
   "verification": {
     "result": verification_result,
+    "required": verification_required,
     "source": verification_source,
     "commit": verify_commit,
     "at": (post_verify or {}).get("at"),
@@ -299,7 +322,14 @@ doc["attention_required"] = bool(
     or doc["deployment"]["promoted_but_not_running"]
     or doc["deployment_evidence"] != "ok"
     or doc["verification"]["result"] in ("fail", "stale")
-    or doc["test_gate"]["result"] == "failed")
+    or doc["test_gate"]["result"] == "failed"
+    # A deployment that reported success and has no valid confirmation for
+    # that exact commit stays open until evidence arrives. "We never checked"
+    # is a question, not an all-clear.
+    or (doc["verification"]["required"]
+        and doc["verification"]["result"] != "pass")
+    # Some containers may already have been replaced when Compose failed.
+    or doc["deployment"]["running_state"] == "unknown_partial_start")
 
 with open(out, "w") as fh:
     fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
