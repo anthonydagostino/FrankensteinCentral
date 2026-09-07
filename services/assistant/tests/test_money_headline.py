@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import types
 import sys
 from pathlib import Path
 
@@ -24,6 +25,29 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATABASE_URL", "postgresql://unused/unused")
+
+# services/assistant/app/main.py imports psycopg and psycopg_pool at module
+# level, and scripts/test.sh installs neither — so importing it unstubbed
+# fails COLLECTION in a clean checkout and takes the whole suite down with
+# it, which is exactly what happened on the first push of this file. The
+# other assistant suite sidesteps this by testing app/dashboard.py instead,
+# but the defect under test lives in _money() in main.py and only shows up
+# through the real renderer, so the driver is stubbed rather than the target
+# changed. Nothing here touches a database: the functions under test are pure.
+class _StubPool:
+    def __init__(self, *a, **kw):
+        pass
+
+
+for name, attrs in (("psycopg", {}),
+                    ("psycopg.rows", {"dict_row": object()}),
+                    ("psycopg_pool", {"AsyncConnectionPool": _StubPool})):
+    if name not in sys.modules:
+        mod = types.ModuleType(name)
+        for k, v in attrs.items():
+            setattr(mod, k, v)
+        sys.modules[name] = mod
+sys.modules["psycopg"].rows = sys.modules["psycopg.rows"]
 
 from conftest import load_service_module  # noqa: E402
 
