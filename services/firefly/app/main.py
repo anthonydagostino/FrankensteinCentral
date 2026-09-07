@@ -369,6 +369,10 @@ async def _spending() -> dict:
         wd = await _fetch_withdrawals(client, fetch_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd)
+    # Same page cap as /cycle and /month. The homepage month headline is fed
+    # from here, so without this it renders a truncated read as an exact
+    # month-to-date total.
+    spending_complete = wd.complete
 
     def d(s):
         try:
@@ -452,6 +456,10 @@ async def _spending() -> dict:
         "tz": str(LOCAL_TZ),
         "txn_count": len(wd),
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
+        # False => `month` is a LOWER BOUND, not the total. Unread withdrawals
+        # can only add to it, so "at least" is honest where "unknown" would
+        # throw away real information.
+        "window_complete": spending_complete,
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "baseline": baseline, "pace_note": pace_note,
         "earliest_txn": earliest.isoformat() if earliest else None,

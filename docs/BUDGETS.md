@@ -258,6 +258,15 @@ The error runs in both directions: missing withdrawals make `left` an
 completeness evidence reads as unknown rather than as proof that what was read
 is all there is. `figures_complete: false` marks the whole block.
 
+**A lower bound is not the same as unknown, and the difference is per-figure.**
+Month-to-date spend from a truncated read can only grow — unread withdrawals
+add to it — so the headline renders "**at least** $X" rather than throwing the
+number away. `left` has no such property (missing withdrawals overstate it, a
+missing deposit understates it), so it goes `null`. Month completeness is
+carried **independently of the pay cycle**: a truncated window with no matching
+paycheck takes the unavailable path and loses every cycle field, so a headline
+relying on those would silently print a partial read as an exact total.
+
 `/month` publishes the same signal, and the **monthly budget engine** consumes
 it: a truncated month read understates spend, which would make every budget
 look healthier than it is, so it pauses guidance with
