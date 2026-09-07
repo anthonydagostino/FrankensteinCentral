@@ -14,6 +14,33 @@ want it: objective, requirements, and an acceptance signal.
 
 ---
 
+## Tracked in Jira
+
+All 37 ideas are mirrored into the `SCRUM` project, labelled **`fc-ideas`**
+(plus `dashboard`, a `correctness` label on the defects, and an `effort-*`
+label). Five new epics, three existing ones reused:
+
+| epic | ideas | tickets |
+|---|---|---|
+| **SCRUM-57** Dashboard: trust the numbers | 13, 14, 15, 16, 33 | SCRUM-58, 63–66 |
+| **SCRUM-59** Close the loop on what's already built | 17, 18, 19, 24 + smaller items | SCRUM-69–73 |
+| **SCRUM-60** Dashboard: job hunt | 1, 26, 27, 28, 29, 30, 31, 32 | SCRUM-74–81 |
+| **SCRUM-61** Daily use and attention | 3, 4, 6, 7, 21, 22, 23, 25, 34, 35, 36 | SCRUM-82–92 |
+| **SCRUM-62** Money and intelligence | 9, 10, 12, 20 | SCRUM-93–96 |
+| **SCRUM-6** Data Loss Prevention *(existing)* | 2, 37 | SCRUM-67, 68 |
+| **SCRUM-11** Resale Ops *(existing)* | 8 | SCRUM-97 |
+| **SCRUM-8** Network and DNS *(existing)* | 11 | SCRUM-98 |
+
+Idea #5 (the unrendered weekly review) is a row inside SCRUM-69 rather than its
+own ticket. Nine of the 37 are filed as **Bug** rather than Story — the four
+correctness items, plus #19, #28, #30, #32 and #33 — because they are defects
+against behaviour the code already intends, not new scope.
+
+`labels = "fc-ideas"` selects the whole set if you want to bulk-triage or bulk-
+delete it.
+
+---
+
 ## What this is based on
 
 I read the `production` branch end to end — `gateway/` (registry, proxy,
