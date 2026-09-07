@@ -3,8 +3,8 @@
 Task ID: FC-008
 Task branch: `claude/FC-008-weekly-calendar`
 Baseline: `0a5d24a` (`production`)
-Implementation commit: `add5b2b99f9f67c42824507a7237a404817882f0`
-  (supersedes `176e72b`; both are on the task branch)
+Implementation commit: `ce713da`
+  (tree byte-identical to the reviewed `add5b2b`; supersedes `176e72b`)
 Authorizing control commit (epoch): `c60c29798510224111bb8339c9aacc4655e6972e`
 Directive commit: `71dba66c8814646a16b3d244e76a4a074e812c20`
 Deployment Authorization: **none** — task branch pushed for review, nothing deployed.
@@ -159,6 +159,50 @@ Oct→Nov and Dec→Jan boundaries label correctly; the decor toggle flips
 `aria-label` reads "Thursday, October 29th, 2026, nothing scheduled";
 `prefers-reduced-motion` resolves `animation-name: none`; 0px horizontal
 overflow at 390px. All fixture data is synthetic, per vision principle 6.
+
+## CI is red on this branch, and it is not this branch's
+
+Run 34078322229 on `add5b2b` failed: **19 failed, 1457 passed**. Every failure
+is in `tests/test_claude_worker.py` and `tests/test_deploy_boundary.py` — the
+autonomous-worker containment suite. None is in code FC-008 touches; the diff
+does not modify either file.
+
+Demonstrated rather than asserted, by reproducing with a failing `unshare` on
+PATH so the host cannot create namespaces:
+
+| tree | namespaces | result |
+|---|---|---|
+| production `0a5d24a` (the baseline) | unavailable | **18 failed**, 135 passed, 37 skipped |
+| this branch `add5b2b` | unavailable | **18 failed**, 135 passed, 37 skipped |
+| this branch `add5b2b` | available | **190 passed**, 0 failed |
+
+Identical on the baseline and on this branch: inherited, not introduced.
+GitHub's hosted runners cannot create mount/PID/network namespaces, and the
+worker correctly refuses to run a child unconfined on such a host.
+
+**This does not block the deployment gate.** `deploy.sh` runs
+`scripts/test.sh` on the OptiPlex, which *can* create namespaces — the third
+row above is that case, and it is green.
+
+### A fix was tried here and backed out
+
+`ac0d4af` cherry-picked `485e3b9` from `claude/ci-runner-capability`, which
+widens the `needs_sandbox` guard. Pushing it proved two things and it was
+reverted in `ce713da`:
+
+1. It does not finish the job — 19 failures became 1. The survivor,
+   `test_mismatched_running_commit_reports_pending`, has an unrelated cause:
+   the status helper resolves `origin/production` from the ambient checkout,
+   which exists on the box but not in a single-branch CI checkout.
+2. It is the weaker of two competing fixes and not FC-008's to make.
+   `claude/po-handoff-release` fixes the same failures by enabling the
+   namespaces at the runner, so the containment assertions still *run* in CI,
+   and separately makes the deploy-boundary test hermetic. FC-002 requires
+   containment coverage; widening the guard trades it away. Carrying a rival
+   edit to that file here would collide with the branch that owns it.
+
+`tests/test_claude_worker.py` on this branch is now byte-identical to
+production. CI here goes green when `claude/po-handoff-release` lands.
 
 ## Deviations From Directive
 

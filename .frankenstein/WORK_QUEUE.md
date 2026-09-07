@@ -9,7 +9,11 @@
 >
 > | branch | tip | vs production | suite |
 > |---|---|---|---|
-> | `claude/FC-008-weekly-calendar` (FC-008) | `add5b2b` | +2, **fast-forward** | **1513 pass + 5 node** |
+> | `claude/FC-008-weekly-calendar` (FC-008) | `ce713da` | +4, **fast-forward** | **1513 pass + 5 node** |
+>
+> Go-live steps and the two blocking gates: `.frankenstein/FC-008/GO_LIVE.md`.
+> CI red on this branch is inherited from the baseline, reproduced on
+> production `0a5d24a` itself; it does not affect the on-box deploy gate.
 >
 > Handoff: `.frankenstein/FC-008/`. Deployment Authorization: **none**.
 >
