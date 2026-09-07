@@ -160,3 +160,35 @@ async def delete(external_id: str, known_gcal_id: str | None = None) -> bool:
         return r.status_code < 300 or r.status_code == 410  # 410 = already gone
     except Exception:  # noqa: BLE001
         return False
+
+
+async def probe() -> str:
+    """Read-only Calendar reachability check: `ok`, `disconnected`, `unreachable`.
+
+    `list_upcoming` collapses "no token" and "the call failed" into a single
+    None, which is fine for syncing but useless for reporting health — the
+    dashboard has to tell a missing credential apart from a broken connection.
+    This asks the same endpoint for a single event and reports which happened.
+
+    It is a GET and it writes nothing, so it is safe on a dashboard read path.
+    Deliberately NOT `POST /sync-from-calendar`: that imports events into
+    Postgres, which makes it a mutation, not a probe.
+    """
+    token = await _token()
+    if not token:
+        return "disconnected"
+    params = {
+        "timeMin": datetime.utcnow().isoformat() + "Z",
+        "singleEvents": "true", "orderBy": "startTime", "maxResults": 1,
+    }
+    url = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, params=params,
+                                 headers={"Authorization": f"Bearer {token}"},
+                                 timeout=8)
+    except Exception:  # noqa: BLE001 - unreachable is a reportable state
+        return "unreachable"
+    # A 401/403 means the credential exists but Calendar will not answer for
+    # it; that is not the same as never having connected.
+    return "ok" if r.status_code == 200 else "unreachable"
