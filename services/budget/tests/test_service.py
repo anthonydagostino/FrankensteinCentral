@@ -45,6 +45,10 @@ CYCLE = {
               "days_total": 30, "days_elapsed": 4, "days_left": 26},
     "ledger_latest_txn": "2026-09-03", "days_stale": 1,
     "ingest_latest": "2026-09-03", "ingest_days": 1, "month_ingested": True,
+    # The real payload always carries this; an absent flag means "the ledger
+    # did not say", which correctly suppresses every paycheck figure. A
+    # fixture omitting it would be testing the unknown path by accident.
+    "window_complete": True,
     "importer_url": "http://box:8096",
     "deposits": [_txn("2026-08-28", "ACME PAYROLL", 2400.0, source="ACME Corp")],
     "withdrawals": [_txn("2026-09-01", "Groceries", 212.0, "Groceries"),
@@ -152,3 +156,35 @@ def test_stale_ledger_pauses_per_day_guidance_through_the_endpoint(upstream, cli
     assert d["cycle"]["left"] is not None      # true as of the ledger
     assert d["cycle"]["per_day"] is None       # but no forward guidance
     assert "8 days" in d["stale_reason"]
+
+
+def test_a_cycle_payload_without_completeness_evidence_suppresses_the_figures(upstream, client):
+    """The cross-service half of the honesty rule.
+
+    A firefly that does not report whether it read the whole window has not
+    reported that it did. The budget service must pass that silence through
+    rather than defaulting it to True, or a truncated ledger arrives at the
+    dashboard as a confident "left to spend".
+    """
+    upstream["cycle"] = {k: v for k, v in CYCLE.items() if k != "window_complete"}
+    d = client.get("/status").json()["paycheck"]
+    assert d["window_complete"] is None
+    assert d["cycle"]["left"] is None
+    assert d["cycle"]["paycheck"] is None
+    assert d["cycle"]["spent"] == 312.0          # observed spending still happened
+    assert d["cycle"]["spent_is_lower_bound"] is True
+
+
+def test_the_firefly_cycle_payload_really_carries_window_completeness():
+    """Pins the fixture above to the service it stands in for.
+
+    `_cycle_payload` emitting the key is the only reason the fixture may
+    assert it. If that ever stops being true, this fails here rather than
+    silently degrading every money figure on the box.
+    """
+    import inspect
+    from pathlib import Path
+    src = Path("services/firefly/app/main.py").read_text()
+    body = src[src.index("async def _cycle_payload"):]
+    body = body[:body.index("\n@")] if "\n@" in body else body
+    assert '"window_complete"' in body

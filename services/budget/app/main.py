@@ -116,9 +116,12 @@ def _paycheck(cfg: dict, cycle: dict | None) -> dict:
         transfers=cycle.get("transfers", []),
         freshness={"ingest_days": cycle.get("ingest_days"),
                    "activity_days": cycle.get("days_stale"),
-                   # Absent means an older firefly that cannot report it; treat
-                   # that as complete rather than marking every window unknown.
-                   "window_complete": cycle.get("window_complete", True),
+                   # Passed through verbatim, INCLUDING absent. A payload that
+                   # does not say whether the window was read in full has not
+                   # said it was, and translating that silence into True here
+                   # is exactly how a truncation reaches the screen as a
+                   # confident figure.
+                   "window_complete": cycle.get("window_complete"),
                    "month_ingested": cycle.get("month_ingested"),
                    "ledger_latest_txn": cycle.get("ledger_latest_txn")},
     )

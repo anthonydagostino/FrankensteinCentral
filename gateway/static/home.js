@@ -321,7 +321,11 @@
     // user can't retrace. "Expected" allocations are labelled as such: they
     // are the configured amount, not something seen in the ledger.
     let payLine = "";
-    if (pay.available && !pay.overdue) {
+    // The whole line is one subtraction ending in "left". With `left` null —
+    // an overdue paycheck, or a ledger window not read in full — every term
+    // after the paycheck is unestablished, so the sentence is replaced rather
+    // than printed with holes in it.
+    if (pay.available && !pay.overdue && pay.left != null) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
           : a.source === "withheld_before_deposit" ? " withheld pre-deposit"
@@ -340,7 +344,7 @@
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
         ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
-    } else if (pay.available && pay.overdue) {
+    } else if (pay.available && (pay.overdue || pay.left == null)) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
     } else if (pay.configured && pay.reason) {
       payLine = `<p class="mny-pay">💵 Left to spend unavailable — ${esch(pay.reason)}.</p>`;

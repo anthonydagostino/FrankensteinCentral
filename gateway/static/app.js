@@ -438,7 +438,11 @@ const RENDERERS = {
       return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+parts[1] - 1] + " " + (+parts[2]);
     };
     let paySection = "";
-    if (pay.available && !pc.overdue) {
+    // `left` null means the cycle could not be established — an overdue
+    // paycheck, or a ledger window we did not read in full. Rendering the
+    // arithmetic anyway would print "$—" in the row the whole block builds
+    // towards, so the explanation replaces it rather than sitting under it.
+    if (pay.available && !pc.overdue && pc.left != null) {
       const allocRows = (pc.allocations || []).map((a) => {
         const note = a.source === "observed" ? `seen ${esc(dshort(a.date))}`
           : a.source === "withheld_before_deposit" ? "withheld before the deposit — not subtracted"
@@ -461,7 +465,7 @@ const RENDERERS = {
           <div class="btxn"><span class="grow"><b>Left to spend</b></span><span class="sub">${pc.days_to_next > 0 ? `${pc.days_to_next} day(s) to ${esc(dshort(pc.next_payday))}` : `payday ${esc(dshort(pc.next_payday))}`}</span><span class="mono ${pc.left < 0 ? "down" : "up"}"><b>${fmt(pc.left, 2)}</b></span></div>
         </div>
         ${perDay}`;
-    } else if (pay.available && pc.overdue) {
+    } else if (pay.available && (pc.overdue || pc.left == null)) {
       paySection = `<h4>This paycheck</h4><p class="bud-paused">${esc(pc.text)}</p>`;
     } else if (pay.configured === false) {
       paySection = `<h4>This paycheck</h4><p class="empty">Not set up yet — add your paycheck and the savings that come out of it in ⚙ Settings to see what's left to spend.</p>`;
@@ -488,7 +492,7 @@ const RENDERERS = {
       <div class="bstats">
         <div class="bstat"><div class="l">${esc(mo.label || "This month")}</div><div class="v">${mo.days_left ?? "—"}<span class="u"> days left</span></div></div>
         <div class="bstat"><div class="l">Income</div><div class="v">${d.income_month ? fmt(d.income_month) : "—"}</div></div>
-        <div class="bstat"><div class="l">Spent${(pay.month || {}).savings ? ' <span class="u">· excl. savings</span>' : ""}</div><div class="v">${fmt((pay.month || {}).spent != null ? pay.month.spent : (d.totals || {}).spent_month)}</div></div>
+        <div class="bstat"><div class="l">${(pay.month || {}).spent_is_lower_bound ? "Spent (at least)" : "Spent"}${(pay.month || {}).savings ? ' <span class="u">· excl. savings</span>' : ""}</div><div class="v">${fmt((pay.month || {}).spent != null ? pay.month.spent : (d.totals || {}).spent_month)}</div></div>
         <div class="bstat"><div class="l">Bills remaining</div><div class="v">${billsRemaining != null ? fmt(billsRemaining) : "—"}</div></div>
         <div class="bstat safe"><div class="l">Budget room<span class="u"> · ${esc(d.budget_room_scope || "")}</span></div><div class="v">${fmt(d.budget_room)}</div></div>
       </div>`;

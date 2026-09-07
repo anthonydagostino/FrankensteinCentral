@@ -695,6 +695,12 @@ def _paycheck_brief(pay: dict) -> dict:
     return {
         "available": True, "configured": True,
         "fresh": pay.get("fresh"), "stale_reason": pay.get("stale_reason"),
+        # Whether the ledger window behind these figures was read in full.
+        # True/False are evidence; None means the ledger did not say, which is
+        # unknown rather than fine. The card needs it to decide between
+        # printing a number and saying it isn't established.
+        "window_complete": pay.get("window_complete"),
+        "spent_is_lower_bound": (pay.get("cycle") or {}).get("spent_is_lower_bound"),
         "as_of": pay.get("as_of"),
         "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
         "savings_total": c.get("savings_total"),

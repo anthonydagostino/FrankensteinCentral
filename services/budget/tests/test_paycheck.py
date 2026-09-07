@@ -57,7 +57,12 @@ def month_of(today: date) -> dict:
 
 
 def run(today, deposits=(), withdrawals=(), transfers=(), cfg=None,
-        ingest_days=0, month_ingested=True, ledger_latest=None):
+        ingest_days=0, month_ingested=True, ledger_latest=None,
+        window_complete=True):
+    # `window_complete` is stated rather than omitted: silence means "the
+    # ledger did not say", which suppresses every paycheck-derived figure. A
+    # fixture exercising the ordinary case has to say the window was whole,
+    # the same way the real payload does.
     return paycheck_cycle(
         cfg=CFG if cfg is None else cfg,
         today=today, month=month_of(today),
@@ -65,6 +70,7 @@ def run(today, deposits=(), withdrawals=(), transfers=(), cfg=None,
         transfers=list(transfers),
         freshness={"ingest_days": ingest_days, "activity_days": ingest_days,
                    "month_ingested": month_ingested,
+                   "window_complete": window_complete,
                    "ledger_latest_txn": (ledger_latest or today).isoformat()},
     )
 
@@ -484,39 +490,109 @@ def test_an_unmatched_rule_still_reports_its_expected_amount():
 
 # ---- a partial window is never presented as a complete one ---------------
 
-def test_a_truncated_ledger_window_keeps_totals_but_stops_projecting():
-    """`window_complete: False` means a page cap cut the window short.
 
-    The totals stay — they are true of what was read, and a floor is more use
-    than nothing. The $/day figure does not: projecting to payday from an
-    unknown fraction of the window is a guess with a decimal point on it. The
-    reason is named rather than left for the reader to notice.
+# ---- a withheld rule is not a claim on the ledger ------------------------
+
+def test_a_pre_deposit_rule_does_not_swallow_a_real_transfer():
+    """Codex's reproduction of the first fix's own bug.
+
+    `already_withheld` means the EMPLOYER removed the money before the deposit
+    landed, so a transfer sitting in the ledger after payday is by definition
+    not that money. The rule used to claim the row anyway, contribute 0 as
+    withheld, and leave the genuine post-deposit rule reporting
+    `ambiguous_rule` — so a real $100 transfer vanished from savings entirely
+    and `left` came back as the whole paycheck.
     """
-    full = run(date(2026, 9, 4),
-               deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
-               withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")])
-    assert full["cycle"]["per_day"] is not None
-    assert full["stale_reason"] is None
-    assert full["window_complete"] is True
+    cfg = {**CFG, "allocations": [
+        {"name": "401k", "amount": 300, "match": ["savings"], "already_withheld": True},
+        {"name": "Savings", "amount": 100, "match": ["savings"]}]}
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 100.0,
+                           source="Checking", destination="Savings")],
+            cfg=cfg)["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Savings"]["source"] == "observed", "a withheld rule consumed the transfer"
+    assert allocs["Savings"]["amount"] == 100.0
+    assert allocs["401k"]["source"] == "withheld_before_deposit"
+    assert allocs["401k"]["amount"] == 0.0
+    assert d["savings_total"] == 100.0
+    assert d["left"] == 2300.0
 
-    part = paycheck_cycle(
+
+def test_a_withheld_rule_alone_consumes_nothing():
+    """The same rule with no competitor. It still contributes 0, and the
+    transfer is still not counted as saved by it."""
+    cfg = {**CFG, "allocations": [
+        {"name": "401k", "amount": 300, "match": ["savings"], "already_withheld": True}]}
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 100.0,
+                           source="Checking", destination="Savings")],
+            cfg=cfg)["cycle"]
+    assert d["savings_total"] == 0.0
+    assert d["allocations"][0]["claimed_by"] is None
+
+
+# ---- a window we did not read in full establishes almost nothing ---------
+
+def _partial(window_complete, **over):
+    kw = {"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+          "ledger_latest_txn": "2026-09-04"}
+    if window_complete is not _MISSING:
+        kw["window_complete"] = window_complete
+    kw.update(over)
+    return paycheck_cycle(
         cfg=CFG, today=date(2026, 9, 4), month=month_of(date(2026, 9, 4)),
         deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
         withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")],
-        transfers=[],
-        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
-                   "ledger_latest_txn": "2026-09-04", "window_complete": False})
-    assert part["window_complete"] is False
-    assert part["cycle"]["spent"] == 212.0, "totals should survive; they are a floor"
-    assert part["cycle"]["per_day"] is None, "projected guidance from a partial window"
-    assert "only part of this window" in (part["stale_reason"] or "")
+        transfers=[], freshness=kw)
 
 
-def test_a_ledger_that_cannot_report_completeness_is_not_marked_incomplete():
-    """An older firefly omits the flag entirely. Treating every such window as
-    partial would suppress guidance permanently and cry wolf."""
-    d = run(date(2026, 9, 4),
-            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
-            withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")])
+_MISSING = object()
+
+
+def test_a_truncated_window_suppresses_every_figure_it_cannot_support():
+    """`spent` is the only survivor, and only as a lower bound.
+
+    An earlier draft called all the totals "a floor". That was wrong in the
+    dangerous direction: missing WITHDRAWALS make `spent` too low and so
+    `left` too HIGH — a truncated window reporting more money available than
+    there is. Missing deposits push it the other way, and missing history can
+    put the cycle boundary somewhere else entirely.
+    """
+    d = _partial(False)
+    c = d["cycle"]
+    assert c["spent"] == 212.0, "observed spending really did happen"
+    assert c["spent_is_lower_bound"] is True
+    for unsupported in ("paycheck", "spendable", "left", "per_day"):
+        assert c[unsupported] is None, f"{unsupported} was claimed from a partial window"
+    assert c["state"] == "unknown"
+    assert d["month"]["daily_avg"] is None
+    assert d["month"]["spent_is_lower_bound"] is True
+    assert "isn't established" in c["text"]
+    assert "at least" in c["text"].lower()
+
+
+def test_no_completeness_evidence_is_unknown_not_complete():
+    """A payload that does not carry the flag has not said the window was
+    whole. Reading silence as "complete" is how a silent truncation gets
+    rendered as a confident number."""
+    d = _partial(_MISSING)
+    assert d["window_complete"] is None
+    assert d["cycle"]["left"] is None
+    assert d["cycle"]["spent"] == 212.0
+
+
+def test_a_complete_window_still_answers_in_full():
+    """The guard against over-suppression: nothing above may make the ordinary
+    case go quiet."""
+    d = _partial(True)
+    c = d["cycle"]
     assert d["window_complete"] is True
-    assert d["cycle"]["per_day"] is not None
+    assert c["paycheck"] == 2400.0
+    assert c["spendable"] == 800.0
+    assert c["left"] == 588.0
+    assert c["per_day"] is not None
+    assert c["spent_is_lower_bound"] is False
+    assert d["stale_reason"] is None

@@ -153,22 +153,39 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     ingest_days = fr.get("ingest_days")
     activity_days = fr.get("activity_days")
     month_ingested = fr.get("month_ingested")
-    # A page cap truncated the ledger window. The totals below are true of what
-    # was read and look exactly like complete ones, so the only honest move is
-    # to say so and stop projecting from them — a $/day figure derived from an
-    # unknown fraction of the window is a guess wearing a decimal point.
-    window_complete = fr.get("window_complete", True) is not False
+    # Did we actually read the whole ledger window these figures describe?
+    #
+    # THREE states, not two. True and False are evidence; a payload that does
+    # not carry the flag is UNKNOWN, and unknown is not proof of completeness
+    # — assuming otherwise is how a silent truncation gets presented as a
+    # confident number, which is the entire failure this guard exists for.
+    _wc = fr.get("window_complete")
+    window_complete = _wc if _wc in (True, False) else None
+    # An earlier draft called the resulting totals "a floor". That was wrong,
+    # and wrong in the dangerous direction: missing WITHDRAWALS make `spent`
+    # too low and therefore `left` too HIGH, so a truncated window can report
+    # more money available than there is. Missing DEPOSITS push it the other
+    # way, and missing history can put the cycle boundary in the wrong place
+    # entirely. Only one quantity survives: observed spending really is at
+    # least what was seen. Everything derived from the paycheck is unsupported
+    # and is suppressed rather than shaded.
+    window_known = window_complete is True
     fresh = ingest_days < INGEST_MAX_DAYS if ingest_days is not None else False
-    fresh = fresh and window_complete
+    fresh = fresh and window_known
     stale_reason = None
     if ingest_days is None:
         stale_reason = "no import evidence in the ledger, so guidance is paused"
-    elif not fresh and window_complete:
+    elif not fresh and window_known:
         stale_reason = (f"financial data hasn't been imported for {ingest_days} days, "
                         "so anything spent since then is missing")
-    if not window_complete:
-        stale_reason = ("only part of this window could be read from the ledger, "
-                        "so these totals are a floor, not a full picture")
+    if window_complete is False:
+        stale_reason = ("only part of this window could be read from the ledger, so "
+                        "what's left of this paycheck can't be worked out — spending "
+                        "shown is at least this much, and may be more")
+    elif window_complete is None:
+        stale_reason = ("the ledger didn't say whether this window was read in full, "
+                        "so what's left of this paycheck isn't established — spending "
+                        "shown is at least this much")
 
     # ---- allocations: the money that leaves the pot on payday -------------
     allocs_cfg = [a for a in (cfg.get("allocations") or []) if isinstance(a, dict)]
@@ -198,7 +215,12 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         # arithmetic, not knowledge — say unknown.
         "spent": None if month_ingested is False else _round(month_spent),
         "savings": None if month_ingested is False else _round(month_savings),
-        "daily_avg": (None if month_ingested is False
+        # At least this much: a truncated window can only omit spending, never
+        # invent it. The consumer needs to say "at least" rather than print it
+        # as the month's total.
+        "spent_is_lower_bound": not window_known,
+        # An average over a window of unknown extent is not an average.
+        "daily_avg": (None if (month_ingested is False or not window_known)
                       else _round(month_spent / days_elapsed)),
     }
 
@@ -285,17 +307,26 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         except (TypeError, ValueError):
             planned = 0.0
         name = a.get("name") or "Savings"
-        seen, contested = [], []
-        for i, t in enumerate(cycle_out_txns):
-            if not is_savings_inflow(t, terms):
-                continue
-            if i in claimed:
-                contested.append(claimed[i])
-                continue
-            claimed[i] = name
-            seen.append(t)
-        observed = round(sum(_amount(t) for t in seen), 2)
         withheld = bool(a.get("already_withheld"))
+        seen, contested = [], []
+        # An already-withheld rule describes money the EMPLOYER removed before
+        # the deposit landed. A transfer sitting in the ledger after payday is
+        # by definition not that money, so this rule may not consume one. It
+        # used to: the row was claimed here, contributed 0 as withheld, and
+        # then the real post-deposit rule found it already taken and also
+        # contributed 0 — a genuine $100 transfer disappearing from savings
+        # entirely. Skipping the scan is the whole fix; the rule's amount was
+        # never going to come from the ledger anyway.
+        if not withheld:
+            for i, t in enumerate(cycle_out_txns):
+                if not is_savings_inflow(t, terms):
+                    continue
+                if i in claimed:
+                    contested.append(claimed[i])
+                    continue
+                claimed[i] = name
+                seen.append(t)
+        observed = round(sum(_amount(t) for t in seen), 2)
         if withheld:
             # The employer takes it before the deposit lands, so the paycheck
             # is already net of it. Showing it is useful; subtracting it again
@@ -332,12 +363,26 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
                       if _in(t, last_date, today) and not is_savings(t)), 2)
     left = None if overdue else round(spendable - spent, 2)
 
+    # A window we did not read in full cannot support any of these. `spent`
+    # survives as a genuine lower bound — money we watched leave really did
+    # leave — but the paycheck itself may be missing deposits, the allocations
+    # may be missing transfers, and the cycle boundary is derived from the
+    # deposits we happened to see, so `paycheck`, `spendable` and `left` are
+    # not shaded versions of the truth. They are unestablished, and the only
+    # honest rendering of an unestablished number is no number.
+    if not window_known:
+        paycheck_amount = None
+        spendable = None
+        left = None
+
     # ---- guidance (only when the ledger can support it) ------------------
     per_day = None
     if left is not None and fresh and days_to_next > 0:
         per_day = round(max(left, 0.0) / days_to_next, 2)
 
-    if overdue:
+    if not window_known:
+        state = "unknown"
+    elif overdue:
         state = "unknown"
     elif left < 0:
         state = "over"
@@ -347,7 +392,14 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         state = "ok"
 
     money = lambda v: f"${v:,.0f}"  # noqa: E731
-    if overdue:
+    if not window_known:
+        # Say what IS known — the spending we watched happen — and name the
+        # one thing that isn't, rather than printing a confident dollar figure
+        # beside a caveat the eye slides past.
+        text = (f"Only part of this pay cycle could be read from the ledger, so what's "
+                f"left of this paycheck isn't established. At least {money(spent)} has "
+                f"gone out since {last_date.isoformat()}.")
+    elif overdue:
         text = (f"A paycheck was expected around {next_payday.isoformat()} and isn't in "
                 "the ledger yet, so what's left of it can't be worked out. "
                 "Import your latest transactions.")
@@ -377,6 +429,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "start": last_date.isoformat(),
             "days_elapsed": (today - last_date).days + 1,
             "paycheck": paycheck_amount,
+            "spent_is_lower_bound": not window_known,
             "paycheck_desc": pays[0].get("desc") or "",
             "paycheck_parts": len(same_day),
             "allocations": allocations,

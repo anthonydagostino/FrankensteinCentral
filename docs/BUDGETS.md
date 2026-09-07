@@ -219,12 +219,30 @@ configured `cadence_days` otherwise.
   `claimed_by`, rather than falling back to its configured amount — which
   would re-create the double deduction under the label `expected`. Splits are
   unaffected: two genuinely separate $50 transfers both still count.
-- **A partial ledger window is never presented as a whole one.** Paging
-  through Firefly has a page cap; when it runs out with more to fetch,
-  `window_complete` is false. Totals still show — they are a floor, and a
-  floor beats nothing — but `per_day` is suppressed and the reason is named.
-  A projection computed from an unknown fraction of the window is a guess
-  with a decimal point on it.
+- **A partial ledger window establishes almost nothing.** Paging through
+  Firefly has a page cap. `window_complete` has **three** states: true and
+  false are evidence, and a payload that does not carry it is `null` —
+  *unknown*, which is not proof of completeness. Reading silence as "complete"
+  is precisely how a silent truncation reaches the screen as a confident
+  figure.
+
+  Only when it is true are `paycheck`, `spendable`, `left` and `per_day`
+  reported at all; otherwise they are `null`. Calling them "a floor" was
+  wrong, and wrong in the dangerous direction: missing **withdrawals** make
+  `spent` too low and therefore `left` too **high**, so a truncated window
+  would claim more money available than exists. Missing deposits push it the
+  other way, and missing history can put the cycle boundary somewhere else
+  entirely.
+
+  One quantity does survive. Observed spending really did happen, so `spent`
+  is reported with `spent_is_lower_bound`, and every surface that renders it
+  says *at least* rather than presenting it as the total.
+- **An `already_withheld` allocation is not a claim on the ledger.** The
+  employer removed that money before the deposit landed, so a transfer sitting
+  in the ledger after payday is by definition not it. Such a rule contributes
+  0 **and consumes no movement** — letting it claim one made a real transfer
+  disappear from savings entirely, because the genuine post-deposit rule then
+  saw the row as already taken.
 - **A missing paycheck is not an overspend.** Past `next payday +
   OVERDUE_GRACE_DAYS` with no newer deposit, `left` is `null` with the
   reason — a ledger that is behind is not a user who is $2,000 in the hole.
