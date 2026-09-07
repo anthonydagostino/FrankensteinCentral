@@ -47,6 +47,13 @@ OPTIONAL_SERVICES="${FRANKENSTEIN_OPTIONAL_SERVICES:-gmail firefly plex powerbuy
 # drifts out of the page fails in CI rather than on the box after a deploy.
 STRUCTURE_MARKERS="${FRANKENSTEIN_READINESS_MARKERS:-cc-grid cc-donext cc-money}"
 
+# The assets the dashboard cannot render without. Checking "whatever the page
+# happens to declare" is not enough: a page that simply stops declaring its
+# script still passes, because there is nothing left to fail on. Each of these
+# must be BOTH declared by the entry page AND fetched successfully. Pinned to
+# gateway/static/index.html by a test.
+ESSENTIAL_ASSETS="${FRANKENSTEIN_READINESS_ASSETS:-/app.js /home.js /styles.css /home.css}"
+
 JSON_ONLY=0
 [ "${1:-}" = "--json-only" ] && JSON_ONLY=1
 
@@ -54,15 +61,16 @@ COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
 python3 - "$BASE_URL" "$RETRIES" "$DELAY" "$TIMEOUT" "$COMMIT" \
          "$REQUIRED_SERVICES" "$OPTIONAL_SERVICES" "$JSON_ONLY" \
-         "$STRUCTURE_MARKERS" <<'PY'
+         "$STRUCTURE_MARKERS" "$ESSENTIAL_ASSETS" <<'PY'
 import json, sys, time, urllib.request, urllib.error, datetime, re
 
 (base, retries, delay, timeout, commit, required, optional, json_only,
- markers) = sys.argv[1:10]
+ markers, essential) = sys.argv[1:11]
 retries, delay, timeout = int(retries), float(delay), float(timeout)
 required = required.split()
 optional = optional.split()
 markers = markers.split()
+essential = essential.split()
 json_only = json_only == "1"
 
 # ONE budget for the whole check, shared by every retry loop. Retrying the
@@ -190,6 +198,16 @@ if html is not None:
     if external:
         add("entry page assets are same-origin", True, "pass",
             "%d non-same-origin asset reference(s) not requested" % len(external))
+    # An asset that is not declared cannot fail a fetch, so absence has to be
+    # its own check. Compared on the path alone, so a cache-busting query
+    # string does not read as a different file.
+    declared = {p.split('?')[0].split('#')[0] for p, _ in assets}
+    absent = [e for e in essential if e not in declared]
+    add("entry page declares its essential assets", True,
+        "fail" if absent else "pass",
+        "the entry page does not reference: %s" % ", ".join(absent) if absent
+        else "all %d essential assets are referenced" % len(essential))
+
     if not assets:
         add("entry page assets", True, "fail",
             "the entry page declares no same-origin JS or CSS to verify")

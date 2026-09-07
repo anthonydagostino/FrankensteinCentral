@@ -32,17 +32,23 @@ MARKERS = ["cc-grid", "cc-donext", "cc-money"]
 
 # A minimal page that is unmistakably the hub: the structure markers plus the
 # same-origin assets a real entry page declares.
+ESSENTIAL = ["/app.js", "/home.js", "/styles.css", "/home.css"]
+
 INDEX = (
     b"<!doctype html><html><head>"
     b"<link rel='stylesheet' href='/styles.css'>"
+    b"<link rel='stylesheet' href='/home.css'>"
     b"</head><body>"
     b"<main id='cc-grid'><section id='cc-donext'></section>"
     b"<section id='cc-money'></section></main>"
     b"<script src='/app.js'></script>"
+    b"<script src='/home.js'></script>"
     b"</body></html>"
 )
 APP_JS = b"const hub = 1;\n"
 STYLES = b".cc-grid { display: grid; }\n"
+ASSETS = {"/app.js": APP_JS, "/home.js": APP_JS,
+          "/styles.css": STYLES, "/home.css": STYLES}
 
 REQUIRED = ["core", "tasks"]
 OPTIONAL = ["gmail", "firefly"]
@@ -56,10 +62,11 @@ def make_server(index=INDEX, apps=None, health=None, status_for=None,
         apps = [{"key": "core", "name": "Core"}, {"key": "tasks", "name": "Tasks"}]
     if health is None:
         health = {k: {"key": k, "status": "up"} for k in REQUIRED + OPTIONAL}
-    files = {"/app.js": APP_JS, "/styles.css": STYLES}
+    files = dict(ASSETS)
     if assets is not None:
         files = assets
-    types = {"/app.js": "text/javascript", "/styles.css": "text/css"}
+    types = {p: ("text/javascript" if p.endswith(".js") else "text/css")
+             for p in files}
     types.update(ctype_for or {})
 
     class H(BaseHTTPRequestHandler):
@@ -193,6 +200,63 @@ def test_a_200_that_is_not_the_dashboard_fails(index, why):
         srv.shutdown()
 
 
+def test_an_entry_page_that_stops_declaring_its_script_fails():
+    """Codex FC-002 review of 5c5d64f, finding 2. Checking only the assets a
+    page happens to declare cannot catch a page that declares none: remove the
+    script tag, keep the stylesheet and healthy APIs, and there is nothing left
+    to fail on. The essential set is required by name, not by inference."""
+    index = (b"<!doctype html><html><head>"
+             b"<link rel='stylesheet' href='/styles.css'>"
+             b"<link rel='stylesheet' href='/home.css'>"
+             b"</head><body><main id='cc-grid'><div id='cc-donext'></div>"
+             b"<div id='cc-money'></div></main></body></html>")
+    srv, _ = make_server(index=index)
+    try:
+        r, doc = run_check(srv)
+    finally:
+        srv.shutdown()
+    assert r.returncode == 1, "a dashboard with no JavaScript at all passed"
+    assert "entry page declares its essential assets" in doc["required_failed"]
+
+
+@pytest.mark.parametrize("dropped", ESSENTIAL)
+def test_dropping_any_single_essential_asset_fails(dropped):
+    """Each named asset is load-bearing, proven one at a time."""
+    index = INDEX.replace(f"<script src='{dropped}'></script>".encode(), b"")
+    index = index.replace(
+        f"<link rel='stylesheet' href='{dropped}'>".encode(), b"")
+    assert index != INDEX, f"{dropped} is not in the fixture page"
+    srv, _ = make_server(index=index)
+    try:
+        r, doc = run_check(srv)
+    finally:
+        srv.shutdown()
+    assert r.returncode == 1, f"dropping {dropped} still passed"
+    assert "entry page declares its essential assets" in doc["required_failed"]
+
+
+def test_a_cache_busted_essential_asset_still_counts_as_declared():
+    """A query string is the same file, and must not read as a missing one."""
+    index = INDEX.replace(b"/app.js'", b"/app.js?v=3'")
+    srv, seen = make_server(index=index)
+    try:
+        r, doc = run_check(srv, FRANKENSTEIN_READINESS_RETRIES="1")
+    finally:
+        srv.shutdown()
+    assert "entry page declares its essential assets" not in doc["required_failed"]
+    assert any(p.startswith("/app.js?") for _, p in seen)
+
+
+def test_every_essential_asset_is_referenced_by_the_real_index():
+    src = READINESS.read_text()
+    declared = re.search(r'FRANKENSTEIN_READINESS_ASSETS:-([^}]*)\}', src)
+    assert declared, "readiness.sh no longer declares an essential asset list"
+    index = (STATIC / "index.html").read_text()
+    for asset in declared.group(1).split():
+        assert asset in index, \
+            f"essential asset {asset} is not referenced by gateway/static/index.html"
+
+
 def test_a_page_with_markers_but_no_assets_to_check_fails():
     """Structure alone is cheap to forge; something must actually load."""
     index = (b"<!doctype html><html><body><main id='cc-grid'>"
@@ -209,7 +273,8 @@ def test_a_page_with_markers_but_no_assets_to_check_fails():
 
 def test_a_missing_js_asset_fails():
     """A hub whose script 404s is a blank screen, however green the containers."""
-    srv, _ = make_server(assets={"/styles.css": STYLES})
+    srv, _ = make_server(assets={k: v for k, v in ASSETS.items()
+                                 if k != "/app.js"})
     try:
         r, doc = run_check(srv)
         assert r.returncode == 1
@@ -220,7 +285,7 @@ def test_a_missing_js_asset_fails():
 
 def test_html_served_in_place_of_js_fails():
     """The classic SPA fallback: every unknown path answers with index.html."""
-    srv, _ = make_server(assets={"/app.js": INDEX, "/styles.css": STYLES},
+    srv, _ = make_server(assets=dict(ASSETS, **{"/app.js": INDEX}),
                          ctype_for={"/app.js": "text/html"})
     try:
         r, doc = run_check(srv)
@@ -241,7 +306,7 @@ def test_wrong_content_type_for_js_fails():
 
 
 def test_an_empty_asset_fails():
-    srv, _ = make_server(assets={"/app.js": b"   \n", "/styles.css": STYLES})
+    srv, _ = make_server(assets=dict(ASSETS, **{"/app.js": b"   \n"}))
     try:
         r, doc = run_check(srv)
         assert r.returncode == 1
@@ -258,8 +323,9 @@ def test_external_asset_urls_are_never_requested():
              b"</head><body><main id='cc-grid'><div id='cc-donext'></div>"
              b"<div id='cc-money'></div></main>"
              b"<script src='https://evil.example/z.js'></script>"
-             b"<script src='/app.js'></script>"
+             b"<script src='/app.js'></script><script src='/home.js'></script>"
              b"<link rel='stylesheet' href='/styles.css'>"
+             b"<link rel='stylesheet' href='/home.css'>"
              b"</body></html>")
     srv, seen = make_server(index=index)
     try:
@@ -385,10 +451,10 @@ def test_a_required_service_that_comes_up_late_is_retried():
         def do_GET(self):
             if self.path == "/":
                 self._send(200, INDEX, "text/html")
-            elif self.path == "/app.js":
-                self._send(200, APP_JS, "text/javascript")
-            elif self.path == "/styles.css":
-                self._send(200, STYLES, "text/css")
+            elif self.path in ASSETS:
+                self._send(200, ASSETS[self.path],
+                           "text/javascript" if self.path.endswith(".js")
+                           else "text/css")
             elif self.path == "/api/apps":
                 self._send(200, json.dumps(
                     [{"key": "core", "name": "Core"}]).encode(),
@@ -421,7 +487,7 @@ def test_it_only_ever_issues_reads():
     assert seen, "the check made no requests at all"
     methods = {m for m, _ in seen}
     assert methods == {"GET"}, f"non-GET requests issued: {methods}"
-    allowed = {"/", "/api/apps", "/api/health", "/app.js", "/styles.css"}
+    allowed = {"/", "/api/apps", "/api/health"} | set(ESSENTIAL)
     touched = {p for _, p in seen}
     assert touched <= allowed, f"unexpected endpoints touched: {touched - allowed}"
 
