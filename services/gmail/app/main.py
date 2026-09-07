@@ -28,7 +28,8 @@ REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8083/auth
 # /internal/token below). Existing users need to re-visit /auth/login once
 # after this scope was added; a token minted with only gmail.modify can't
 # call the Calendar API and Google will 403 until re-consented.
-SCOPES = "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events"
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+SCOPES = f"https://www.googleapis.com/auth/gmail.modify {CALENDAR_SCOPE}"
 
 # How much of the inbox to look at. category:primary drops promotions/social/
 # updates automatically, so this is the real inbox — not just receipts.
@@ -333,7 +334,33 @@ async def _access_token() -> str | None:
     tok = r.json()
     _ACCESS["token"] = tok.get("access_token", "")
     _ACCESS["exp"] = time.time() + int(tok.get("expires_in", 3600))
+    # Google echoes the scopes the REFRESH TOKEN actually carries, which is
+    # not necessarily what SCOPES asks for: a refresh token minted before
+    # calendar.events was added (e.g. the one reused from PowerBuy) keeps its
+    # original, narrower grant forever. Recording it here is what lets the
+    # schedule service say "re-consent" instead of "unreachable" when the
+    # Calendar API refuses the token — see granted_scopes below.
+    _ACCESS["scope"] = tok.get("scope", "")
     return _ACCESS["token"]
+
+
+def granted_scopes() -> list[str]:
+    """Scopes the current credential actually holds, as last reported by
+    Google. Empty until a token has been minted — absence of the list is
+    "not established yet", never "no scopes"."""
+    return sorted(s for s in (_ACCESS.get("scope") or "").split(" ") if s)
+
+
+def has_calendar_scope() -> bool | None:
+    """True/False once Google has told us, None while unestablished.
+
+    Three states on purpose. Returning False for "we have not asked yet"
+    would put a re-consent banner in front of a connection that is fine.
+    """
+    scopes = granted_scopes()
+    if not scopes:
+        return None
+    return CALENDAR_SCOPE in scopes
 
 
 def _connected() -> bool:
@@ -342,7 +369,8 @@ def _connected() -> bool:
 
 @app.get("/health")
 async def health():
-    return {"service": "gmail", "connected": _connected(), "query": INBOX_QUERY}
+    return {"service": "gmail", "connected": _connected(), "query": INBOX_QUERY,
+            "calendar_scope": has_calendar_scope(), "scopes": granted_scopes()}
 
 
 @app.get("/internal/token")
@@ -354,7 +382,12 @@ async def internal_token():
     token = await _access_token()
     if not token:
         return JSONResponse({"error": "not connected"}, status_code=503)
-    return {"access_token": token}
+    # `scopes` travels with the token so the caller can tell a credential that
+    # was never granted Calendar access apart from a Calendar outage. Without
+    # it a 403 is indistinguishable from a network failure, and the dashboard
+    # tells you to wait when what it should say is "click reconnect".
+    return {"access_token": token, "scopes": granted_scopes(),
+            "calendar_scope": has_calendar_scope()}
 
 
 @app.get("/auth/login")
@@ -402,9 +435,25 @@ async def callback(code: str | None = None, error: str | None = None):
     if tok.get("refresh_token"):
         TOKENS["refresh_token"] = tok["refresh_token"]
         _save_token(tok["refresh_token"])
+    # Adopt the freshly consented credential immediately. Without this the
+    # cached access token from the OLD, narrower grant stays valid for up to
+    # an hour, so re-consenting to add Calendar appears to do nothing —
+    # exactly the symptom that made the connection look permanently broken.
+    _ACCESS["token"] = tok.get("access_token", "")
+    _ACCESS["exp"] = time.time() + int(tok.get("expires_in", 3600))
+    _ACCESS["scope"] = tok.get("scope", "")
+    cal = has_calendar_scope()
+    cal_line = (
+        "<p>📅 Google Calendar access granted — your calendar will appear on "
+        "the dashboard within a few minutes.</p>" if cal
+        else "<p>⚠ Gmail is connected, but Google <b>did not</b> grant calendar "
+             "access. Re-run this flow and tick the calendar permission, or the "
+             "week grid will only ever show events stored locally.</p>"
+    )
     return HTMLResponse(
         "<h2>✅ Gmail connected</h2>"
         "<p>Your inbox is now live in the hub. You can close this tab.</p>"
+        + cal_line +
         '<p><a href="http://localhost:8080/">← Back to the hub</a></p>'
     )
 

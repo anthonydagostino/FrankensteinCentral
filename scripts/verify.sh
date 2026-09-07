@@ -269,6 +269,50 @@ else:
     add("FAIL", "gmail svc", f"{err}")
 print()
 
+print("-- google calendar (schedule service) --")
+# Prints states and counts only. No token, no scope value, no event details
+# ever leave this script — same rule as the rest of it.
+st, ch, err = get(8084, "/calendar-health", timeout=20)
+if st == 200 and ch is not None:
+    state = ch.get("state", "?")
+    if state == "ok":
+        add("PASS", "gcal conn", "Calendar API answered — credential is in scope")
+    elif state == "needs_consent":
+        add("FAIL", "gcal conn",
+            "credential REFUSED by Calendar (wrong scopes). The saved Google "
+            "login was granted mail access only and will never gain calendar "
+            "access on its own. Fix: open http://localhost:8083/auth/login and "
+            "approve calendar access.")
+    elif state == "disconnected":
+        add("FAIL", "gcal conn", "no Google credential at all — "
+                                 "connect Gmail first (docs/SETUP-GMAIL.md)")
+    else:
+        add("WARN", "gcal conn", f"state={state} — could not reach Calendar just now")
+    iv = ch.get("pull_interval_seconds")
+    if iv is None:
+        add("WARN", "gcal pull", "no pull_interval_seconds — schedule container is an OLD build, redeploy")
+    elif iv == 0:
+        add("WARN", "gcal pull", "import loop DISABLED (GCAL_SYNC_SECONDS=0) — "
+                                 "nothing will import from Google Calendar")
+    else:
+        add("PASS", "gcal pull", f"importing every {iv}s")
+else:
+    add("WARN", "gcal conn", f"no /calendar-health ({err or 'old build?'})")
+
+# How much actually arrived. The connection being healthy and events actually
+# being imported are different facts, and only the second one is what the
+# dashboard draws.
+st, evs, err = get(8084, "/events", timeout=20)
+if st == 200 and evs is not None:
+    rows = evs.get("events", [])
+    from_google = [e for e in rows if e.get("source") == "google_calendar"]
+    add("PASS" if from_google else "WARN", "gcal events",
+        f"{len(from_google)} of {len(rows)} stored event(s) came from Google Calendar"
+        + ("" if from_google else " — nothing imported yet"))
+else:
+    add("WARN", "gcal events", f"{err or 'schedule service did not answer'}")
+print()
+
 print("-- budget (time-aware, over Firefly) --")
 st, bs, err = get(8088, "/status?fresh=1", timeout=60)
 if st == 200 and bs is not None:

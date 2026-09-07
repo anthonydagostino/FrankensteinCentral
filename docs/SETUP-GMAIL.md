@@ -70,6 +70,46 @@ restarts.
 
 ---
 
+## Google Calendar uses this same connection
+
+The schedule service does not run its own OAuth flow — it borrows this one, so
+connecting Gmail is also what connects Google Calendar. That means one consent
+screen covers both, and it also means one specific way to end up with mail
+working and the calendar dead:
+
+**A Google login keeps the permissions it was granted, permanently.** If you
+pasted a `GOOGLE_REFRESH_TOKEN` from PowerBuy (the fast path in `.env.example`),
+that token was approved for mail alone. It will refresh happily forever, Gmail
+will work perfectly, and every single Calendar call will be refused — not
+because anything is broken, but because that login was never allowed near your
+calendar. Waiting does not fix it and neither does restarting.
+
+The fix is one click: open **http://localhost:8083/auth/login**, approve the
+calendar permission, and a new login is minted and saved with both. The
+dashboard also offers this as a **Connect Google Calendar** button on the week
+card whenever it detects this state.
+
+To check where you stand:
+
+```
+bash scripts/verify.sh        # the "google calendar" section says which state
+curl -s localhost:8084/calendar-health
+```
+
+`state` is one of:
+
+| state | what it means | what to do |
+|---|---|---|
+| `ok` | Calendar answered; the credential is in scope | nothing |
+| `needs_consent` | a credential exists, Calendar refuses it | re-run `/auth/login` |
+| `disconnected` | no Google credential at all | connect Gmail first |
+| `unreachable` | Calendar could not be reached just now | wait; it is transient |
+
+Events are imported into the schedule service every `GCAL_SYNC_SECONDS`
+(15 minutes by default), independently of `AUTO_SYNC_SECONDS`.
+
+---
+
 ## Troubleshooting
 
 - **"Access blocked / app not verified":** Your Google project may be in

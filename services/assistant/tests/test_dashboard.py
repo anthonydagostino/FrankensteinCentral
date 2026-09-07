@@ -310,7 +310,7 @@ def test_pending_and_countered_holds_survive_the_new_layout():
     assert "They countered" in titles
     assert "Declined slot" not in titles
     assert today["counts"] == {"total": 3, "confirmed": 1, "pending": 1,
-                               "countered": 1, "needs_you": 1}
+                               "countered": 1, "needs_you": 1, "google": 0}
     countered = next(e for e in today["events"] if e["status"] == "countered")
     assert countered["needs_you"] is True
 
@@ -701,3 +701,109 @@ def test_portfolio_mirrors_the_firefly_contract():
     for payload in ({}, None, {"connected": False}, {"connected": True}):
         assert dash.firefly_state(payload) in ("ok", "unreachable", "not_configured")
     assert dash.firefly_state({}) == dash.portfolio_state({}) == "unreachable"
+
+
+# --- Google Calendar: the states, and the events themselves ------------------
+#
+# The connection was reported through exactly two lenses — "a probe answered"
+# and "gmail has some credential" — and neither could see the failure that was
+# actually happening: a credential that exists, that Gmail is perfectly happy
+# with, and that Google refuses for Calendar because it was minted before the
+# calendar scope was asked for. That state never heals on its own, so folding
+# it into `unknown` ("couldn't confirm, try later") is advice that cannot work.
+
+CAL_NEEDS_CONSENT = {"state": "needs_consent", "ok": False, "fix": "reconnect"}
+
+
+def test_a_refused_credential_is_reported_as_needing_consent():
+    assert dash.schedule_state({"events": []}, LIVE, CAL_NEEDS_CONSENT) == "needs_consent"
+    assert dash.schedule_state({"events": [1]}, LIVE, CAL_NEEDS_CONSENT) == "needs_consent"
+    # Gmail reporting itself perfectly healthy must not soften it: Gmail works
+    # in exactly this failure, which is the whole reason it went unnoticed.
+    assert dash.schedule_state({"events": []}, GMAIL_HEALTHY,
+                               CAL_NEEDS_CONSENT) == "needs_consent"
+
+
+def test_needs_consent_is_never_rounded_to_unknown_or_ok():
+    """`unknown` invites you to wait, and waiting cannot fix a scope. The two
+    must stay distinguishable, and neither may read as a healthy calendar."""
+    state = dash.schedule_state({"events": []}, LIVE, CAL_NEEDS_CONSENT)
+    assert state not in ("ok", "unknown")
+    assert state in dash.SCHEDULE_STATES
+    # Both repairable states point at the same fix, and no others do.
+    assert set(dash.RECONNECT_STATES) == {"disconnected", "needs_consent"}
+    for healthy_ish in ("ok", "unknown", "unreachable"):
+        assert healthy_ish not in dash.RECONNECT_STATES
+
+
+def test_an_unreachable_calendar_is_still_unknown_not_a_consent_problem():
+    """A network fault is not a permissions fault. Telling someone to
+    reconnect a working account is its own wasted afternoon."""
+    assert dash.schedule_state({"events": []}, LIVE, {"state": "unreachable"}) == "unknown"
+    assert dash.schedule_state({"events": []}, LIVE, {"state": "unreachable"}) not in \
+        dash.RECONNECT_STATES
+
+
+def test_google_events_are_identifiable_on_the_grid():
+    """The week card's main content is meant to be what is really on your
+    Google Calendar, so each event says whether it came from there and the
+    week carries a total. The total is the ONLY positive evidence a reader
+    gets that the import is working: `state == "ok"` merely means a probe was
+    answered, which it is just as happily when nothing was ever imported."""
+    d = date(2026, 3, 12)
+    events = [
+        ev("Dentist", at(d, 9).isoformat()),
+        ev("Standup", at(d, 10).isoformat()),
+    ]
+    events[0]["source"] = "google_calendar"
+    events[1]["source"] = "gmail"
+    week = dash.week_window(events, at(d, 7), NY)
+    today = week["days"][0]
+    by_title = {e["title"]: e for e in today["events"]}
+    assert by_title["Dentist"]["from_google"] is True
+    assert by_title["Standup"]["from_google"] is False
+    assert today["counts"]["google"] == 1
+    assert today["counts"]["total"] == 2
+    assert week["from_google"] == 1
+
+
+def test_nothing_imported_yet_counts_as_zero_not_as_missing():
+    """A grid built only from local rows reports 0, not a missing key — the
+    header renders off this number and must not have to guess."""
+    d = date(2026, 3, 12)
+    week = dash.week_window([ev("Local only", at(d, 9).isoformat())], at(d, 7), NY)
+    assert week["from_google"] == 0
+    assert all(day["counts"]["google"] == 0 for day in week["days"])
+    assert week["days"][0]["events"][0]["from_google"] is False
+
+
+def test_google_event_totals_hold_across_a_calendar_sweep():
+    """Per docs/TESTING.md: the per-day counts and the week total are one fact
+    counted two ways, and they must agree on every date, not just today's."""
+    for offset in range(0, 800, 7):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        events = []
+        for day_offset in (0, 1, 3, 6, 9):
+            when = at(d + timedelta(days=day_offset), 14).isoformat()
+            e = ev(f"Event {day_offset}", when)
+            e["source"] = "google_calendar" if day_offset % 2 == 0 else "manual"
+            events.append(e)
+        week = dash.week_window(events, at(d, 7), NY)
+        assert week["from_google"] == sum(x["counts"]["google"] for x in week["days"]), d
+        # Day 9 falls outside the seven-day window on every date, so the total
+        # can never count an event the grid does not draw.
+        assert week["from_google"] <= sum(x["counts"]["total"] for x in week["days"]), d
+
+
+def test_an_imported_location_reaches_the_grid():
+    """Imported from Google so a card can say where to be, and normalised to
+    None when absent — the renderer draws the line only when there is one."""
+    d = date(2026, 5, 4)
+    with_place = ev("Dentist", at(d, 9).isoformat())
+    with_place["location"] = "400 Main St"
+    blank = ev("Call", at(d, 11).isoformat())
+    blank["location"] = ""
+    week = dash.week_window([with_place, blank], at(d, 7), NY)
+    by_title = {e["title"]: e for e in week["days"][0]["events"]}
+    assert by_title["Dentist"]["location"] == "400 Main St"
+    assert by_title["Call"]["location"] is None
