@@ -130,3 +130,16 @@ Required correction:
 5. Keep the seven-day acceptance rule unambiguous: today plus six days. The previous wording about five days after tomorrow was inconsistent with that rule and is corrected above.
 
 FC-002 remains paused and unaccepted; its latest review is PO_REVIEW_5c5d64f.md. No queued money/paycheck feature is authorized by this directive. No direct promotion, bypass, credential/account changes, spending, or host activation is authorized. Only Codex may accept; only the deterministic release service may promote after a separate valid approval.
+
+## Codex correction 2 — review of 5f6b9bf
+
+Reviewed exact candidate 5f6b9bf0f35e0debc3b72a42730eb20d3c3e7ec5 and canonical handoff at c1d012ef847e938c8bd5204cbb1938e3e3b7330f. Binding matches epoch f1a56bdb7d1ed4497de10086a4610bfb3d96f595. Independent GitHub job 101786071171 (run 34135715658) reports 2325 passed and ALL TESTS PASSED. All 49 dashboard tests also passed locally. The CI and decoration corrections are present. Seasonal decorations remain ON by default, as Anthony explicitly reaffirmed.
+
+Acceptance remains withheld for a concrete remaining trust defect:
+1. P1: schedule_state returns ok whenever Gmail mode is live. In services/gmail/app/main.py, a failed inbox fetch deliberately retains mode=live when cached items exist, with sync_status=failed. Thus live is not proof of a healthy connection. Sharing a credential also does not establish Calendar API access or successful Calendar synchronization. Use positive Calendar-specific read-only evidence if available; otherwise report unknown, retain local events and the caveat. At minimum live plus failed/missing sync evidence must never turn an unknown Calendar into healthy. Tests must use the actual cached-failure shape, and distinguish a healthy inbox from confirmed Calendar health. No new credential scopes or write operations are authorized.
+2. Resolve the declared metadata contradiction. Bounded scope expansion: port only the protocol-test changes needed to support real task metadata and update the candidate to FC-008 with this directive identity. Do not import unrelated FC-002 release code, weaken binding checks, rely on missing historical objects, or hide failures. Require a fresh-checkout green full suite after binding.
+3. Rewrite the canonical handoff around the final candidate. It currently mixes obsolete claims (placeholder files unchanged, old CI still red, review 176e72b next, FC-002 files still canonical) with current facts. Keep prior reports in git history and report the final state once, with exact SHA, tests, deviations and binding.
+
+Production observation: production now points to e7adf839e0e2e225e50550f5564de7dd93d85512; the handoff reports a separate owner-directed promotion. This review does not independently authenticate that instruction or confirm the running SHA. Control has no corresponding accepted/deploy-approved transition, status remains absent, and PO_REVIEW_e7adf83.md's money findings remain open. Preserve that production ancestry. No rollback, money-layer edit, acceptance, promotion or host activation is authorized by this calendar correction.
+
+Continue on claude/FC-008-weekly-calendar from 5f6b9bf, bind to this correction's new STATE.json epoch, publish a clean canonical handoff, and stop. FC-002 remains paused and unaccepted.
