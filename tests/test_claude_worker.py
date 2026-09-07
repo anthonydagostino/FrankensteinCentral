@@ -18,25 +18,6 @@ from pathlib import Path
 
 import pytest
 
-
-# The worker refuses to run a child unconfined, so every test that actually
-# runs it needs the SAME namespaces the worker demands — not a subset. This
-# mirrors the availability check in scripts/claude-worker.sh exactly: a host
-# with user+mount but no PID or net namespace would otherwise let these tests
-# run and then fail confusingly, blaming the code for a missing kernel feature.
-#
-# Skipping here never hides a containment regression. Where the namespaces
-# exist — the OptiPlex, and any developer machine — every one of these tests
-# runs and asserts containment in full. The skip only fires on a host that
-# cannot build the boundary at all, where the assertions could not be
-# meaningful. GitHub's hosted runners are such a host.
-SANDBOX_OK = subprocess.run(
-    ["unshare", "--user", "--map-root-user", "--mount",
-     "--pid", "--fork", "--mount-proc", "--net", "true"],
-    capture_output=True).returncode == 0
-needs_sandbox = pytest.mark.skipif(
-    not SANDBOX_OK,
-    reason="host cannot create the user+mount+PID+net namespaces the worker requires")
 ROOT = Path(__file__).resolve().parents[1]
 WORKER = ROOT / "scripts" / "claude-worker.sh"
 CONTROL_BOOTSTRAP = ROOT / "scripts" / "control-bootstrap.sh"
@@ -258,7 +239,6 @@ def seed_task_branch(world, task_id="FC-001"):
 
 
 @pytest.mark.parametrize("status", ["ready_for_implementation", "changes_requested"])
-@needs_sandbox
 def test_authorized_state_invokes_claude(world, status):
     if status == "changes_requested":
         seed_task_branch(world)
@@ -269,7 +249,6 @@ def test_authorized_state_invokes_claude(world, status):
     assert "DONE" in r.stderr
 
 
-@needs_sandbox
 def test_successful_run_publishes_branch_and_handoff(world):
     set_control(world, turn="claude", status="ready_for_implementation")
     r = run_worker(world, mock=MOCK_GOOD)
@@ -303,7 +282,6 @@ def test_lock_prevents_overlapping_runs(world):
 
 # ══ D. task-branch push leaves production untouched ════════════════════
 
-@needs_sandbox
 def test_production_is_untouched_by_a_successful_run(world):
     before = git("rev-parse", "production", cwd=world["seed"])
     set_control(world, turn="claude", status="ready_for_implementation")
@@ -369,7 +347,6 @@ HIJACK_SIGNAL = (
 )
 
 
-@needs_sandbox
 def test_control_change_during_run_blocks_the_handoff(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
@@ -389,7 +366,6 @@ def test_control_change_during_run_blocks_the_handoff(world):
 
 # ══ G. Claude exits non-zero -> no fabricated handoff ══════════════════
 
-@needs_sandbox
 def test_claude_failure_produces_no_handoff(world):
     control_before = set_control(world, turn="claude",
                                  status="ready_for_implementation")
@@ -404,7 +380,6 @@ def test_claude_failure_produces_no_handoff(world):
     assert state["status"] == "ready_for_implementation", "status was advanced"
 
 
-@needs_sandbox
 def test_run_producing_no_commits_publishes_nothing(world):
     set_control(world, turn="claude", status="ready_for_implementation")
     r = run_worker(world, mock='echo "did nothing"')
@@ -414,7 +389,6 @@ def test_run_producing_no_commits_publishes_nothing(world):
 
 # ══ H. tests fail -> no fabricated handoff ═════════════════════════════
 
-@needs_sandbox
 def test_failing_tests_block_the_handoff(world):
     control_before = set_control(world, turn="claude",
                                  status="ready_for_implementation")
@@ -580,7 +554,6 @@ def test_run_is_recorded_with_diagnostic_fields(world):
         assert field in rec, f"run record missing {field}"
 
 
-@needs_sandbox
 def test_failures_are_recorded_too(world):
     set_control(world, turn="claude", status="ready_for_implementation")
     run_worker(world, mock='exit 4')
@@ -714,7 +687,6 @@ def set_control_directive(world, *, turn, status, task_id, objective):
     return git("rev-parse", "HEAD", cwd=ctl)
 
 
-@needs_sandbox
 def test_claude_receives_the_control_directive_not_productions(world):
     """THE BUG: production carried FC-999 placeholders while control authorized
     FC-001. The run must see control's versions."""
@@ -754,7 +726,6 @@ def test_authorizing_control_commit_is_recorded_on_the_branch(world):
 
 # ══ 2. changes_requested continues, never restarts ═════════════════════
 
-@needs_sandbox
 def test_changes_requested_continues_the_existing_implementation(world):
     """A. first run -> commit A. PO requests changes. B. second run -> commit B
     descending from A, with A's product work still present."""
@@ -826,7 +797,6 @@ exit 0
 '''
 
 
-@needs_sandbox
 def test_control_moving_between_the_two_token_checks_blocks_the_handoff(world):
     """The genuine second-stage race.
 
@@ -877,7 +847,11 @@ def test_control_fetch_and_reset_failures_stop_publication():
 
 # ══ 4. the child-process boundary (behavioral) ═════════════════════════
 
-
+SANDBOX_OK = subprocess.run(
+    ["unshare", "--user", "--map-root-user", "--mount", "true"],
+    capture_output=True).returncode == 0
+needs_sandbox = pytest.mark.skipif(
+    not SANDBOX_OK, reason="user namespaces unavailable in this environment")
 
 
 @needs_sandbox
@@ -1007,7 +981,6 @@ def remote_refs(world):
     return sorted(l.strip() for l in out.splitlines() if l.strip())
 
 
-@needs_sandbox
 def test_dry_run_changes_no_remote_refs(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
@@ -1021,7 +994,6 @@ def test_dry_run_changes_no_remote_refs(world):
     assert "DRY RUN" in r.stderr and "nothing pushed" in r.stderr
 
 
-@needs_sandbox
 def test_dry_run_reports_what_would_be_published(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
@@ -1031,7 +1003,6 @@ def test_dry_run_reports_what_would_be_published(world):
     assert "control transition:" in r.stderr
 
 
-@needs_sandbox
 def test_dry_run_is_recorded_as_such(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
@@ -1466,7 +1437,6 @@ def test_directive_must_name_exactly_this_task(world, directive, why):
     assert "NO-OP" in r.stderr
 
 
-@needs_sandbox
 def test_a_correct_directive_still_authorizes(world):
     """The strict check must not block the legitimate case."""
     publish_control(world, state=AUTHORIZED_STATE,
@@ -1479,7 +1449,6 @@ def test_a_correct_directive_still_authorizes(world):
 
 # ══ 11. the probe is inert ═════════════════════════════════════════════
 
-@needs_sandbox
 def test_probe_touches_no_refs_and_needs_no_enable(world):
     set_control_directive(world, turn="claude", status="ready_for_implementation",
                           task_id="FC-001", objective="work")
@@ -2171,7 +2140,6 @@ def test_the_probe_classifies_a_credential_rejection(world):
     assert "not a credential rejection" in c
 
 
-@needs_sandbox
 def test_the_probe_warns_that_an_oauth_session_expires(world):
     """Silence here would let a probe that passes today start failing on its
     own once the token expires."""
