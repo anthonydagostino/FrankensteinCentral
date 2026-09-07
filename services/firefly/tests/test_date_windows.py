@@ -158,3 +158,31 @@ def test_cycle_uses_the_shared_window():
     assert "_cycle_window(today)" in body, "_cycle_payload() must use the tested helper"
     assert "timedelta(days=CYCLE_LOOKBACK_DAYS" not in body, \
         "_cycle_payload() is rebuilding the range inline again"
+
+
+# ---- the history window ------------------------------------------------
+# Recurrence detection asks "is this new?", and that question is answered
+# entirely by where this window starts. A window that quietly shortens on
+# some days would make established subscriptions look like discoveries.
+
+history_window = ff._history_window
+
+
+@pytest.mark.parametrize("today", CALENDAR, ids=lambda d: d.isoformat())
+def test_history_window_is_valid_every_single_day(today):
+    start, end = history_window(today)
+    assert start < end, f"zero-length range on {today} — Firefly returns 422"
+    # the full lookback, every day: the engine judges "new" against this
+    assert start == (today - timedelta(days=ff.HISTORY_LOOKBACK_DAYS)).isoformat()
+    # long enough to see an annual charge twice, which is what makes it
+    # recognisable as annual rather than as a one-off
+    assert ff.HISTORY_LOOKBACK_DAYS > 365
+    assert end <= (today + timedelta(days=1)).isoformat()
+
+
+def test_history_uses_the_shared_window():
+    src = Path(ff.__file__).read_text()
+    body = src.split("async def _history_payload()", 1)[1].split('@app.get("/history")', 1)[0]
+    assert "_history_window(today)" in body, "_history_payload() must use the tested helper"
+    assert "timedelta(days=HISTORY_LOOKBACK_DAYS" not in body, \
+        "_history_payload() is rebuilding the range inline again"

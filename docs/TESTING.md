@@ -55,11 +55,12 @@ at the month boundary — plus year rollovers and Feb 29.
 | suite | cases | what it protects |
 |---|---|---|
 | `services/firefly/tests/test_date_windows.py` | 1,923 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag, and the pay-cycle window (which must reach both the month start and a full lookback on every day) |
-| `services/firefly/tests/test_endpoints.py` | 27 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour, `/cycle` (transfers and account names present, future dates dropped) |
+| `services/firefly/tests/test_endpoints.py` | 40 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour, `/cycle` (transfers and account names present, future dates dropped), `/history` (withdrawals only, truncation reported, bills degrade without failing the read) |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
+| `services/budget/tests/test_recurring.py` | 2,324 | recurring charges swept across two years: a coffee habit is not a subscription, an annual renewal seen twice is not new, the oldest visible charge is not a new one, a stale resumption is not news, a penny of drift is not a price change, and a truncated read makes no absence claims |
 | `services/budget/tests/test_paycheck.py` | 32 | pay cycle: savings never counted as spending (or subtracted twice), expected-vs-observed deductions, stale ledger pauses $/day but keeps totals, a missed paycheck reports unknown instead of an overspend, month-to-date across month/leap/year edges |
 | `services/stocks/tests/test_session_label.py` | 1,480 | the portfolio card's session label: a completed past session is never called "Today", swept across two years and lags of 1-10 days; the oldest quote sets the headline, so one end-of-day bar can't ride under a live label |
-| `services/budget/tests/test_service.py` | 8 | the wiring: firefly `/cycle` → paycheck engine → `/status` and `/paycheck`, including the cross-service field contract |
+| `services/budget/tests/test_service.py` | 15 | the wiring: firefly `/cycle` → paycheck engine and `/history` → recurrence engine → `/status`, `/paycheck`, `/recurring`, including the cross-service field contract and the rule that an outage is never cached as an answer |
 
 ## Adding a service's tests
 

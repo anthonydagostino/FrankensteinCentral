@@ -111,7 +111,7 @@ def test_a_complete_month_is_not_labelled():
     assert m["month_complete"] is True
 
 
-def _render(money_payload):
+def _render(money_payload, budget_brief=None):
     """Run the REAL renderMoney from home.js over this payload."""
     src = (ROOT / "gateway/static/home.js").read_text()
     body = src[src.index('  // "Aug 28"'):src.index("  function renderPortfolio")]
@@ -123,10 +123,11 @@ const store = {};
 const q = (s) => (store[s] = store[s] || {innerHTML: "", set onclick(v) {}});
 const openAppKey = () => {}, openSettings = () => {};
 %s
-renderMoney(JSON.parse(process.argv[1]), {});
+renderMoney(JSON.parse(process.argv[1]), JSON.parse(process.argv[2]));
 console.log(store["#cc-money"].innerHTML);
 """ % body
-    out = subprocess.run([NODE, "-e", harness, json.dumps(money_payload)],
+    out = subprocess.run([NODE, "-e", harness, json.dumps(money_payload),
+                          json.dumps(budget_brief or {})],
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     return re.sub(r"\s+", " ", out.stdout)
@@ -145,3 +146,95 @@ def test_the_rendered_headline_is_plain_when_complete():
     assert "$1,830" in html
     assert "at least" not in html
     assert "month to date" in html
+
+
+# ---- subscription changes, through the same real seam -----------------------
+
+RECURRING = {
+    "available": True, "complete": True, "absence_claims_suppressed": False,
+    "event_count": 3, "tracked": 7, "monthly_equivalent": 214.5,
+    "events": [
+        {"event": "appeared", "name": "Anthropic", "amount": 20.0,
+         "cadence": "monthly", "confidence": "high", "last_seen": "2026-09-03"},
+        {"event": "changed", "name": "Netflix", "amount": 17.99,
+         "cadence": "monthly", "confidence": "high", "last_seen": "2026-09-02",
+         "from": 15.49, "to": 17.99},
+        {"event": "resumed", "name": "Planet Fitness", "amount": 24.99,
+         "cadence": "monthly", "confidence": "high", "last_seen": "2026-09-01"},
+    ]}
+
+
+def test_the_budget_brief_passes_recurring_through_unflattened():
+    """The brief must not turn "couldn't read it" into "found nothing" —
+    those render as very different claims."""
+    brief = am._budget_brief({**_budget(PAYCHECK_ABSENT), "recurring": RECURRING})
+    assert brief["recurring"]["event_count"] == 3
+    down = am._budget_brief({**_budget(PAYCHECK_ABSENT), "available": False})
+    assert down["recurring"]["available"] is False
+
+
+@needs_node
+def test_the_card_names_the_subscription_and_both_prices():
+    html = _render(_money(_spending(), PAYCHECK_ABSENT), {"recurring": RECURRING})
+    assert "Anthropic" in html and "started charging" in html
+    assert "$15.49" in html and "$17.99" in html          # from -> to, both shown
+    assert "Planet Fitness" in html and "after a break" in html
+
+
+@needs_node
+def test_the_card_states_what_subscriptions_cost_per_month():
+    html = _render(_money(_spending(), PAYCHECK_ABSENT), {"recurring": RECURRING})
+    assert "Subscriptions" in html and "$215" in html and "across 7" in html
+
+
+@needs_node
+def test_a_truncated_recurrence_read_does_not_publish_a_monthly_total():
+    """Same rule as the month headline: a floor is not a total. The events it
+    did read still show — those are charges it actually saw."""
+    html = _render(_money(_spending(), PAYCHECK_ABSENT),
+                   {"recurring": {**RECURRING, "complete": False,
+                                  "absence_claims_suppressed": True,
+                                  "events": [RECURRING["events"][1]],
+                                  "event_count": 1}})
+    assert "Subscriptions" not in html
+    assert "Netflix" in html
+
+
+@needs_node
+def test_an_unreadable_recurrence_read_says_nothing_rather_than_all_clear():
+    html = _render(_money(_spending(), PAYCHECK_ABSENT),
+                   {"recurring": {"available": False, "events": [],
+                                  "reason": "firefly unreachable"}})
+    assert "🔁" not in html
+    assert "Subscriptions" not in html
+
+
+@pytest.mark.parametrize("i", [0, 1, 2])
+@needs_node
+def test_a_two_charge_pattern_is_hedged_on_the_card(i):
+    """Every event kind, including a price move: two charges are one interval,
+    and one interval is a guess whatever it is being used to claim."""
+    html = _render(_money(_spending(), PAYCHECK_ABSENT),
+                   {"recurring": {**RECURRING, "event_count": 1,
+                                  "events": [{**RECURRING["events"][i],
+                                              "confidence": "low"}]}})
+    assert "may not be a pattern" in html
+
+
+@needs_node
+def test_the_card_says_how_many_changes_it_did_not_list():
+    html = _render(_money(_spending(), PAYCHECK_ABSENT),
+                   {"recurring": {**RECURRING, "event_count": 9}})
+    assert "6 more" in html
+
+
+@needs_node
+def test_cadence_is_rendered_as_a_unit_not_a_chopped_adjective():
+    """"$890/annual" is what a naive string trim produces."""
+    html = _render(_money(_spending(), PAYCHECK_ABSENT),
+                   {"recurring": {**RECURRING, "event_count": 1, "events": [
+                       {"event": "appeared", "name": "Insurance Co",
+                        "amount": 890.0, "cadence": "annual",
+                        "confidence": "high", "last_seen": "2026-09-01"}]}})
+    assert "$890.00/yr" in html
+    assert "/annual" not in html

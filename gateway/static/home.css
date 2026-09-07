@@ -329,3 +329,8 @@ body.cc[data-mode="evening"] {
 /* ---- Firefly figures on the money card ---------------------------------- */
 .mny-ff { margin-top: 10px; }
 .mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }
+
+/* Subscription changes on the money card. It carries .mny-sub for colour on
+   purpose — this is news, not a warning: "Netflix went up $2.50" does not
+   deserve the same weight as being over budget. Only the spacing differs. */
+.mny-rec { margin-top: 6px; line-height: 1.55; }
