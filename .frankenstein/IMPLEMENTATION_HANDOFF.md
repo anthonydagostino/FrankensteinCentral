@@ -2,8 +2,9 @@
 
 Task ID: FC-008
 Task branch: `claude/FC-008-weekly-calendar`
-Baseline: `0a5d24a` (`production`)
-Implementation commit: **`a137d6df1c2d831f655b2f2a64fd57156b65dba2`**
+Baseline: `e7adf83` (`production`, current tip)
+Implementation commit: **`5f6b9bf`**  — merges production `e7adf83`
+Previous revision: `a137d6d` (answered the correction; was based on `0a5d24a`)
 Authorizing control commit (epoch): **`f1a56bdb7d1ed4497de10086a4610bfb3d96f595`**
 Directive commit: **`4769b630df710863b768b7bebcd6ac2918cf55a8`**
 Deployment Authorization: **none** — task branch pushed for review, nothing deployed.
@@ -214,8 +215,10 @@ Full suite on the exact implementation tree `add5b2b`:
 ALL TESTS PASSED
 ```
 
-Baseline `0a5d24a` runs 1486 and has no JavaScript tests at all. This adds 27
-Python cases and a 5-case `node --test` suite.
+The pre-merge revision `a137d6d` ran 1518 against the old baseline `0a5d24a`
+(which ran 1486 and had no JavaScript tests at all). `5f6b9bf` runs **2325
+passed, 0 skipped** because it now also carries the money layer's paycheck
+suites, which arrived with production.
 
 Diff vs baseline — 6 files, +919 / −53:
 
@@ -308,7 +311,7 @@ PATH so the host cannot create namespaces:
 
 | tree | namespaces | result |
 |---|---|---|
-| production `0a5d24a` (the baseline) | unavailable | **18 failed**, 135 passed, 37 skipped |
+| production `0a5d24a` (the then-baseline) | unavailable | **18 failed**, 135 passed, 37 skipped |
 | this branch `add5b2b` | unavailable | **18 failed**, 135 passed, 37 skipped |
 | this branch `add5b2b` | available | **190 passed**, 0 failed |
 
@@ -339,6 +342,42 @@ reverted in `ce713da`:
 
 `tests/test_claude_worker.py` on this branch is now byte-identical to
 production. CI here goes green when `claude/po-handoff-release` lands.
+
+## Production moved under this branch — merged, not asserted
+
+While FC-008 was in flight, production advanced `0a5d24a` -> `e7adf83` (the
+money / Firefly pie work, promoted on Anthony's direct instruction by the
+protocol-agent session). FC-008 stopped being a fast-forward.
+
+`5f6b9bf` merges `e7adf83` in rather than restating an ancestry claim that had
+become false. A merge, not a rebase: this branch is published and other
+sessions reference its SHAs.
+
+Two conflicts, both resolved against what the code does:
+
+- `docs/TESTING.md` — purely additive both sides. All four coverage rows kept
+  (their paycheck-engine and service-wiring rows, my dashboard and weekclock
+  rows), plus the browser-side date-logic section.
+- `gateway/static/home.css` — production **deleted** the `.cat-*` category-bar
+  rules, because the Money card now draws a real pie chart. Took the deletion
+  rather than resurrecting dead CSS: verified the merged `home.js` references
+  none of `cat-row`/`cat-bar`/`cat-rows`/`cat-n`/`cat-v`. Kept `.wk-caveat`,
+  which is mine and live.
+
+`home.js` and `services/assistant/app/main.py` merged automatically. Checked
+rather than assumed: `render()` calls both `renderWeek` and `renderMoney`, the
+home payload still carries `week_window` / `schedule_state` alongside the
+paycheck brief, and the week grid was re-rendered in headless Chromium after
+the merge — seven columns, conflict flags, and pending/countered labels all
+intact.
+
+**Full suite on the merged tree: 2325 passed, 0 skipped, + 5 node tests,
+ALL TESTS PASSED.** Fast-forward onto `e7adf83` re-verified.
+
+Note for whoever promotes: Codex has published `PO_REVIEW_e7adf83.md` on
+control with two P1 calculation findings against the commit that is now live.
+Those belong to the money layer, not FC-008, and the protocol-agent session
+is handling them — but they are findings against **running** code.
 
 ## Deviations From Directive
 

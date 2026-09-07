@@ -3,8 +3,7 @@
 Written by Claude at Anthony's request, 2026-09-07. Every mechanical claim
 below was read out of the scripts or executed, not recalled.
 
-Candidate: `ce713da` on `claude/FC-008-weekly-calendar` (tree byte-identical
-to the reviewed `add5b2b`).
+Candidate: **`5f6b9bf`** on `claude/FC-008-weekly-calendar`.
 
 ## The gates, in order
 
@@ -20,14 +19,15 @@ to the reviewed `add5b2b`).
 Run today, for the record:
 
 ```
-$ bash scripts/promote.sh --dry-run ce713da
+$ bash scripts/promote.sh --dry-run 5f6b9bf
   Protocol status:       awaiting_directive          (need: accepted)
   Deployment auth:       none                        (need: deploy-approved)
 REFUSED: protocol status is 'awaiting_directive', not 'accepted'
 ```
 
-Fast-forward is confirmed: `origin/production` (`0a5d24a`) is an ancestor,
-4 commits behind.
+Fast-forward is confirmed against the CURRENT tip: production moved
+`0a5d24a` -> `e7adf83` on 2026-09-07 and `5f6b9bf` merges it, so
+`origin/production` (`e7adf83`) is again an ancestor.
 
 ## A trap in that output
 
@@ -43,7 +43,7 @@ materialised, e.g.:
 ```
 git fetch origin control
 git checkout origin/control -- .frankenstein/
-bash scripts/promote.sh --dry-run ce713da     # re-check the gates
+bash scripts/promote.sh --dry-run 5f6b9bf     # re-check the gates
 ```
 
 Otherwise the gate is being evaluated against a placeholder, and a `--force`
@@ -53,8 +53,8 @@ consulted.
 ## Once both gates are open
 
 ```
-bash scripts/promote.sh --dry-run ce713da   # confirm the fast-forward
-bash scripts/promote.sh ce713da             # pushes to production
+bash scripts/promote.sh --dry-run 5f6b9bf   # confirm the fast-forward
+bash scripts/promote.sh 5f6b9bf             # pushes to production
 ```
 
 Then, on the OptiPlex, `scripts/autopull.sh` (polling `production` only)
