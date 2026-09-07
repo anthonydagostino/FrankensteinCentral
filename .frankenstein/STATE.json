@@ -1,10 +1,10 @@
 {
   "protocol_version": 1,
-  "task_id": "FC-002",
+  "task_id": "FC-008",
   "turn": "claude",
-  "status": "changes_requested",
-  "directive_commit": "3c0b81d791cf41a67054b835941c7bceeeadff6e",
-  "implementation_commit": "f1fa382b0823100a3bc9520f104b4e793052093d",
+  "status": "ready_for_implementation",
+  "directive_commit": "71dba66c8814646a16b3d244e76a4a074e812c20",
+  "implementation_commit": null,
   "last_actor": "product_owner",
-  "updated_at": "2026-09-07T01:37:46Z"
+  "updated_at": "2026-09-07T02:20:40Z"
 }
