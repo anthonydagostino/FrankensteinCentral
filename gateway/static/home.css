@@ -530,3 +530,41 @@ body.cc[data-mode="evening"] {
   color: var(--muted); background: rgba(255,255,255,0.02);
   border: 1px solid var(--line); border-left: 3px solid var(--muted);
 }
+
+/* ---- weekly review (PRODUCT_IDEAS #5) -----------------------------------
+   Sits above the calendar all week and takes the top of the page on Sunday
+   evening. "No goal set" and "not recorded" are rendered as themselves, never
+   as 0% — a goal you didn't set is not a goal you missed. */
+.cc-wr { grid-column: 1 / -1; }
+.cc-wr[hidden] { display: none; }
+.cc-wr.lead {
+  border-color: var(--accent-2);
+  background:
+    linear-gradient(180deg, rgba(124,156,255,0.10), transparent 60%), var(--panel);
+}
+.wr-row {
+  display: grid; grid-template-columns: 68px minmax(0, auto) 1fr 44px;
+  align-items: center; gap: 10px; padding: 5px 0; font-size: 13px;
+}
+.wr-l { color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .5px; font-weight: 700; }
+.wr-v { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;
+  white-space: nowrap; }
+.wr-v i { color: var(--muted); font-style: normal; font-weight: 400; }
+.wr-v.wr-unknown { color: var(--muted); }
+.wr-note { grid-column: 3 / -1; color: var(--muted); font-size: 11px; }
+.wr-bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07);
+  overflow: hidden; }
+.wr-bar > i { display: block; height: 100%; border-radius: 999px;
+  background: var(--accent-2); }
+.wr-bar > i.hit { background: var(--accent); }
+.wr-pct { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums;
+  color: var(--muted); }
+.wr-pct.hit { color: var(--accent); }
+.wr-trend { display: inline-block; margin-top: 8px; font-size: 11.5px; }
+.wr-trend.up { color: var(--accent); }
+.wr-trend.down { color: var(--muted); }
+@media (max-width: 560px) {
+  .wr-row { grid-template-columns: 60px 1fr 40px; }
+  .wr-bar { grid-column: 1 / -1; }
+}

@@ -10,7 +10,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import notify
 from .dashboard import (firefly_state, parse_event_dt, schedule_state,
-                        upcoming_events, week_window)
+                        upcoming_events, week_window, weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -741,7 +741,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, emails_r, avail, finance, budget, firefly, spending,
          networth, schedule, cal_health, deals, stocks, vault,
-         captures) = await asyncio.gather(
+         captures, review) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -760,6 +760,9 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{STOCKS_URL}/portfolio"),
             _get(client, f"{VAULT_URL}/summary"),
             _get(client, f"{CORE_URL}/captures"),
+            # PRODUCT_IDEAS #5: core has exposed this since it was written and
+            # nothing ever rendered it.
+            _get(client, f"{CORE_URL}/weekly-review"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -818,6 +821,7 @@ async def build_home(fresh: bool = False) -> dict:
         "next_event": events[0] if events else None,
         "calendar": calendar,
         "week": week,
+        "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }

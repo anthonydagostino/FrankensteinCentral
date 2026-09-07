@@ -68,6 +68,7 @@
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
     renderSince(d);
+    renderWeeklyReview(d.weekly_review);
     renderWeek(d);
     renderDoNext(d.do_next, d);
     renderInbox(d.inbox);
@@ -134,6 +135,52 @@
     pending:   { dot: "🟡", label: "offered — awaiting reply" },
     countered: { dot: "🟠", label: "they countered — needs your yes" },
   };
+  // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
+  // core has served GET /weekly-review since it was written and nothing ever
+  // rendered it. On Sunday evening it takes the top of the page; the rest of
+  // the week it sits above the calendar, quietly.
+  function wrRow(label, row, unit, fmt) {
+    if (!row) return "";
+    const f = fmt || ((v) => `${v}${unit || ""}`);
+    // "No goal set" and "unknown" are NOT 0% — reporting either as failure is
+    // the same dishonesty the money layer's rules forbid.
+    if (row.state === "unknown") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v wr-unknown">—</span>
+        <span class="wr-note">not recorded</span></div>`;
+    }
+    if (row.state === "no_goal") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v">${esch(f(row.value))}</span>
+        <span class="wr-note">no goal set</span></div>`;
+    }
+    const pct = Math.max(0, Math.min(100, row.pct));
+    return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+      <span class="wr-v">${esch(f(row.value))} <i>/ ${esch(f(row.goal))}</i></span>
+      <span class="wr-bar"><i style="width:${pct}%" class="${row.state}"></i></span>
+      <span class="wr-pct ${row.state}">${row.pct}%</span></div>`;
+  }
+
+  function renderWeeklyReview(wr) {
+    const el = q("#cc-weekly");
+    // An unreachable core is not a week where nothing happened: no card at all
+    // beats a card full of zeroes.
+    if (!wr) { el.hidden = true; return; }
+    el.hidden = false;
+    el.classList.toggle("lead", wr.slot === "lead");
+
+    const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m`.replace(" 0m", "") : `${v}m`);
+    const t = wr.study && wr.study.trend_min;
+    const trend = (t === null || t === undefined || t === 0) ? ""
+      : `<span class="wr-trend ${t > 0 ? "up" : "down"}">${t > 0 ? "▲" : "▼"} ${esch(mins(Math.abs(t)))} vs last week</span>`;
+
+    el.innerHTML = `<h3>${wr.slot === "lead" ? "Your week" : "This week so far"}</h3>
+      ${wrRow("Study", wr.study, "", mins)}
+      ${wrRow("Gym", wr.gym, "")}
+      ${wrRow("Water", wr.water, " days")}
+      ${trend}`;
+  }
+
   // ---- the week grid --------------------------------------------------------
   // Seven day columns: today and the next six. The server does every date
   // decision (see services/assistant/app/dashboard.py:week_window and its

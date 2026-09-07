@@ -365,3 +365,80 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
         previous_month = day.month
 
     return {"days": out, "beyond": beyond, "spans_months": len({d["month_index"] for d in out}) > 1}
+
+
+# --- the weekly review (PRODUCT_IDEAS #5) -----------------------------------
+#
+# `core` has exposed GET /weekly-review since it was written and nothing in
+# gateway/static ever referenced it: a finished feature with no front door.
+#
+# The timing rule is date-dependent, so it lives here behind the same injected
+# clock the rest of this module uses and is swept across a calendar in the
+# tests, never run against "today".
+
+# "Sunday evening the home screen leads with the week." Evening starts at 5pm.
+WEEKLY_REVIEW_LEAD_HOUR = 17
+SUNDAY = 6  # datetime.weekday(): Monday is 0
+
+
+def weekly_review_slot(now, local_tz):
+    """`lead` on Sunday evening, `normal` the rest of the week.
+
+    The review is worth seeing any day — it is the only thing that answers
+    "where did the week go" — so it is never hidden. What changes is whether
+    it takes the top of the page.
+    """
+    local = now.astimezone(local_tz)
+    if local.weekday() == SUNDAY and local.hour >= WEEKLY_REVIEW_LEAD_HOUR:
+        return "lead"
+    return "normal"
+
+
+def weekly_progress(value, goal):
+    """(value, goal, pct, state) for one weekly row.
+
+    `state` is `no_goal` when no goal is set, and the percentage is None —
+    never 0%. Reporting "0% of 0" as failure is the bug docs/BUDGETS.md's
+    honesty rules exist to prevent, in a different costume: not setting a
+    goal is not missing one.
+
+    `unknown` covers a missing figure, which is likewise not zero.
+    """
+    if value is None:
+        return {"value": None, "goal": goal, "pct": None, "state": "unknown"}
+    if not goal:
+        return {"value": value, "goal": None, "pct": None, "state": "no_goal"}
+    pct = int(round((value / goal) * 100))
+    return {
+        "value": value, "goal": goal, "pct": pct,
+        "state": "hit" if value >= goal else "under",
+    }
+
+
+def weekly_review(review, now, local_tz):
+    """The home screen's slice of `core`'s weekly review.
+
+    Returns None when core did not answer — an absent review is not a week of
+    zeroes, and the card is simply not rendered rather than inventing one.
+    """
+    if not review:
+        return None
+
+    study = review.get("study") or {}
+    gym = review.get("gym") or {}
+    water = review.get("water") or {}
+
+    study_row = weekly_progress(study.get("week_min"), study.get("goal_min"))
+    # Last week is context, not a goal: it only earns a trend when both
+    # figures exist.
+    last = study.get("last_min")
+    trend = None
+    if study_row["value"] is not None and last is not None:
+        trend = study_row["value"] - last
+
+    return {
+        "slot": weekly_review_slot(now, local_tz),
+        "study": {**study_row, "last_min": last, "trend_min": trend},
+        "gym": weekly_progress(gym.get("week"), gym.get("goal")),
+        "water": weekly_progress(water.get("days_hit"), water.get("of")),
+    }

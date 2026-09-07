@@ -599,3 +599,77 @@ def test_events_on_different_days_that_do_not_overlap_are_not_conflicts():
     week = dash.week_window(events, at(d, 8), NY)
     assert all(c["conflicts"] == 0 for c in week["days"])
     assert all(not e["conflict"] for c in week["days"] for e in c["events"])
+
+
+# --- the weekly review (PRODUCT_IDEAS #5) -----------------------------------
+
+REVIEW = {"study": {"week_min": 300, "last_min": 240, "goal_min": 600},
+          "gym": {"week": 3, "goal": 4},
+          "water": {"days_hit": 5, "of": 7}}
+
+
+def test_the_review_leads_on_sunday_evening_and_only_then():
+    """Swept across a calendar rather than asserted once: the acceptance
+    signal is "it's on the screen on a Sunday", which is a claim about every
+    Sunday, not about the day this test was written."""
+    for d in sweep_dates():
+        for hour in range(24):
+            slot = dash.weekly_review_slot(at(d, hour, 30), NY)
+            should_lead = (d.weekday() == 6 and hour >= 17)
+            assert (slot == "lead") == should_lead, (d, hour, slot)
+            assert slot in ("lead", "normal")
+
+
+def test_the_review_is_never_hidden_on_other_days():
+    """It answers "where did the week go" — worth seeing any day. What changes
+    is whether it takes the top of the page, not whether it exists."""
+    for d in sweep_dates():
+        assert dash.weekly_review_slot(at(d, 9), NY) in ("lead", "normal")
+        assert dash.weekly_review(REVIEW, at(d, 9), NY) is not None
+
+
+def test_no_goal_set_is_not_zero_percent_achieved():
+    """Idea #16's bug in a different costume: not setting a goal is not
+    missing one. The percentage must be absent, not 0."""
+    for goal in (0, None):
+        row = dash.weekly_progress(5, goal)
+        assert row["state"] == "no_goal"
+        assert row["pct"] is None
+        assert row["value"] == 5
+
+
+def test_a_missing_figure_is_unknown_not_zero():
+    row = dash.weekly_progress(None, 600)
+    assert row["state"] == "unknown"
+    assert row["pct"] is None
+    assert row["value"] is None
+
+
+def test_progress_states_are_hit_or_under_against_a_real_goal():
+    assert dash.weekly_progress(600, 600)["state"] == "hit"
+    assert dash.weekly_progress(601, 600)["state"] == "hit"
+    assert dash.weekly_progress(599, 600)["state"] == "under"
+    assert dash.weekly_progress(300, 600)["pct"] == 50
+
+
+def test_an_unreachable_core_is_not_a_week_of_zeroes():
+    """`_get` returns {} on a timeout. Rendering that as a week where nothing
+    happened is the same lie the schedule card was fixed for."""
+    for empty in ({}, None):
+        assert dash.weekly_review(empty, at(date(2026, 6, 14), 19), NY) is None
+
+
+def test_the_study_trend_needs_both_figures():
+    d = date(2026, 6, 14)
+    got = dash.weekly_review(REVIEW, at(d, 19), NY)
+    assert got["study"]["trend_min"] == 60          # 300 this week, 240 last
+    no_last = {**REVIEW, "study": {"week_min": 300, "goal_min": 600}}
+    assert dash.weekly_review(no_last, at(d, 19), NY)["study"]["trend_min"] is None
+
+
+def test_the_review_survives_a_partial_payload():
+    """Core answering with some sections missing must not raise."""
+    got = dash.weekly_review({"study": {}}, at(date(2026, 6, 14), 19), NY)
+    assert got["study"]["state"] == "unknown"
+    assert got["gym"]["state"] == "unknown"
+    assert got["water"]["state"] == "unknown"
