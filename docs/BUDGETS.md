@@ -196,6 +196,43 @@ The next payday is `last paycheck + cadence`, where cadence is the **observed**
 gap between the last two paychecks when it is plausible (5–40 days) and the
 configured `cadence_days` otherwise.
 
+### Direction, not just names (PO review of `e7adf83`)
+
+Firefly records both legs of every movement, so **which account the money left
+and which it entered** is the only reliable signal of direction. Two P1 defects
+shipped because matching searched every field indiscriminately:
+
+- a $300 transfer **out of** savings was counted as a $300 contribution **to**
+  it, and
+- a grocery run **paid from** the savings account disappeared from spending
+  entirely.
+
+The rule now:
+
+| what matched | meaning |
+|---|---|
+| destination only | **contribution** — money went into savings |
+| source only | **reverse** — money came out; reported as `from_savings`, never added to spendable |
+| both ends | same account; no net movement |
+| neither (no account data at all) | fall back to description/category — the only case where a description may decide |
+
+A description reading "Savings" says nothing about direction, so it is
+consulted **only** when neither account is named.
+
+**Each movement is claimed by at most one allocation**, in configuration
+order. Two rules that both matched "savings" used to deduct the same transfer
+twice, quietly halving what the card said was left. Overlapping configuration
+is now surfaced as `allocation_overlaps` rather than silently producing a
+smaller number.
+
+### A truncated window is not a total
+
+`/cycle` pages Firefly under a cap. Hitting that cap means the window is a
+**partial view**, not a small ledger, so `window.complete` is published and the
+engine treats it exactly like a stale ledger: month totals go `null` and
+per-day guidance is suppressed, with the reason stated. Undercounting spending
+confidently is the failure mode this prevents.
+
 ### What it refuses to claim
 
 - **Expected ≠ observed.** An allocation the ledger hasn't seen yet still

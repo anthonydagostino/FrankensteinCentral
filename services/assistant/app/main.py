@@ -698,6 +698,11 @@ def _paycheck_brief(pay: dict) -> dict:
         "as_of": pay.get("as_of"),
         "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
         "savings_total": c.get("savings_total"),
+        # Money that came back OUT of savings, and any ambiguous allocation
+        # config — both surfaced rather than folded silently into a total.
+        "from_savings": c.get("from_savings"),
+        "allocation_overlaps": c.get("allocation_overlaps", []),
+        "window_complete": pay.get("window_complete", True),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),
         "left": c.get("left"), "per_day": c.get("per_day"),

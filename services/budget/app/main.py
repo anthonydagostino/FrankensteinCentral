@@ -117,7 +117,9 @@ def _paycheck(cfg: dict, cycle: dict | None) -> dict:
         freshness={"ingest_days": cycle.get("ingest_days"),
                    "activity_days": cycle.get("days_stale"),
                    "month_ingested": cycle.get("month_ingested"),
-                   "ledger_latest_txn": cycle.get("ledger_latest_txn")},
+                   "ledger_latest_txn": cycle.get("ledger_latest_txn"),
+                   # A truncated fetch window cannot support a total.
+                   "window_complete": (cycle.get("window") or {}).get("complete", True)},
     )
 
 

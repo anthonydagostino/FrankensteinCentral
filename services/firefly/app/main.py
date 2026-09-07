@@ -226,12 +226,27 @@ async def dashboard():
             "connected": _connected()}
 
 
+class _Rows(list):
+    """A transaction list that remembers whether paging reached the end.
+
+    A plain list to every existing caller; `_cycle_payload` reads `.complete`
+    so it can refuse to publish totals built on a truncated window.
+    """
+    complete = True
+
+
 async def _fetch_txns(client, txn_type: str, start: str, end: str,
                       max_pages: int = 6) -> list[dict]:
     """All splits of one type in [start, end], paging through Firefly.
     Transfers are never fetched here — moving money between your own accounts
-    is not spending or income."""
-    out, page = [], 1
+    is not spending or income.
+
+    The page cap is a resource limit, not a statement about the ledger. When
+    it is hit the list is INCOMPLETE, and callers that publish totals must say
+    so: silently returning a truncated window understates spending and can
+    miss the paycheck itself while still producing confident-looking figures.
+    `_fetch_complete` reports it."""
+    out, page = _Rows(), 1
     while page <= max_pages:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
                              params={"type": txn_type, "start": start, "end": end,
@@ -268,6 +283,9 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
         if len(data) < 50:
             break
         page += 1
+    else:
+        # Ran to the cap without a short page: more may remain upstream.
+        out.complete = False
     return out
 
 
@@ -583,6 +601,9 @@ async def _cycle_payload() -> dict:
     # Firefly is asked for one day past today so the range is never
     # zero-length; drop anything future-dated so no claim covers days that
     # haven't happened.
+    # A capped page walk is not a complete window. Record it BEFORE the
+    # future-date filter rebuilds the lists as plain lists.
+    complete = wd.complete and dep.complete and tr.complete
     keep = lambda rows: [t for t in rows if t["date"] and t["date"] <= today.isoformat()]  # noqa: E731
     wd, dep, tr = keep(wd), keep(dep), keep(tr)
     return {
@@ -591,7 +612,10 @@ async def _cycle_payload() -> dict:
         "tz": str(LOCAL_TZ),
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+                   "lookback_days": CYCLE_LOOKBACK_DAYS,
+                   # False => Firefly had more than the page cap in this
+                   # window, so these lists are a truncated view of it.
+                   "complete": complete},
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},

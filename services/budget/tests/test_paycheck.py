@@ -367,3 +367,103 @@ def test_negative_amounts_are_read_as_magnitudes():
             deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
             withdrawals=[txn(date(2026, 9, 1), "Groceries", -212.0)])["cycle"]
     assert d["spent"] == 212.0
+
+
+# ---- Codex PO review of e7adf83: two P1 calculation defects --------------
+# Both shipped to production and produced confident, wrong dollar figures.
+# Each test below was confirmed to fail against the code as deployed.
+
+def test_a_transfer_OUT_of_savings_is_not_a_contribution():
+    """P1. Matching source and destination indiscriminately turned a $300
+    withdrawal FROM savings into a $300 contribution TO it: savings_total=300,
+    left=1700 on a $2,000 paycheck. Direction is the whole point."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    d = run(date(2026, 9, 4), cfg=cfg,
+            deposits=[txn(date(2026, 8, 28), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 8, 29), "Transfer", 300.0,
+                           source="Savings", destination="Checking")])["cycle"]
+    assert d["savings_total"] == 0.0
+    assert d["left"] == 2000.0
+    assert d["from_savings"] == 300.0     # surfaced, never silently dropped
+
+
+def test_a_purchase_paid_from_the_savings_account_is_still_spending():
+    """P1, same root cause: a real $150 grocery run funded from savings
+    vanished from both cycle spend and month spend."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    d = run(date(2026, 9, 4), cfg=cfg,
+            deposits=[txn(date(2026, 8, 28), "PAYROLL", 2000.0)],
+            withdrawals=[txn(date(2026, 9, 1), "Costco", 150.0, "Groceries",
+                             source="Savings")])
+    assert d["cycle"]["spent"] == 150.0
+    assert d["month"]["spent"] == 150.0
+
+
+def test_a_contribution_still_reads_as_savings_when_the_destination_matches():
+    """The fix must not break the case it protects: money INTO savings."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    d = run(date(2026, 9, 4), cfg=cfg,
+            deposits=[txn(date(2026, 8, 28), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 8, 29), "Transfer", 300.0,
+                           source="Checking", destination="Savings")])["cycle"]
+    assert d["savings_total"] == 300.0
+    assert d["left"] == 1700.0
+
+
+def test_overlapping_allocations_deduct_one_movement_once():
+    """P1. Two rules both matching "savings" each scanned every transaction,
+    so one $100 transfer was deducted twice (savings_total=200, left=1800)."""
+    cfg = {**CFG, "allocations": [
+        {"name": "Savings A", "amount": 0, "match": ["savings"]},
+        {"name": "Savings B", "amount": 0, "match": ["savings"]}]}
+    d = run(date(2026, 9, 4), cfg=cfg,
+            deposits=[txn(date(2026, 8, 28), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 8, 29), "Savings", 100.0,
+                           source="Checking", destination="Savings")])["cycle"]
+    assert d["savings_total"] == 100.0
+    assert d["left"] == 1900.0
+    # first rule wins, and the ambiguous config is named rather than hidden
+    assert d["allocation_overlaps"]
+    assert sum(a["amount"] for a in d["allocations"]) == 100.0
+
+
+def test_split_transactions_still_sum_within_one_allocation():
+    """Single-assignment must not collapse genuinely separate movements."""
+    cfg = {**CFG, "allocations": [{"name": "Fidelity", "amount": 0,
+                                   "match": ["fidelity"]}]}
+    d = run(date(2026, 9, 4), cfg=cfg,
+            deposits=[txn(date(2026, 8, 28), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 8, 29), "a", 600.0, destination="Fidelity"),
+                       txn(date(2026, 8, 30), "b", 500.0, destination="Fidelity")])["cycle"]
+    assert d["savings_total"] == 1100.0
+    assert not d["allocation_overlaps"]
+
+
+# ---- P2: a truncated fetch window is not a total ------------------------
+
+def test_a_truncated_window_suppresses_totals_and_guidance():
+    """P2. The 75-day window caps paging; the helper used to return its
+    partial list with no completeness signal, so a long ledger undercounted
+    spending while still publishing daily guidance."""
+    d = paycheck_cycle(
+        cfg=CFG, today=date(2026, 9, 4), month=month_of(date(2026, 9, 4)),
+        deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+        withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0)],
+        transfers=[],
+        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+                   "ledger_latest_txn": "2026-09-04", "window_complete": False})
+    assert d["window_complete"] is False
+    assert d["month"]["spent"] is None          # unknown, not a partial total
+    assert d["month"]["daily_avg"] is None
+    assert d["cycle"]["per_day"] is None        # no guidance off a partial window
+    assert "partial view" in d["stale_reason"]
+
+
+def test_a_complete_window_is_unaffected():
+    d = standard()
+    assert d["window_complete"] is True
+    assert d["month"]["complete"] is True
+    assert d["cycle"]["per_day"] is not None

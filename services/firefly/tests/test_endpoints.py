@@ -357,3 +357,30 @@ def test_cycle_payload_matches_what_the_budget_service_reads(firefly, client, mo
     for row in d["deposits"] + d["withdrawals"] + d["transfers"]:
         assert {"date", "desc", "amount", "category", "source",
                 "destination"} <= set(row)
+
+
+def test_cycle_reports_a_truncated_window_as_incomplete(firefly, client, monkeypatch):
+    """PO review P2: the page cap is a resource limit, not a statement about
+    the ledger. A capped walk must be published as incomplete so consumers
+    suppress totals rather than understating spending confidently."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
+    d = client.get("/cycle").json()
+    assert d["window"]["complete"] is False
+
+
+def test_cycle_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert d["window"]["complete"] is True
+
+
+def _always_capped(real):
+    """Wrap the real fetch so it reports having stopped at the page cap."""
+    async def wrapper(*a, **kw):
+        rows = await real(*a, **kw)
+        rows.complete = False
+        return rows
+    return wrapper
