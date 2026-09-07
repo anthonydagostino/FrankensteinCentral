@@ -9,7 +9,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (firefly_state, parse_event_dt, portfolio_state,
+                        schedule_state, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -764,7 +766,8 @@ async def build_home(fresh: bool = False) -> dict:
 
     async with httpx.AsyncClient() as client:
         (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
+         networth, schedule, cal_health, deals, stocks, vault,
+         captures, review) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -775,10 +778,17 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{FIREFLY_SVC_URL}/spending"),
             _get(client, f"{NETWORTH_URL}/summary"),
             _get(client, f"{SCHEDULE_URL}/events"),
+            # Read-only Calendar reachability. Fetched alongside the rest so it
+            # costs no extra round trip; `_get` swallows failures into {}, which
+            # correctly reads as "no evidence" rather than as health.
+            _get(client, f"{SCHEDULE_URL}/calendar-health"),
             _get(client, f"{DEALS_URL}/summary"),
             _get(client, f"{STOCKS_URL}/portfolio"),
             _get(client, f"{VAULT_URL}/summary"),
             _get(client, f"{CORE_URL}/captures"),
+            # PRODUCT_IDEAS #5: core has exposed this since it was written and
+            # nothing ever rendered it.
+            _get(client, f"{CORE_URL}/weekly-review"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -794,6 +804,22 @@ async def build_home(fresh: bool = False) -> dict:
     calendar = _upcoming_events(all_events, now_local, limit=6)
     events = _upcoming_events(all_events, now_local, limit=None,
                               statuses=("confirmed",))
+    # The week grid gets the same already-filtered events the flat card gets.
+    # `state` travels with it because an unreachable schedule service and a
+    # genuinely clear week are not the same fact, and the card must not render
+    # the first as the second.
+    week = week_window(all_events, now_local, LOCAL_TZ)
+    # gmail is passed as NEGATIVE evidence only — it can establish that no
+    # OAuth consent exists, and nothing more. It cannot establish Calendar
+    # health: gmail keeps mode="live" while serving cached mail after a failed
+    # fetch, and a shared credential is not proof of Calendar API access.
+    # `calendar_evidence` comes from the schedule service's read-only
+    # /calendar-health probe, which is the only thing here that actually talks
+    # to Calendar. Absent or failed, the answer is "unknown", never "ok".
+    # See dashboard.schedule_state. The RAW payload is passed because the
+    # `gmail_mode` local above defaults an unreachable gmail to "disconnected",
+    # which would turn "we cannot tell" into a confident claim.
+    week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
     settings = settings or {}
 
     t = _home_time(settings)
@@ -809,7 +835,9 @@ async def build_home(fresh: bool = False) -> dict:
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
-        "portfolio": stocks or {"configured": False},
+        # `state` travels with it: an unreachable stocks service is not an
+        # empty portfolio, and must not read as "add your stocks".
+        "portfolio": {**(stocks or {}), "state": portfolio_state(stocks)},
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
@@ -820,6 +848,8 @@ async def build_home(fresh: bool = False) -> dict:
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
         "calendar": calendar,
+        "week": week,
+        "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }
