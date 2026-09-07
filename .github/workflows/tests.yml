@@ -10,6 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and all branches. tests/test_deploy_boundary.py
+          # runs frankenstein-status.sh, which resolves the desired
+          # commit from origin/production. Under the default shallow
+          # single-branch checkout that ref does not exist, the script
+          # reports "branch not found" instead of DEPLOYMENT PENDING,
+          # and the deploy-boundary tests fail on every pull request
+          # regardless of what the branch changed.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
