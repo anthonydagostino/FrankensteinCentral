@@ -19,6 +19,8 @@ position math stay local — computed in this service from the returned prices.
 import asyncio
 import os
 import time
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI
@@ -30,6 +32,43 @@ STOOQ_BASE = os.environ.get("STOOQ_BASE", "https://stooq.com").rstrip("/")
 YAHOO_BASE = os.environ.get("YAHOO_BASE", "https://query1.finance.yahoo.com").rstrip("/")
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) FrankensteinCentral/1.0"}
+LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
+
+
+def _today() -> date:
+    """Today in the user's timezone — the one clock this service uses.
+
+    docs/TESTING.md's rule, which had not reached this service: all date logic
+    goes through one seam so tests can pin it and sweep a calendar, instead of
+    passing on whatever day they happen to run.
+    """
+    return datetime.now(LOCAL_TZ).date()
+
+
+def session_label(as_of, today: date) -> str | None:
+    """How to honestly name the session a quote came from.
+
+    Both quote sources are daily bars, so "Today" was a label the card could
+    not support: during market hours it is usually the previous completed
+    session, on a Saturday it is Friday-vs-Thursday, and over a long weekend
+    it is three days old — all rendered as "Today" with no as-of date anywhere
+    to contradict it. docs/BUDGETS.md would not permit that, and this is the
+    same rule reaching the portfolio card.
+    """
+    d = as_of if isinstance(as_of, date) else None
+    if d is None:
+        try:
+            d = date.fromisoformat(str(as_of)[:10])
+        except (TypeError, ValueError):
+            return None
+    delta = (today - d).days
+    if delta <= 0:
+        return "Today"
+    if delta == 1:
+        return "Yesterday's close"
+    if delta < 7:
+        return f"{d.strftime('%a')} close"
+    return f"{d.strftime('%-d %b')} close"
 
 # quote cache: {SYMBOL: (ts, quote_or_None)} — successes kept 10 min,
 # failures 5 min (so a rate-limited source gets retried, but not hammered).
@@ -42,6 +81,27 @@ _CONCURRENCY = 10
 def _norm(symbol: str) -> str:
     s = symbol.strip().lower()
     return s if "." in s else f"{s}.us"
+
+
+def portfolio_session(quotes: list, today: date) -> dict:
+    """Which session the PORTFOLIO headline is showing.
+
+    A portfolio is only as current as its OLDEST quote: one stale symbol makes
+    the headline a blend of sessions, so the label follows the oldest rather
+    than flattering the freshest. "Today" requires every priced position to be
+    genuinely intraday — a single end-of-day bar in the mix makes the whole
+    number a close.
+    """
+    quotes = [q for q in quotes if q]
+    stamps = sorted(str(q.get("as_of")) for q in quotes if q.get("as_of"))
+    oldest = stamps[0] if stamps else None
+    intraday = bool(quotes) and all(q.get("intraday") for q in quotes)
+    return {
+        "as_of": oldest,
+        "intraday": intraday,
+        "label": ("Today" if intraday
+                  else session_label(oldest, today) if oldest else None),
+    }
 
 
 async def _stooq_quote(client: httpx.AsyncClient, symbol: str) -> dict | None:
@@ -63,7 +123,9 @@ async def _stooq_quote(client: httpx.AsyncClient, symbol: str) -> dict | None:
         pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
         return {"symbol": symbol.upper(), "price": round(close, 2),
                 "prev_close": round(prev_close, 2), "change": change,
-                "change_pct": pct, "source": "stooq"}
+                "change_pct": pct, "source": "stooq",
+                # Daily bars: this is a COMPLETED session, never intraday.
+                "as_of": (last[0] or "").strip() or None, "intraday": False}
     except Exception:  # noqa: BLE001
         return None
 
@@ -84,9 +146,19 @@ async def _yahoo_quote(client: httpx.AsyncClient, symbol: str) -> dict | None:
             return None
         change = round(float(price) - float(prev), 2)
         pct = round((change / float(prev)) * 100, 2)
+        live = str(meta.get("marketState") or "").upper() == "REGULAR"
+        stamp = meta.get("regularMarketTime")
+        try:
+            as_of = (datetime.fromtimestamp(int(stamp), LOCAL_TZ).date().isoformat()
+                     if stamp else None)
+        except (TypeError, ValueError, OSError):
+            as_of = None
         return {"symbol": symbol.upper(), "price": round(float(price), 2),
                 "prev_close": round(float(prev), 2), "change": change,
-                "change_pct": pct, "source": "yahoo"}
+                "change_pct": pct, "source": "yahoo",
+                # regularMarketPrice is live ONLY while the session is open;
+                # outside it, this is the last close like everything else.
+                "as_of": as_of, "intraday": live}
     except Exception:  # noqa: BLE001
         return None
 
@@ -184,8 +256,14 @@ async def portfolio():
     top = movers[0] if movers else None
     bottom = movers[-1] if movers and len(movers) > 1 else None
     base = total_value - total_day
+    session = portfolio_session([fetched.get(p["symbol"]) for p in live], _today())
     return {
         "configured": True,
+        "as_of": session["as_of"],
+        "intraday": session["intraday"],
+        # What the card should call the change it is showing. None => unknown,
+        # which the card renders as such rather than guessing "Today".
+        "session_label": session["label"],
         "value": round(total_value, 2),
         "day_change": round(total_day, 2),
         "day_change_pct": round((total_day / base) * 100, 2) if base else 0.0,

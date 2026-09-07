@@ -58,6 +58,7 @@ at the month boundary — plus year rollovers and Feb 29.
 | `services/firefly/tests/test_endpoints.py` | 27 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour, `/cycle` (transfers and account names present, future dates dropped) |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
 | `services/budget/tests/test_paycheck.py` | 32 | pay cycle: savings never counted as spending (or subtracted twice), expected-vs-observed deductions, stale ledger pauses $/day but keeps totals, a missed paycheck reports unknown instead of an overspend, month-to-date across month/leap/year edges |
+| `services/stocks/tests/test_session_label.py` | 1,480 | the portfolio card's session label: a completed past session is never called "Today", swept across two years and lags of 1-10 days; the oldest quote sets the headline, so one end-of-day bar can't ride under a live label |
 | `services/budget/tests/test_service.py` | 8 | the wiring: firefly `/cycle` → paycheck engine → `/status` and `/paycheck`, including the cross-service field contract |
 
 ## Adding a service's tests
