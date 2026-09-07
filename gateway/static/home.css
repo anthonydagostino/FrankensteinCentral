@@ -110,14 +110,18 @@ body.cc[data-mode="evening"] {
 }
 .cc-loading { color: var(--muted); }
 @media (max-width: 900px) {
-  .cc-card, .cc-card.hero, .cc-card.wide { grid-column: span 12; }
+  .cc-card, .cc-card.hero, .cc-card.compact, .cc-card.wide { grid-column: span 12; }
 }
 
-/* ---- Do This Next (hero) ---- */
-.donext { display: flex; flex-direction: column; gap: 6px; }
-.donext .title { font-size: clamp(20px, 2.6vw, 26px); font-weight: 700; letter-spacing: -0.4px; }
-.donext .reason { color: var(--muted); font-size: 14.5px; line-height: 1.5; max-width: 60ch; }
-.donext .cta { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+/* ---- Do This Next ----
+   Demoted from the hero slot: it sits low in the left column and is sized as
+   an ordinary card. It is a suggestion, not the headline. */
+.cc-card.compact { padding: 12px 14px; }
+.donext { display: flex; flex-direction: column; gap: 3px; }
+.donext .title { font-size: 15px; font-weight: 600; letter-spacing: -0.1px; }
+.donext .reason { color: var(--muted); font-size: 12.5px; line-height: 1.45; max-width: 60ch; }
+.donext .cta { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.donext .cta .big-btn { padding: 7px 13px; font-size: 13px; border-radius: 9px; }
 .donext.calm .title { color: var(--accent); }
 .big-btn {
   background: var(--accent-2); color: #0b0e14; border: 0; border-radius: 12px;
