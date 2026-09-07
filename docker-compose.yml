@@ -1,0 +1,312 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-frank}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frank}
+      POSTGRES_DB: ${POSTGRES_DB:-frankensteincentral}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-frank}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    environment:
+      POWERBUY_URL: http://powerbuy:8000
+      FITNESS_URL: http://fitness:8000
+      GMAIL_URL: http://gmail:8000
+      SCHEDULE_URL: http://schedule:8000
+      ASSISTANT_URL: http://assistant:8000
+    ports:
+      - "8080:8000"
+    depends_on:
+      - powerbuy
+      - fitness
+      - gmail
+      - schedule
+      - assistant
+
+  powerbuy:
+    build: ./services/powerbuy
+    restart: unless-stopped
+    environment:
+      # Your real PowerBuy backend (the Render API). Login pulls your purchases.
+      POWERBUY_API_URL: ${POWERBUY_API_URL:-https://powerbuy.onrender.com/api}
+      POWERBUY_EMAIL: ${POWERBUY_EMAIL:-}
+      POWERBUY_PASSWORD: ${POWERBUY_PASSWORD:-}
+    ports:
+      - "8081:8000"
+
+  fitness:
+    build: ./services/fitness
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8082:8000"
+
+  finance:
+    build: ./services/finance
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8086:8000"
+
+  tasks:
+    build: ./services/tasks
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8087:8000"
+
+  # Time-aware budgets over Firefly (stateless; budget definitions live in
+  # core settings, transactions come from the firefly service).
+  budget:
+    build: ./services/budget
+    restart: unless-stopped
+    environment:
+      FIREFLY_SVC_URL: http://firefly:8000
+      CORE_URL: http://core:8000
+    depends_on:
+      firefly:
+        condition: service_started
+      core:
+        condition: service_started
+    ports:
+      - "8088:8000"
+
+  deals:
+    build: ./services/deals
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8089:8000"
+
+  networth:
+    build: ./services/networth
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      # Pull net worth live from Firefly III (via the firefly sub-app, which
+      # holds the token). Falls back to the manual accounts if not connected.
+      FIREFLY_SVC_URL: http://firefly:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      firefly:
+        condition: service_started
+    ports:
+      - "8090:8000"
+
+  vault:
+    build: ./services/vault
+    restart: unless-stopped
+    # Read-only client for your Vaultwarden — stores nothing. Set VAULT_MODE to
+    # "bitwarden" and BW_SERVE_URL to your `bw serve` endpoint when you're home.
+    environment:
+      VAULT_MODE: ${VAULT_MODE:-off}
+      BW_SERVE_URL: ${BW_SERVE_URL:-}
+    ports:
+      - "8091:8000"
+
+  # Read-only client for a Plex server SHARED with you (auto-discovered via
+  # plex.tv using your own account token). Empty token = "not connected".
+  # The token never reaches the browser. See docs/SETUP-PLEX.md.
+  plex:
+    build: ./services/plex
+    restart: unless-stopped
+    environment:
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      PLEX_SERVER_NAME: ${PLEX_SERVER_NAME:-}
+      PLEX_URL: ${PLEX_URL:-}
+    ports:
+      - "8092:8000"
+
+  # Read-only client that surfaces YOUR Firefly III (at FIREFLY_URL, e.g.
+  # http://192.168.1.185:8093) on the hub — net worth, spend, accounts, and the
+  # 30-day category pie. Add FIREFLY_TOKEN (made in the Firefly UI) to go live;
+  # empty token = sample data. It never sends the token to the browser.
+  firefly:
+    build: ./services/firefly
+    restart: unless-stopped
+    environment:
+      FIREFLY_URL: ${FIREFLY_URL:-}
+      FIREFLY_TOKEN: ${FIREFLY_TOKEN:-}
+      # Browser-facing URL for the "Open in Firefly" / importer deep links.
+      FIREFLY_WEB_URL: ${FIREFLY_WEB_URL:-}
+      FIREFLY_IMPORTER_URL: ${FIREFLY_IMPORTER_URL:-}
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
+    # 8097 (not 8094) — your Firefly data importer already uses 8094. The hub
+    # reaches this service internally over the docker network, so this host
+    # port is only for direct debugging.
+    ports:
+      - "8097:8000"
+
+  # Personal state & daily-score engine (study/focus, water, nutrition, Big 3,
+  # captures, history). Reads gym from fitness and open tasks from tasks.
+  core:
+    build: ./services/core
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      FITNESS_URL: http://fitness:8000
+      TASKS_URL: http://tasks:8000
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
+    depends_on:
+      db:
+        condition: service_healthy
+      fitness:
+        condition: service_started
+      tasks:
+        condition: service_started
+    ports:
+      - "8098:8000"
+
+  # Portfolio & watchlist quotes (keyless, via Stooq). Holdings/watchlist are
+  # configured in core settings (market.holdings / market.watchlist).
+  stocks:
+    build: ./services/stocks
+    restart: unless-stopped
+    environment:
+      CORE_URL: http://core:8000
+    depends_on:
+      core:
+        condition: service_started
+    ports:
+      - "8099:8000"
+
+  gmail:
+    build: ./services/gmail
+    restart: unless-stopped
+    environment:
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8083/auth/callback}
+      # Reuse the Gmail connection PowerBuy already has (headless, no browser click).
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
+      # Override which slice of the inbox to triage (default: primary tab, last 7d).
+      GMAIL_QUERY: ${GMAIL_QUERY:-}
+      GMAIL_TOKEN_FILE: /data/token.json
+      # Background inbox poll: every 6 hours, independent of anyone opening
+      # the dashboard. Endpoints serve the last sync, so page loads cost no
+      # Gmail API calls.
+      GMAIL_REFRESH_SECONDS: ${GMAIL_REFRESH_SECONDS:-21600}
+      GMAIL_STATE_FILE: /data/gmail_state.json
+    volumes:
+      # Persists the Gmail refresh token so the one-time "Allow" survives
+      # restarts, plus the last-known-good inbox so a restart doesn't blank
+      # the card until the next poll.
+      - gmail_token:/data
+    ports:
+      - "8083:8000"
+
+  schedule:
+    build: ./services/schedule
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      # Borrows the gmail service's connected Google account (via its
+      # /internal/token endpoint) to push events to the real Google Calendar.
+      GMAIL_URL: http://gmail:8000
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+    depends_on:
+      db:
+        condition: service_healthy
+      gmail:
+        condition: service_started
+    ports:
+      - "8084:8000"
+
+  assistant:
+    build: ./services/assistant
+    restart: unless-stopped
+    environment:
+      POWERBUY_URL: http://powerbuy:8000
+      FITNESS_URL: http://fitness:8000
+      GMAIL_URL: http://gmail:8000
+      SCHEDULE_URL: http://schedule:8000
+      FINANCE_URL: http://finance:8000
+      TASKS_URL: http://tasks:8000
+      BUDGET_URL: http://budget:8000
+      DEALS_URL: http://deals:8000
+      NETWORTH_URL: http://networth:8000
+      VAULT_URL: http://vault:8000
+      PLEX_SVC_URL: http://plex:8000
+      FIREFLY_URL_SVC: http://firefly:8000
+      CORE_URL: http://core:8000
+      STOCKS_URL: http://stocks:8000
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
+      # Assistant auto-syncs on this interval (seconds); 0 disables.
+      AUTO_SYNC_SECONDS: ${AUTO_SYNC_SECONDS:-0}
+      # Bones texts you. Channel: telegram | whatsapp | sms | webhook (empty = off).
+      NOTIFY_CHANNEL: ${NOTIFY_CHANNEL:-}
+      NOTIFY_ON_SYNC: ${NOTIFY_ON_SYNC:-false}
+      NOTIFY_TO: ${NOTIFY_TO:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
+      TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+    ports:
+      - "8085:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      powerbuy:
+        condition: service_started
+      fitness:
+        condition: service_started
+      gmail:
+        condition: service_started
+      schedule:
+        condition: service_started
+      finance:
+        condition: service_started
+      tasks:
+        condition: service_started
+      budget:
+        condition: service_started
+      deals:
+        condition: service_started
+      networth:
+        condition: service_started
+      vault:
+        condition: service_started
+      plex:
+        condition: service_started
+      firefly:
+        condition: service_started
+      core:
+        condition: service_started
+      stocks:
+        condition: service_started
+
+volumes:
+  db_data:
+  gmail_token:

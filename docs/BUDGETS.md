@@ -1,0 +1,239 @@
+# Budgets — model, formulas, and rules
+
+FrankensteinCentral's budgeting layer turns Firefly III's transaction history
+into forward-looking guidance. **Firefly stays the financial system of
+record** — this layer stores only what Firefly can't provide: your monthly
+limits and how Firefly categories map onto them.
+
+## Data model
+
+Budget definitions live in **core settings** (`budgets`), edited in
+⚙ Settings → Monthly budgets:
+
+```json
+{"id": "dining", "name": "Dining", "limit": 300,
+ "categories": ["Dining Out", "Restaurants"]}
+```
+
+- One budget maps to **one or more Firefly category names** (case-insensitive).
+- Transactions come from the firefly service's `/month` endpoint each request
+  (withdrawals + categorized deposits for the current local-time month;
+  **transfers are excluded entirely** — moving money between your own accounts
+  is neither spending nor income).
+- The budget service (`/status`) is stateless with a 60s cache.
+
+Why not Firefly's own budgets? Firefly budgets attach per-transaction
+(a budget id on each txn), which requires tagging every transaction inside
+Firefly. Category mapping works with data the CSV imports already carry. The
+audit (`firefly /audit`) reports whether Firefly budgets exist so this call
+can be revisited if the user starts using them.
+
+## Formulas (engine.py — pure and unit-tested)
+
+For a month of `D` days with `d` days elapsed (today included) and
+`r = D − d` full days remaining:
+
+| value | formula |
+|---|---|
+| spent | Σ withdrawals(mapped cats) − Σ categorized deposits(mapped cats) |
+| remaining | limit − spent |
+| pct | 100 · spent / limit |
+| daily_rate | spent / d |
+| projected (month-end) | daily_rate · D |
+| projected_delta | projected − limit |
+| safe_per_day | max(remaining, 0) / max(r, 1) |
+
+Refunds: a **categorized deposit** counts as a refund/credit against that
+category. Uncategorized deposits are income, never refunds. A net-negative
+month (refunds > spend) renders as 0% full and healthy.
+
+## Warning states (exact rules)
+
+Evaluated in order; first match wins. All require a fresh ledger (below).
+
+1. **OVER** — `spent > limit`
+2. **APPROACHING** — `remaining ≤ 10% of limit`, OR
+   (`r > 0` and `remaining > 0` and `safe_per_day < 0.5 × limit/D`)
+   — i.e. staying on plan would require living on less than half the
+   budget's implied daily rate.
+3. **WATCH** — `projected > limit` **and** `d ≥ 3`
+   (before day 3 the projection is too noisy; early-month WATCH is suppressed)
+4. **HEALTHY** — everything else.
+
+Severity for the attention feed: over/approaching → important, watch → fyi.
+Warning copy is calm and states the numbers ("about $7.45/day keeps you on
+plan"), never guilt.
+
+## Freshness (zero ≠ unknown; synced ≠ spent)
+
+Two distinct signals, never conflated:
+
+- **`ingest_days`** — days since transaction data last **entered** Firefly.
+  Evidence is transaction **`created_at` only**: Firefly stamps it when the
+  record is written and never changes it, so importing an old-dated bank
+  transaction today yields `created_at = today, date = 20 days ago` —
+  precisely "imported today; activity 20 days ago". Querying Firefly never
+  refreshes it. Two look-alike timestamps are **deliberately rejected**:
+  transaction `updated_at` (bumped by ordinary edits — recategorizing an
+  old transaction is not an import and must not revive stale guidance) and
+  account `updated_at` (bumped by metadata changes with no financial
+  ingestion). Firefly's API can't sort or filter by `created_at`, so the
+  signal is gathered from the month's transactions plus a newest-dated
+  ledger-wide probe — the strongest provenance the API exposes.
+- **`activity_days`** — days since the newest transaction **date** of any
+  type. This is *spending recency* — supporting info only, never a pause
+  trigger on its own when an ingestion signal exists.
+
+Rules (engine constants `INGEST_MAX_DAYS=3`, `ACTIVITY_FALLBACK_MAX=2`):
+
+- `ingest_days < 3` → **ACTIVE**. A user who synced today but hasn't spent
+  in 3 days stays active — the UI shows "Data synced today · last
+  transaction 3 days ago". Not spending is not staleness.
+- `ingest_days ≥ 3` → **PAUSED** with reason "financial data hasn't been
+  imported for N days": spent/limit/remaining still display (true
+  as-of-the-ledger), but daily rate, safe/day, projections, warnings and
+  budget room are **null** — never 0, never "on track".
+- No ingestion signal at all (old firefly build) → conservative fallback:
+  active only if `activity_days < 2`, and the payload says
+  `signal: "activity_fallback"` so the degradation is visible.
+
+The paused state answers three questions rather than dead-ending: what's
+wrong (financial data isn't current), why it matters (guidance is paused so
+it can't mislead), and what to do (an **Import transactions ↗** action
+deep-linking to the existing Firefly Data Importer — the importer is never
+recreated or automated here).
+
+### Two tolerances, on purpose
+
+Day-level and month-level claims need different amounts of freshness, so
+they use different thresholds:
+
+| claim | threshold | why |
+|---|---|---|
+| "you spent $X today" (Money card) | ingest ≥ 2 days → suppressed | a same-day figure is unknowable if nothing was imported today; $0 would be a lie |
+| month-to-date budget position + pace | ingest ≥ 3 days → PAUSED | a month-scale position survives a short lag, and the sync date is stated on screen |
+
+So at `ingest_days = 2` the Money card correctly shows today as "—" with
+"Financial data hasn't been imported for 2 days", while budgets stay ACTIVE
+and disclose "Data synced 2 days ago". Both statements are true and the
+user can see the lag; neither implies data we don't have.
+
+## Budget Room
+
+`budget_room = Σ max(limit − spent, 0)` across active budgets — over-budget
+categories contribute 0, they do not offset others. Presented as
+"$X remaining across active budgets": it is **remaining budget capacity**,
+not a bank balance — it excludes unbudgeted categories, uncategorized
+spending, and future bills. Suppressed entirely when ingestion is stale or
+no budgets exist.
+
+The label **"Safe to Spend" is reserved** for a future engine that also
+accounts for upcoming bills, obligations and liquidity; Budget Room is one
+component of that calculation and keeps its honest, narrower name until the
+fuller engine exists.
+
+## Uncategorized & unbudgeted spending
+
+- Uncategorized withdrawals are never silently dropped: the Budget view shows
+  the month's uncategorized total + count ("needs review in Firefly").
+- If uncategorized ≥ 20% of the month's spend AND ≥ $50, a **low-confidence**
+  flag states that category-budget conclusions may be off.
+- Categorized-but-unbudgeted spending is listed ("Not in any budget: Gas $79")
+  so nothing disappears between the budgets.
+
+## The pay cycle — "what I spent" and "what's left to spend"
+
+Monthly budgets answer *am I on plan for this category*. They do not answer
+the two questions the homepage is actually asked:
+
+1. **What did I spend this month?** — month-to-date withdrawals, **minus the
+   money that only moved to savings**. A $1,100 transfer to Fidelity is not
+   $1,100 of spending, and if the import books it as a plain withdrawal
+   rather than a transfer it must still not read as one.
+2. **How much of this paycheck is left?** — the paycheck that landed, minus
+   the savings that come out of it, minus what has been spent since it
+   landed.
+
+Both are computed by `services/budget/app/paycheck.py` (pure,
+unit-tested) from `firefly /cycle` — a read-only window that spans **both**
+the current pay cycle and the calendar month, so the same
+savings-vs-spending classification applies to both numbers instead of two
+windows quietly disagreeing.
+
+### Configuration (core settings → `paycheck`)
+
+```json
+{"enabled": true,
+ "match": ["payroll", "direct dep"],
+ "min_amount": 500,
+ "cadence_days": 14,
+ "allocations": [
+   {"name": "Fidelity", "amount": 1100, "match": ["fidelity"],
+    "already_withheld": false},
+   {"name": "Marcus", "amount": 500, "match": ["marcus"]}]}
+```
+
+Matching is case-insensitive and looks at a transaction's **description,
+source account, destination account and category** — a Firefly transfer is
+often described just "Savings" while only the destination account says
+"Fidelity", so the description alone is not enough.
+
+### Formulas
+
+| value | definition |
+|---|---|
+| paycheck | Σ matching deposits **on the most recent paycheck date** (split direct deposits are one paycheck) |
+| allocation (each) | the **observed** matching transfer/withdrawal in the cycle if there is one; otherwise the **configured** amount, labelled `expected` |
+| savings_total | Σ allocations (an `already_withheld` allocation contributes **0** — the deposit is already net of it) |
+| spendable | paycheck − savings_total |
+| spent | Σ withdrawals since the paycheck date, **excluding** allocation-matched ones |
+| left | spendable − spent |
+| per_day | max(left, 0) / days to next payday |
+| month.spent | Σ month-to-date withdrawals excluding allocation-matched ones |
+| month.savings | Σ allocation-matched outflows this month (shown, never counted as spending) |
+
+The next payday is `last paycheck + cadence`, where cadence is the **observed**
+gap between the last two paychecks when it is plausible (5–40 days) and the
+configured `cadence_days` otherwise.
+
+### What it refuses to claim
+
+- **Expected ≠ observed.** An allocation the ledger hasn't seen yet still
+  shapes the number — it is the user's stated plan — but it is always
+  labelled `expected`, never presented as a transfer that happened.
+- **Double-subtraction is guarded twice.** An allocation-matched withdrawal
+  is savings, not spending, so the same $1,100 can never be taken out as a
+  deduction *and* again as spend. `already_withheld` covers the opposite
+  case (employer withholds pre-deposit, so the deposit is already net).
+- **A missing paycheck is not an overspend.** Past `next payday +
+  OVERDUE_GRACE_DAYS` with no newer deposit, `left` is `null` with the
+  reason — a ledger that is behind is not a user who is $2,000 in the hole.
+  The grace days exist because paydays drift across weekends.
+- **Stale ingestion pauses guidance, not totals.** Same rule as budgets:
+  `spent`/`left` still display (true as of the ledger, and the UI says
+  through which date), while `per_day` goes `null`. With no ingestion signal
+  at all, nothing is treated as fresh.
+- **An empty month is unknown, not $0** — `month.spent` is `null` when
+  nothing has been imported since the month began.
+- **"Left to spend" is a pay-cycle figure, not a bank balance** and not
+  "Safe to Spend": it does not know about bills due later in the cycle. It
+  sits beside Budget Room on the Money card, both explicitly scoped.
+
+## Bills
+
+Firefly's own bills API is the source of truth (`firefly /bills` — name,
+average amount, next expected date, paid-this-month). If the user hasn't
+configured bills in Firefly, the section simply doesn't render
+(`supported:false`); no parallel bill database exists here.
+
+## Future path (architected, not built)
+
+- **Month templates / irregular months**: budgets are evaluated against the
+  current month context (`D/d/r` passed in, not assumed) — per-month limit
+  overrides can be added as `{month: "2026-09", limit: …}` entries without
+  reshaping the engine.
+- **Savings goals**: a goal is a budget with direction reversed (fill = good).
+  The engine's inputs (limits + net flows by category) already support it;
+  a `goals` list in core settings plus a vessel variant is the clean path.
+- The month boundary uses LOCAL_TZ; leap years and 28–31-day months come from
+  `calendar.monthrange` (tested for 28/29/30/31).
