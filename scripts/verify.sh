@@ -339,6 +339,38 @@ else:
     add("WARN", "paycheck", f"{err or 'no data'} — OLD build (no /paycheck)? redeploy needed")
 
 print()
+print("-- recurring charges --")
+st, rec, err = get(8088, "/recurring", timeout=90)
+if st == 200 and rec is not None:
+    if not rec.get("available"):
+        add("WARN", "recurring", f"unavailable — {rec.get('reason','?')}")
+    else:
+        items = rec.get("items", [])
+        high = [i for i in items if i.get("confidence") == "high"]
+        add("PASS", "recurring", f"{len(items)} detected ({len(high)} confident) "
+            f"over {rec.get('lookback_days')}d from {rec.get('window_start')}; "
+            f"~${rec.get('monthly_equivalent')}/mo committed")
+        if not rec.get("complete", True):
+            # The page cap bit. Everything read still stands; what CANNOT be
+            # concluded is anything about what is missing.
+            add("WARN", "recurring window",
+                "TRUNCATED read — 'appeared'/'resumed' suppressed by design; "
+                "raise HISTORY_MAX_PAGES if this persists")
+        for e in rec.get("events", [])[:5]:
+            detail = (f"${e.get('from')} -> ${e.get('to')}"
+                      if e.get("event") == "changed"
+                      else f"${e.get('amount')} {e.get('cadence')}")
+            add("PASS", f"  {e.get('event')}", f"{str(e.get('name'))[:24]}: {detail} "
+                f"[{e.get('confidence')}, {e.get('charges')} charges]")
+        # A merchant matched to a Firefly bill is deliberately never announced.
+        known = [i for i in items if i.get("known_bill")]
+        if known:
+            add("PASS", "  declared", f"{len(known)} already a Firefly bill — "
+                "never reported as a discovery")
+else:
+    add("WARN", "recurring", f"{err or 'no data'} — OLD build (no /recurring)? redeploy needed")
+
+print()
 print("-- Firefly data-quality audit (last 12 months) --")
 st, au, err = get(8097, "/audit", timeout=90)
 if st == 200 and au and au.get("connected"):

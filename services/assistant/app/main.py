@@ -10,7 +10,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import notify
 from .dashboard import (firefly_state, parse_event_dt, portfolio_state,
-                        upcoming_events)
+                        schedule_state, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -601,6 +602,14 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     pay = (budget or {}).get("paycheck") or {}
     pay_month = pay.get("month") or {}
     month_label = pay_month.get("label")
+    # Month completeness is carried INDEPENDENTLY of the paycheck. A truncated
+    # window with no matching paycheck takes the unavailable brief path, which
+    # drops every pay-cycle field — so if the headline relied on those, it
+    # would quietly print a partial read as an exact month-to-date total.
+    # Either source saying "truncated" makes it truncated; they read one ledger.
+    month_complete = sp.get("window_complete", True) is not False
+    if pay_month.get("complete") is False:
+        month_complete = False
     if pay.get("configured") and pay_month.get("spent") is not None:
         month_spend = pay_month.get("spent")
     today_spend = None if stale else sp.get("today")
@@ -649,6 +658,8 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
         "month_label": month_label,
+        # False => `month` is at least this much, not exactly this much.
+        "month_complete": month_complete,
         "month_savings": pay_month.get("savings"),
         "month_ingested": month_ingested,
         # What's left of the current paycheck after the savings that come out
@@ -699,6 +710,14 @@ def _paycheck_brief(pay: dict) -> dict:
         "as_of": pay.get("as_of"),
         "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
         "savings_total": c.get("savings_total"),
+        # Money that came back OUT of savings, and any ambiguous allocation
+        # config — both surfaced rather than folded silently into a total.
+        "from_savings": c.get("from_savings"),
+        "allocation_overlaps": c.get("allocation_overlaps", []),
+        "unmatched_savings": c.get("unmatched_savings", []),
+        "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
+        "figures_complete": c.get("figures_complete", True),
+        "window_complete": pay.get("window_complete", True),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),
         "left": c.get("left"), "per_day": c.get("per_day"),
@@ -711,7 +730,10 @@ def _budget_brief(status) -> dict:
     """The homepage's budget signal: budget room, the single worst warning,
     and whether everything is on track — never the whole budget database."""
     if not status or not status.get("available"):
-        return {"available": False, "configured": bool(status and status.get("configured"))}
+        return {"available": False,
+                "configured": bool(status and status.get("configured")),
+                "recurring": (status or {}).get("recurring")
+                             or {"available": False, "events": []}}
     warns = status.get("warnings", [])
     counts = status.get("state_counts", {})
     freshness = status.get("freshness") or {}
@@ -729,6 +751,10 @@ def _budget_brief(status) -> dict:
         "budget_count": len(status.get("budgets", [])),
         "days_left": (status.get("month") or {}).get("days_left"),
         "uncat_flag": (status.get("uncategorized") or {}).get("low_confidence", False),
+        # Subscriptions that appeared, moved price, or came back. Passed
+        # through as the budget service framed it — this layer must not
+        # turn an unavailable read into an empty one.
+        "recurring": status.get("recurring") or {"available": False, "events": []},
     }
 
 
@@ -740,7 +766,8 @@ async def build_home(fresh: bool = False) -> dict:
 
     async with httpx.AsyncClient() as client:
         (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
+         networth, schedule, cal_health, deals, stocks, vault,
+         captures, review) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -751,10 +778,17 @@ async def build_home(fresh: bool = False) -> dict:
             _get(client, f"{FIREFLY_SVC_URL}/spending"),
             _get(client, f"{NETWORTH_URL}/summary"),
             _get(client, f"{SCHEDULE_URL}/events"),
+            # Read-only Calendar reachability. Fetched alongside the rest so it
+            # costs no extra round trip; `_get` swallows failures into {}, which
+            # correctly reads as "no evidence" rather than as health.
+            _get(client, f"{SCHEDULE_URL}/calendar-health"),
             _get(client, f"{DEALS_URL}/summary"),
             _get(client, f"{STOCKS_URL}/portfolio"),
             _get(client, f"{VAULT_URL}/summary"),
             _get(client, f"{CORE_URL}/captures"),
+            # PRODUCT_IDEAS #5: core has exposed this since it was written and
+            # nothing ever rendered it.
+            _get(client, f"{CORE_URL}/weekly-review"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -770,6 +804,22 @@ async def build_home(fresh: bool = False) -> dict:
     calendar = _upcoming_events(all_events, now_local, limit=6)
     events = _upcoming_events(all_events, now_local, limit=None,
                               statuses=("confirmed",))
+    # The week grid gets the same already-filtered events the flat card gets.
+    # `state` travels with it because an unreachable schedule service and a
+    # genuinely clear week are not the same fact, and the card must not render
+    # the first as the second.
+    week = week_window(all_events, now_local, LOCAL_TZ)
+    # gmail is passed as NEGATIVE evidence only — it can establish that no
+    # OAuth consent exists, and nothing more. It cannot establish Calendar
+    # health: gmail keeps mode="live" while serving cached mail after a failed
+    # fetch, and a shared credential is not proof of Calendar API access.
+    # `calendar_evidence` comes from the schedule service's read-only
+    # /calendar-health probe, which is the only thing here that actually talks
+    # to Calendar. Absent or failed, the answer is "unknown", never "ok".
+    # See dashboard.schedule_state. The RAW payload is passed because the
+    # `gmail_mode` local above defaults an unreachable gmail to "disconnected",
+    # which would turn "we cannot tell" into a confident claim.
+    week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
     settings = settings or {}
 
     t = _home_time(settings)
@@ -785,12 +835,9 @@ async def build_home(fresh: bool = False) -> dict:
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
-        # `stocks or {"configured": False}` rendered an unreachable service as
-        # "No holdings yet. Add your stocks →" -- an instruction to fix setup
-        # that is already correct. The service says `configured: False` itself
-        # when it really has none, so an empty payload means it never answered.
-        "portfolio": dict(stocks or {}, state=portfolio_state(stocks),
-                          configured=(stocks or {}).get("configured", False)),
+        # `state` travels with it: an unreachable stocks service is not an
+        # empty portfolio, and must not read as "add your stocks".
+        "portfolio": {**(stocks or {}), "state": portfolio_state(stocks)},
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
@@ -805,13 +852,14 @@ async def build_home(fresh: bool = False) -> dict:
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
         "calendar": calendar,
+        "week": week,
+        "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
         # NOT a claim about the stack. This only ever probed the two sub-apps
-        # the home payload itself needs, so `healthy: true` here meant "core and
-        # gmail answered", while thirteen other services could be down and the
-        # footer still read "Systems healthy". The footer now renders the
-        # gateway's /api/health, which probes every registered service; this
-        # field says what it actually looked at, so no reader can mistake it
-        # for the whole picture again.
+        # the home payload itself needs, so `healthy: true` meant "core and
+        # gmail answered" while thirteen other services could be down. The
+        # footer now renders the gateway's /api/health, which probes every
+        # registered service; this field says what it actually looked at, so
+        # no reader can mistake it for the whole picture again.
         "systems": {"checked": ["core", "email"], "down": down,
                     "covers_all_services": False},
         "last_updated": t["now"],

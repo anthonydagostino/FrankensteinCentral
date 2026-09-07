@@ -68,19 +68,60 @@ def _terms(raw) -> list[str]:
     return [t.strip().lower() for t in (raw or []) if str(t).strip()]
 
 
-def _haystack(t: dict) -> str:
-    """Everything that can name a counterparty. The description alone is not
-    enough — a Firefly transfer is often described "Savings" while only the
-    destination account says "Fidelity"."""
-    return " ".join(str(t.get(k) or "") for k in
-                    ("desc", "source", "destination", "category")).lower()
+def _field_matches(value, terms: list[str]) -> bool:
+    v = str(value or "").strip().lower()
+    return bool(v) and any(term in v for term in terms)
 
 
 def _matches(t: dict, terms: list[str]) -> bool:
+    """Does this transaction mention any of these terms, anywhere? Used only
+    for identifying the PAYCHECK, where direction is already fixed by the
+    transaction being a deposit. Savings classification must not use this —
+    see _savings_role."""
     if not terms:
         return False
-    hay = _haystack(t)
-    return any(term in hay for term in terms)
+    return any(_field_matches(t.get(k), terms) for k in
+               ("desc", "source", "destination", "category"))
+
+
+def _savings_role(t: dict, terms: list[str]) -> str | None:
+    """Which WAY the money moved relative to a matched savings account.
+
+        "contribution" — it went INTO that account (destination matched)
+        "reverse"      — it came OUT of it (source matched, destination didn't)
+        None           — unrelated, or both ends are the same account
+
+    Direction is the whole point. Firefly records both legs of a transfer, so
+    matching source and destination indiscriminately turns a $300 withdrawal
+    FROM savings into a $300 contribution TO it, and makes a grocery run paid
+    from the savings account disappear from spending entirely. Both were real
+    defects; both are reproduced in the tests.
+
+    The description is only consulted when NEITHER account is named, because
+    a transfer described "Savings" says nothing about which direction the
+    money went — only the accounts do.
+    """
+    if not terms:
+        return None
+    dst = _field_matches(t.get("destination"), terms)
+    src = _field_matches(t.get("source"), terms)
+    if dst and not src:
+        return "contribution"
+    if src and not dst:
+        return "reverse"
+    if src and dst:
+        return None          # same account both ends: no net movement
+    if not (t.get("source") or t.get("destination")):
+        # No account information at all (some CSV imports). Fall back to the
+        # description/category, which is how a savings transfer booked as a
+        # plain withdrawal is still recognised.
+        if _field_matches(t.get("desc"), terms) or _field_matches(t.get("category"), terms):
+            return "contribution"
+    return None
+
+
+def _alloc_terms(a: dict) -> list[str]:
+    return _terms(a.get("match")) or _terms([a.get("name")])
 
 
 def _in(t: dict, start: date, end: date) -> bool:
@@ -113,9 +154,18 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     ingest_days = fr.get("ingest_days")
     activity_days = fr.get("activity_days")
     month_ingested = fr.get("month_ingested")
+    # A truncated fetch window is not evidence of what a period cost. It is
+    # the same class of error as a stale ledger — arithmetic over a partial
+    # window that still looks like a confident total — so it suppresses
+    # guidance the same way, and says why.
+    window_complete = fr.get("window_complete", True) is not False
     fresh = ingest_days < INGEST_MAX_DAYS if ingest_days is not None else False
+    fresh = fresh and window_complete
     stale_reason = None
-    if ingest_days is None:
+    if not window_complete:
+        stale_reason = ("more transactions exist in this window than were read, "
+                        "so these totals are a partial view")
+    elif ingest_days is None:
         stale_reason = "no import evidence in the ledger, so guidance is paused"
     elif not fresh:
         stale_reason = (f"financial data hasn't been imported for {ingest_days} days, "
@@ -128,7 +178,10 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         alloc_terms += _terms(a.get("match")) or _terms([a.get("name")])
 
     def is_savings(t: dict) -> bool:
-        return _matches(t, alloc_terms)
+        """Money moving INTO savings. A reverse movement (out of savings) is
+        not a contribution, and a purchase funded from the savings account is
+        ordinary spending — both used to be swallowed here."""
+        return _savings_role(t, alloc_terms) == "contribution"
 
     # ---- month to date ---------------------------------------------------
     month_start = _as_date(month.get("start")) or today.replace(day=1)
@@ -146,9 +199,12 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "days_left": month.get("days_left"),
         # An empty month with nothing imported computes to $0. That is
         # arithmetic, not knowledge — say unknown.
-        "spent": None if month_ingested is False else _round(month_spent),
-        "savings": None if month_ingested is False else _round(month_savings),
-        "daily_avg": (None if month_ingested is False
+        "complete": window_complete,
+        "spent": None if (month_ingested is False or not window_complete)
+                 else _round(month_spent),
+        "savings": None if (month_ingested is False or not window_complete)
+                   else _round(month_savings),
+        "daily_avg": (None if (month_ingested is False or not window_complete)
                       else _round(month_spent / days_elapsed)),
     }
 
@@ -213,16 +269,70 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     overdue = days_to_next < -OVERDUE_GRACE_DAYS
 
     # ---- allocations for this cycle --------------------------------------
+    # Each movement is claimed by AT MOST ONE allocation, in configuration
+    # order. Scanning per-allocation independently let two rules that both
+    # matched "savings" deduct the same $100 twice, silently halving what the
+    # card said was left to spend.
     cycle_out_txns = [t for t in (withdrawals + transfers) if _in(t, last_date, today)]
+    claimed: list[int | None] = [None] * len(cycle_out_txns)
+    reverse_total = 0.0
+    overlaps: list[str] = []
+    unmatched_savings: list[dict] = []
+    withheld_only: list[dict] = []
+    for j, t in enumerate(cycle_out_txns):
+        claims = [i for i, a in enumerate(allocs_cfg)
+                  if _savings_role(t, _alloc_terms(a)) == "contribution"]
+        if not claims:
+            # Its DESCRIPTION looks like savings but its accounts don't say
+            # so. Direction is unknowable here — "Savings" appears on the way
+            # in and on the way out alike — so it is neither counted nor
+            # silently dropped. Dropping it would understate savings and push
+            # `left` UP, the dangerous direction.
+            for a in allocs_cfg:
+                terms = _alloc_terms(a)
+                if _savings_role(t, terms) is None and (
+                        _field_matches(t.get("desc"), terms)
+                        or _field_matches(t.get("category"), terms)):
+                    unmatched_savings.append({
+                        "desc": t.get("desc") or "", "amount": _amount(t),
+                        "date": t.get("date"), "rule": a.get("name") or "Savings",
+                        "source": t.get("source") or "",
+                        "destination": t.get("destination") or ""})
+                    break
+        # A withheld rule describes money the employer took BEFORE the deposit
+        # landed, so it deducts nothing by design. Letting it claim a real
+        # post-deposit movement means that movement is assigned to a rule
+        # which cannot account for it, while the rule that could is told it is
+        # already taken: the contribution silently vanishes and `left` reads
+        # HIGH. Post-deposit rules therefore get first refusal.
+        post = [i for i in claims if not allocs_cfg[i].get("already_withheld")]
+        if post:
+            claimed[j] = post[0]
+            if len(post) > 1:
+                names = ", ".join(str(allocs_cfg[i].get("name") or "?") for i in post)
+                overlaps.append(f"{t.get('desc') or 'a transfer'} matches {names}")
+        elif claims:
+            # ONLY a withheld rule matched a real post-deposit movement. A
+            # pre-deposit rule cannot be what this is, so the configuration is
+            # wrong. Say so rather than deducting zero in silence.
+            claimed[j] = claims[0]
+            withheld_only.append({
+                "desc": t.get("desc") or "", "amount": _amount(t),
+                "date": t.get("date"),
+                "rule": allocs_cfg[claims[0]].get("name") or "Savings"})
+        elif any(_savings_role(t, _alloc_terms(a)) == "reverse" for a in allocs_cfg):
+            # Money came back OUT of savings. Reported, never added as a
+            # contribution, and never silently folded into spendable.
+            reverse_total += _amount(t)
+
     allocations = []
     savings_total = 0.0
-    for a in allocs_cfg:
-        terms = _terms(a.get("match")) or _terms([a.get("name")])
+    for idx, a in enumerate(allocs_cfg):
         try:
             planned = float(a.get("amount") or 0)
         except (TypeError, ValueError):
             planned = 0.0
-        seen = [t for t in cycle_out_txns if _matches(t, terms)]
+        seen = [t for j, t in enumerate(cycle_out_txns) if claimed[j] == idx]
         observed = round(sum(_amount(t) for t in seen), 2)
         withheld = bool(a.get("already_withheld"))
         if withheld:
@@ -248,14 +358,31 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     spendable = round(paycheck_amount - savings_total, 2)
     spent = round(sum(_amount(t) for t in withdrawals
                       if _in(t, last_date, today) and not is_savings(t)), 2)
-    left = None if overdue else round(spendable - spent, 2)
+    reverse_total = round(reverse_total, 2)
+    # A truncated read biases `spent` DOWN and therefore `left` UP — an
+    # overstatement of what is safe to spend, from a window already recorded
+    # as partial. The month block suppressed its totals for exactly this
+    # reason; the headline number has to obey the same rule.
+    # Codex, FC-009 finding 2: a truncated read is unknown in BOTH directions.
+    # Missing withdrawals make `left` an OVERestimate; a missing deposit makes
+    # the paycheck itself wrong, which makes it an UNDERestimate. So no money
+    # figure from this window may be presented as exact, and none is a floor
+    # either — absent completeness evidence reads as unknown, never as proof
+    # that what was read is all there is.
+    if not window_complete:
+        spent = None
+        paycheck_amount = None
+        spendable = None
+        savings_total = None
+        reverse_total = None
+    left = None if (overdue or not window_complete) else round(spendable - spent, 2)
 
     # ---- guidance (only when the ledger can support it) ------------------
     per_day = None
     if left is not None and fresh and days_to_next > 0:
         per_day = round(max(left, 0.0) / days_to_next, 2)
 
-    if overdue:
+    if overdue or not window_complete:
         state = "unknown"
     elif left < 0:
         state = "over"
@@ -265,7 +392,11 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         state = "ok"
 
     money = lambda v: f"${v:,.0f}"  # noqa: E731
-    if overdue:
+    if not window_complete:
+        text = ("More transactions exist in this window than were read, so what's "
+                "left of this paycheck can't be stated — a partial read would "
+                "overstate it.")
+    elif overdue:
         text = (f"A paycheck was expected around {next_payday.isoformat()} and isn't in "
                 "the ledger yet, so what's left of it can't be worked out. "
                 "Import your latest transactions.")
@@ -285,6 +416,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "available": True,
         "reason": None,
         "fresh": fresh,
+        "window_complete": window_complete,
         "stale_reason": stale_reason,
         "ingest_days": ingest_days,
         "activity_days": activity_days,
@@ -294,10 +426,27 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "start": last_date.isoformat(),
             "days_elapsed": (today - last_date).days + 1,
             "paycheck": paycheck_amount,
+            # False => every money figure in this block is unknown, not exact.
+            "figures_complete": window_complete,
             "paycheck_desc": pays[0].get("desc") or "",
             "paycheck_parts": len(same_day),
             "allocations": allocations,
-            "savings_total": round(savings_total, 2),
+            "savings_total": None if savings_total is None else round(savings_total, 2),
+            # Money that came back OUT of savings during the cycle. Shown, not
+            # added to spendable: it is available, but claiming it as budget
+            # would overstate what this paycheck left you.
+            "from_savings": None if reverse_total is None else (reverse_total or 0.0),
+            # Configuration that lets two allocations claim one movement. The
+            # first rule wins so nothing is double-counted, but the ambiguity
+            # is surfaced rather than hidden.
+            "allocation_overlaps": overlaps,
+            # Movements whose DESCRIPTION matches a savings rule but whose
+            # accounts do not. Direction is unknowable from a description, so
+            # these are reported for review rather than guessed at either way.
+            "unmatched_savings": unmatched_savings,
+            # Real post-deposit movements whose ONLY matching rule is marked
+            # withheld-before-deposit: deducted by nothing, so named here.
+            "withheld_rule_conflicts": withheld_only,
             "spendable": spendable,
             "spent": spent,
             "left": left,

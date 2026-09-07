@@ -28,6 +28,19 @@
       APPSMAP = {}; apps.forEach((a) => (APPSMAP[a.key] = a));
     } catch {}
   }
+  // The seven-day window is anchored to the server's local day, so a tab left
+  // open across midnight would keep showing yesterday as "Today" until a
+  // manual reload. Re-fetch just after the boundary, then re-arm. The delay
+  // itself lives in weekclock.js so it can be swept by node --test.
+  let midnightTimer = null;
+  function scheduleMidnightRollover() {
+    if (midnightTimer) clearTimeout(midnightTimer);
+    const delay = WeekClock.msUntilNextMidnight(new Date());
+    midnightTimer = setTimeout(() => {
+      refresh(true).finally(scheduleMidnightRollover);
+    }, Math.max(1000, delay));
+  }
+
   async function refresh(fresh) {
     let d;
     try {
@@ -120,7 +133,8 @@
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
     renderSince(d);
-    renderCalendar(d);
+    renderWeeklyReview(d.weekly_review);
+    renderWeek(d);
     renderDoNext(d.do_next, d);
     renderInbox(d.inbox);
     renderMoney(d.money, d.budget);
@@ -129,8 +143,7 @@
     renderHealth(d);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    // The footer is filled in by refreshSystems() from /api/health, which
-    // probes every service. d.systems only ever knew about core and gmail.
+    renderSystems();
     saveSnapshot(d);
   }
 
@@ -186,38 +199,305 @@
     pending:   { dot: "🟡", label: "offered — awaiting reply" },
     countered: { dot: "🟠", label: "they countered — needs your yes" },
   };
-  function evWhen(raw) {
-    if (!raw) return "";
-    const d = new Date(String(raw).replace(" ", "T"));
-    if (isNaN(d.getTime())) return String(raw);
-    const now = new Date();
-    const tmr = new Date(now); tmr.setDate(now.getDate() + 1);
-    const t = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    if (d.toDateString() === now.toDateString()) return "Today " + t;
-    if (d.toDateString() === tmr.toDateString()) return "Tomorrow " + t;
-    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + t;
+  // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
+  // The footer used to compute its claim from `d.systems`, which the assistant
+  // builds from core and gmail alone — so eleven other services could be down
+  // while it said "Systems healthy". The gateway probes all fifteen at
+  // /api/health and the UI discarded it. Now it doesn't.
+  let SYSHEALTH = null;
+  async function loadSystems() {
+    try {
+      SYSHEALTH = await fetch("/api/health").then((r) => r.json());
+    } catch { SYSHEALTH = null; }   // null reads as "unknown", not healthy
+    renderSystems();
   }
-  function renderCalendar(d) {
-    const items = d.calendar || [];
-    if (!items.length) {
-      q("#cc-calendar").innerHTML = `<h3>Schedule</h3><p class="att-empty">Nothing coming up.</p>`;
+
+  function renderSystems() {
+    const el = q("#cc-systems");
+    if (!el) return;
+    const s = SystemsHealth.summarize(SYSHEALTH);
+    el.textContent = SystemsHealth.line(s);
+    el.style.color = s.state === "degraded" ? "var(--imp)"
+      : s.state === "unknown" ? "var(--muted)" : "var(--muted)";
+    // The full per-service roll is one click away rather than always on show.
+    el.title = s.state === "unknown"
+      ? "The gateway's /api/health probe did not answer"
+      : Object.keys(SYSHEALTH || {}).sort().map((k) =>
+          `${(SYSHEALTH[k] || {}).status === "up" ? "●" : "✕"} ${k}`).join("\n");
+    el.style.cursor = s.total ? "help" : "default";
+  }
+
+  // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
+  // core has served GET /weekly-review since it was written and nothing ever
+  // rendered it. On Sunday evening it takes the top of the page; the rest of
+  // the week it sits above the calendar, quietly.
+  function wrRow(label, row, unit, fmt) {
+    if (!row) return "";
+    const f = fmt || ((v) => `${v}${unit || ""}`);
+    // "No goal set" and "unknown" are NOT 0% — reporting either as failure is
+    // the same dishonesty the money layer's rules forbid.
+    if (row.state === "unknown") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v wr-unknown">—</span>
+        <span class="wr-note">not recorded</span></div>`;
+    }
+    if (row.state === "no_goal") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v">${esch(f(row.value))}</span>
+        <span class="wr-note">no goal set</span></div>`;
+    }
+    const pct = Math.max(0, Math.min(100, row.pct));
+    return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+      <span class="wr-v">${esch(f(row.value))} <i>/ ${esch(f(row.goal))}</i></span>
+      <span class="wr-bar"><i style="width:${pct}%" class="${row.state}"></i></span>
+      <span class="wr-pct ${row.state}">${row.pct}%</span></div>`;
+  }
+
+  function renderWeeklyReview(wr) {
+    const el = q("#cc-weekly");
+    // An unreachable core is not a week where nothing happened: no card at all
+    // beats a card full of zeroes.
+    if (!wr) { el.hidden = true; return; }
+    el.hidden = false;
+    el.classList.toggle("lead", wr.slot === "lead");
+
+    const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m`.replace(" 0m", "") : `${v}m`);
+    const t = wr.study && wr.study.trend_min;
+    const trend = (t === null || t === undefined || t === 0) ? ""
+      : `<span class="wr-trend ${t > 0 ? "up" : "down"}">${t > 0 ? "▲" : "▼"} ${esch(mins(Math.abs(t)))} vs last week</span>`;
+
+    el.innerHTML = `<h3>${wr.slot === "lead" ? "Your week" : "This week so far"}</h3>
+      ${wrRow("Study", wr.study, "", mins)}
+      ${wrRow("Gym", wr.gym, "")}
+      ${wrRow("Water", wr.water, " days")}
+      ${trend}`;
+  }
+
+  // ---- the week grid --------------------------------------------------------
+  // Seven day columns: today and the next six. The server does every date
+  // decision (see services/assistant/app/dashboard.py:week_window and its
+  // calendar sweep); this only draws what it is handed, so the browser clock
+  // and the container clock can never disagree about which day is which.
+
+  // Decoration only. A season is picked from the date and changes accent and
+  // motif — never text colour, never what the data says.
+  const SEASONS = {
+    jan: { name: "Deep Winter", glyph: "❄", drift: ["❄", "❅", "❆"] },
+    feb: { name: "Sweetheart", glyph: "♥", drift: ["♥", "♡"] },
+    mar: { name: "First Green", glyph: "☘", drift: ["☘", "❀"] },
+    apr: { name: "Showers", glyph: "☂", drift: ["☂", "ᴗ"] },
+    may: { name: "Bloom", glyph: "✿", drift: ["✿", "❀", "✾"] },
+    jun: { name: "Solstice", glyph: "☀", drift: ["☀", "✺"] },
+    jul: { name: "Fireworks", glyph: "✺", drift: ["✺", "✹"] },
+    aug: { name: "High Summer", glyph: "⛱", drift: ["⛱", "≋"] },
+    sep: { name: "Harvest", glyph: "✾", drift: ["🌾", "🍃"] },
+    oct: { name: "Pumpkin Season", glyph: "🎃", drift: ["🎃", "🦇", "🍁"] },
+    nov: { name: "Late Autumn", glyph: "🍂", drift: ["🍂", "🍁", "🌰"] },
+    dec: { name: "Snowfall", glyph: "❄", drift: ["❄", "❅", "❆", "✻"] },
+  };
+
+  const AMBIENCE_KEY = "cc.ambience";
+  const ambienceOn = () => localStorage.getItem(AMBIENCE_KEY) !== "off";
+
+  function evRow(e) {
+    const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
+    const cls = [
+      "wk-ev",
+      e.needs_you ? "needs-you" : "",
+      e.conflict ? "clash" : "",
+      e.ongoing ? "live" : "",
+      e.all_day ? "allday" : "",
+    ].filter(Boolean).join(" ");
+    // The status word is spelled out, never carried by the dot alone.
+    const tag = e.status && e.status !== "confirmed"
+      ? `<span class="wk-tag">${esch(st.label)}</span>` : "";
+    const when = e.end_label
+      ? `${esch(e.time_label)}<span class="wk-dash">–</span>${esch(e.end_label)}`
+      : esch(e.time_label);
+    const flags = [
+      e.ongoing ? `<span class="wk-flag live">now</span>` : "",
+      // "Overlaps" on its own is baffling when the other commitment is in a
+      // different column, so a cross-midnight clash says so.
+      e.conflict ? `<span class="wk-flag clash" title="${e.conflict_offday
+        ? `Overlaps a commitment on the ${e.conflict_neighbour} day`
+        : "Overlaps another commitment this day"}">⚠ overlaps${
+        e.conflict_offday ? ` ${esch(e.conflict_neighbour)} day` : ""}</span>` : "",
+    ].filter(Boolean).join("");
+    return `<li class="${cls}">
+      <span class="wk-ev-dot" aria-hidden="true">${st.dot}</span>
+      <span class="wk-ev-when mono">${when}</span>
+      <span class="wk-ev-title">${esch(e.title || "Untitled")}</span>
+      ${flags}${tag}
+    </li>`;
+  }
+
+  function dayCard(day) {
+    const season = SEASONS[day.season] || SEASONS.jan;
+    const cls = [
+      "wk-day",
+      day.is_today ? "is-today" : "",
+      day.is_weekend ? "is-weekend" : "",
+      day.starts_month && !day.is_today ? "month-start" : "",
+      day.conflicts ? "has-clash" : "",
+    ].filter(Boolean).join(" ");
+
+    const rel = day.relative_label
+      ? `<span class="wk-rel">${esch(day.relative_label)}</span>` : "";
+    const count = day.counts.total
+      ? `<span class="wk-count" title="${day.counts.total} scheduled">${day.counts.total}</span>`
+      : "";
+    const body = day.counts.total
+      ? `<ul class="wk-evs">${day.events.map(evRow).join("")}</ul>`
+      : `<p class="wk-clear">Clear</p>`;
+
+    // aria-label carries the full date so the column is announced as
+    // "Wednesday, October 1st, 2026", not as a bare "1".
+    const label = `${day.long_label}${day.counts.total
+      ? `, ${day.counts.total} scheduled` : ", nothing scheduled"}${
+      day.conflicts ? ", has overlapping commitments" : ""}`;
+    return `<article class="${cls}" data-season="${esch(day.season)}"
+        role="listitem" tabindex="0" aria-label="${esch(label)}">
+      <header class="wk-hd">
+        <div class="wk-hd-top">
+          <span class="wk-dow">${esch(day.weekday)}</span>${count}
+        </div>
+        <time class="wk-date" datetime="${esch(day.iso)}">
+          <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
+          ${rel}
+          <span class="wk-mo">${esch(day.month)}</span>
+        </time>
+        ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
+      </header>
+      ${body}
+    </article>`;
+  }
+
+  function renderWeek(d) {
+    const el = q("#cc-calendar");
+    const week = d.week;
+    const openBtn = `<button class="hx-btn" id="cal-open">Open schedule →</button>`;
+
+    // An unreachable service is not a clear week. Saying "nothing coming up"
+    // when the schedule service is down is the calmest possible way to hide a
+    // real commitment, so the two states never share a rendering.
+    if (!week || !week.days || !week.days.length) {
+      el.innerHTML = `<h3>This week</h3>
+        <p class="att-empty">Schedule unavailable.</p>
+        <div class="hx-btns" style="margin-top:10px">${openBtn}</div>`;
+      wireWeek();
       return;
     }
-    const rows = items.map((e) => {
-      const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
-      const needsYou = e.status === "countered";
-      const tag = (e.status && e.status !== "confirmed")
-        ? `<span class="cal-tag">${esch(st.label)}</span>` : "";
-      return `<div class="cal-row${needsYou ? " needs-you" : ""}">
-        <span class="cal-dot" title="${esch(st.label)}">${st.dot}</span>
-        <span class="cal-t mono">${esch(evWhen(e.starts_at))}</span>
-        <span class="cal-title">${esch(e.title || "Untitled")}</span>${tag}
-      </div>`;
-    }).join("");
-    q("#cc-calendar").innerHTML = `<h3>Schedule</h3><div class="cal-rows">${rows}</div>
-      <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="cal-open">Open schedule →</button></div>`;
+    // An outage is the only state with nothing to draw. Disconnected and
+    // unknown still have real local commitments in Postgres, so the grid is
+    // rendered and the caveat sits above it — hiding a week you do have is
+    // its own dishonesty.
+    if (week.state === "unreachable") {
+      el.innerHTML = `<h3>This week</h3>
+        <p class="wk-down">⚠ Can't reach the schedule service. This is an
+        outage, not a clear week — commitments may exist that aren't shown
+        here.</p>
+        <div class="hx-btns" style="margin-top:10px">${openBtn}</div>`;
+      wireWeek();
+      return;
+    }
+
+    const days = week.days;
+    const first = days[0], last = days[days.length - 1];
+    const range = first.month === last.month
+      ? `${first.month} ${first.day}–${last.day}`
+      : `${first.month} ${first.day} – ${last.month} ${last.day}`;
+    const season = SEASONS[first.season] || SEASONS.jan;
+
+    const clashes = days.reduce((n, x) => n + (x.conflicts ? 1 : 0), 0);
+    const notes = [
+      clashes ? `<span class="wk-note clash">⚠ ${clashes} day${clashes > 1 ? "s" : ""} with overlaps</span>` : "",
+      week.beyond ? `<span class="wk-note">+${week.beyond} later</span>` : "",
+    ].filter(Boolean).join("");
+
+    // Three ways the grid can be incomplete, said differently, because they
+    // call for different actions: reconnect, wait, or nothing.
+    const CAVEAT = {
+      disconnected: {
+        cls: "warn",
+        text: `Google Calendar isn't connected, so only commitments stored
+               here are shown. A clear day may not be a free day.`,
+      },
+      unknown: {
+        cls: "muted",
+        text: `Couldn't confirm the calendar connection, so anything that
+               lives only in Google may be missing from this week.`,
+      },
+    };
+    const caveat = CAVEAT[week.state]
+      ? `<p class="wk-caveat ${CAVEAT[week.state].cls}">${
+          week.state === "disconnected" ? "⚠" : "◔"} ${esch(
+          CAVEAT[week.state].text.replace(/\s+/g, " ").trim())}</p>`
+      : "";
+
+    el.innerHTML = `
+      <div class="wk-top">
+        <h3>This week</h3>
+        <span class="wk-range">${esch(range)}</span>
+        <span class="wk-season" title="Seasonal theme">${
+          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
+        ${notes}
+        <button class="wk-amb" id="wk-amb" type="button"
+          aria-pressed="${ambienceOn()}" title="Seasonal decoration">
+          ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
+      </div>
+      ${caveat}
+      <div class="wk-grid" role="list" data-season="${esch(first.season)}">
+        ${days.map(dayCard).join("")}
+        <div class="wk-amb-layer" aria-hidden="true"></div>
+      </div>
+      <div class="hx-btns" style="margin-top:12px">${openBtn}</div>`;
+
+    mountAmbience(el.querySelector(".wk-amb-layer"), first.season);
+    wireWeek();
+  }
+
+  function mountAmbience(layer, seasonKey) {
+    if (!layer) return;
+    layer.innerHTML = "";
+    if (!ambienceOn()) return;
+    // Motion is opt-out via the toggle and automatically suppressed for
+    // prefers-reduced-motion in CSS; the glyphs stay purely decorative and
+    // never sit above interactive content.
+    const drift = (SEASONS[seasonKey] || SEASONS.jan).drift;
+    const n = 14;
+    let html = "";
+    for (let i = 0; i < n; i++) {
+      const g = drift[i % drift.length];
+      const left = Math.round((i / n) * 100 + (i % 3) * 4);
+      const dur = 9 + ((i * 7) % 11);
+      const delay = -((i * 13) % 17);
+      const size = 11 + ((i * 5) % 10);
+      html += `<span class="wk-flake" style="left:${left}%;
+        animation-duration:${dur}s; animation-delay:${delay}s;
+        font-size:${size}px">${g}</span>`;
+    }
+    layer.innerHTML = html;
+  }
+
+  function wireWeek() {
     const b = q("#cal-open");
     if (b) b.onclick = () => openAppKey("schedule");
+    const amb = q("#wk-amb");
+    if (amb) amb.onclick = () => {
+      localStorage.setItem(AMBIENCE_KEY, ambienceOn() ? "off" : "on");
+      if (HOME) renderWeek(HOME);
+    };
+    // Left/right move between days; the grid is one tab stop per column.
+    const cards = Array.from(document.querySelectorAll(".wk-day"));
+    cards.forEach((card, i) => {
+      card.onkeydown = (e) => {
+        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const next = cards[i + step];
+        if (next) next.focus();
+      };
+    });
   }
 
   function renderDoNext(dn, d) {
@@ -386,7 +666,11 @@
     // user can't retrace. "Expected" allocations are labelled as such: they
     // are the configured amount, not something seen in the ledger.
     let payLine = "";
-    if (pay.available && !pay.overdue) {
+    if (pay.available && pay.window_complete === false) {
+      // Every money figure is unknown here, so the arithmetic line would read
+      // "— paycheck − — to savings = —". State the reason instead.
+      payLine = `<p class="mny-pay">💵 ${esch(pay.text || "Only part of this window could be read, so this paycheck's figures can't be stated.")}</p>`;
+    } else if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
           : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
@@ -394,10 +678,27 @@
       }).join(" · ");
       const perDay = pay.per_day != null
         ? ` · about ${money(pay.per_day, 2)}/day keeps you to payday` : "";
+      // Money that came back out of savings is available but is NOT part of
+      // what this paycheck left you, so it is stated separately, never added.
+      const fromSav = pay.from_savings
+        ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
+      // An ambiguous allocation config would otherwise just look like a
+      // smaller number.
+      // A transfer whose description says "savings" but whose accounts don't.
+      // Direction can't be read from a description, so it is named here rather
+      // than guessed — silently ignoring it would push "left to spend" up.
+      // A real transfer whose only matching rule is withheld-before-deposit:
+      // deducted by nothing, so the configuration needs fixing.
+      const withheldConflict = (pay.withheld_rule_conflicts || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
+      const unmatched = (pay.unmatched_savings || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
+      const overlap = (pay.allocation_overlaps || []).length
+        ? `<br><span class="sub warn">⚠ ${esch(pay.allocation_overlaps[0])} — counted once, under the first rule. Fix the match terms in Settings.</span>` : "";
       payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
         − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}${withheldConflict}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
@@ -422,12 +723,41 @@
     } else if (bud.available && !bud.configured) {
       budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
     }
+    // ---- subscriptions: what changed since you last looked --------------
+    // Only ever events. A list of every subscription belongs in the budget
+    // app; the card's job is to say what you didn't already know. An
+    // unavailable read renders nothing at all rather than "none found" —
+    // silence about an unread ledger beats a false all-clear.
+    const rec = bud.recurring || {};
+    let recLine = "";
+    if (rec.available && (rec.events || []).length) {
+      const verb = { appeared: "started charging", resumed: "charged again after a break" };
+      const per = { weekly: "wk", fortnightly: "2wk", monthly: "mo",
+                    quarterly: "qtr", annual: "yr" };
+      const bits = rec.events.map((e) => {
+        // Two charges set a cadence but not a fact. Every event inferred from
+        // one interval says so, including a price move — "Netflix went up" off
+        // two charges could as easily be two unrelated purchases.
+        const hedge = e.confidence === "low" ? " (seen twice — may not be a pattern)" : "";
+        if (e.event === "changed")
+          return `<b>${esch(e.name)}</b> ${money(e.from, 2)} → <b>${money(e.to, 2)}</b>${hedge}`;
+        return `<b>${esch(e.name)}</b> ${money(e.amount, 2)}/${esch(per[e.cadence] || e.cadence || "")} — ${verb[e.event] || "changed"}${hedge}`;
+      });
+      const more = rec.event_count > bits.length
+        ? ` · ${rec.event_count - bits.length} more` : "";
+      recLine = `<p class="mny-sub mny-rec">🔁 ${bits.join(" · ")}${more}</p>`;
+    }
     // Secondary context: a rolling window and remaining budget capacity.
     // Neither is a bank balance and neither is "left to spend".
     const subBits = [];
     if (m.last_30 != null) subBits.push(`Past 30 days <b>${money(m.last_30)}</b>${trend30}${through30}`);
     if (bud.fresh && bud.budget_room != null)
       subBits.push(`Budget room <b>${money(bud.budget_room)}</b> ${esch(bud.budget_room_scope || "across active budgets")}`);
+    // Committed spending, stated as a monthly figure so it is comparable to
+    // the other numbers on the card. Suppressed when the read was truncated:
+    // a floor presented as a total is the failure docs/BUDGETS.md forbids.
+    if (rec.available && rec.complete !== false && rec.monthly_equivalent)
+      subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
@@ -471,11 +801,11 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.month != null ? money(m.month) : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
+        <div class="mny-stat"><div class="v">${m.month == null ? "—" : (m.month_complete === false ? "at least " : "") + money(m.month)}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">${m.month_complete === false ? "more transactions than could be read — a floor, not the total" : `month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}`}</span></div></div>
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
-      ${payLine}${budLine}${subLine}
+      ${payLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
@@ -494,15 +824,17 @@
 
   function renderPortfolio(p) {
     p = p || { state: "unreachable" };
-    // Three states, not two -- the same rule the Money card follows. Telling
-    // someone to add stocks they already added, because a container blinked,
-    // sends them to fix configuration that is already correct.
+    // Three states, not two (PRODUCT_IDEAS #13). A stocks service that is down
+    // is NOT an empty portfolio, and telling you to "add your stocks" over a
+    // transient blip sends you to fix configuration that is already correct.
     if (p.state === "unreachable") {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
-        <p class="att-empty">Couldn't reach the stocks service just now — a connection problem, not a setup one. Your holdings are safe; figures are hidden rather than guessed at.</p>`;
+        <p class="att-empty">Couldn't reach the stocks service just now — a
+        connection problem, not a setup one. Your holdings are unchanged;
+        figures are hidden rather than guessed at.</p>`;
       return;
     }
-    if (!p.configured) {
+    if (p.state === "not_configured" || !p.configured) {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
         <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your stocks →</b><br>Then you'll see daily change, movers & watchlist here.</p>`;
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
@@ -523,7 +855,7 @@
     q("#cc-portfolio").innerHTML = `
       <h3>Portfolio · what changed</h3>
       ${live.length ? `<div class="mny-hero">
-        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">Today · ${dc >= 0 ? "+" : ""}${money(dc)}</div></div>
+        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">${esch(p.session_label || "Last session")} · ${dc >= 0 ? "+" : ""}${money(dc)}${p.session_label ? "" : `<br><span style="font-size:10px">as-of date unavailable</span>`}</div></div>
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
         ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>` : ""}
@@ -1049,11 +1381,14 @@
   (async function boot() {
     await loadApps();
     await refresh(true);
+    loadSystems();
+    scheduleMidnightRollover();
     // background refresh every 60s (skip while a modal/palette/focus is open)
     setInterval(() => {
       if (q("#overlay").classList.contains("open")) return;
       if (!q("#palette").hidden || !q("#focus").hidden) return;
       refresh(false);
+      loadSystems();
     }, 60000);
   })();
 })();
