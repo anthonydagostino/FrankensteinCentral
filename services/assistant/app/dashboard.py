@@ -7,7 +7,7 @@ not know, so they are exactly the parts that need tests that run everywhere.
 
 Nothing here does I/O.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 def parse_event_dt(raw, local_tz):
@@ -462,3 +462,90 @@ def weekly_review(review, now, local_tz):
         "gym": weekly_progress(gym.get("week"), gym.get("goal")),
         "water": weekly_progress(water.get("days_hit"), water.get("of")),
     }
+
+
+# --- the box's own deploy state (PRODUCT_IDEAS #24) --------------------------
+
+def _deploy_age(stamp, now):
+    """Seconds between an ISO stamp and `now`, or None.
+
+    None when the stamp is missing or unparseable — never 0. A zero here would
+    render as "deployed just now", which is the opposite of "we don't know
+    when", and `docs/BUDGETS.md`'s rule that suppressed values are null rather
+    than 0 exists because that substitution is always a lie.
+    """
+    if not stamp or now is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=now.tzinfo)
+    # Both sides converted to UTC before subtracting. Python subtracts two
+    # aware datetimes that share a tzinfo in WALL CLOCK, so on the day New York
+    # skips 02:00 a build deployed at local 00:00 and read at local 06:00 would
+    # come back as six hours old when only five hours happened. An age is
+    # elapsed real time or it is nothing.
+    return (now.astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+
+
+def deploy_state(record, now=None):
+    """What the box is actually running, from `~/.frankenstein/deployed.json`.
+
+    Four states, and the split that matters is `failed` vs `current`. A deploy
+    that fails leaves the previous build serving: `deploy.sh` only advances
+    `running_commit` on success, so the box keeps answering requests happily
+    while `last_attempt_commit` moves on without it. From the outside that is
+    indistinguishable from a healthy deploy — which is how a stale build sits
+    there for days while you assume your fix is live.
+
+    That is not hypothetical. On 2026-09-07 a test that read the live repo's
+    own git state passed in every worktree and failed on the box, aborting the
+    deploy that carried it. Five poll cycles, `1 failed / 2307 passed` each
+    time, the box held on the previous commit, and nothing in the UI said so.
+
+      unknown  no record, unreadable, or self-contradictory. The assistant runs
+               in a container and the record is written on the host, so an
+               absent mount lands here. It must never read as `current`:
+               "we cannot see the box" and "the box is up to date" are
+               different facts and this is the one card whose whole job is not
+               to confuse them.
+      pending  a record exists but no successful deploy is confirmed in it.
+               Says nothing about whether containers are up.
+      failed   the last attempt did not succeed. `running` is an OLDER build
+               than `attempted`, and `running` is what you are looking at.
+      current  the last attempt succeeded and it is what is running.
+
+    `now` is injected rather than read, per `docs/TESTING.md`: the age this
+    returns is the one number here that moves on its own.
+    """
+    if not isinstance(record, dict) or not record:
+        return {"state": "unknown", "running": None, "attempted": None,
+                "last_result": None, "age_seconds": None, "attempt_age_seconds": None}
+
+    running = record.get("running_commit") or None
+    attempted = record.get("last_attempt_commit") or None
+    result = record.get("last_result") or None
+    out = {
+        "running": running,
+        "attempted": attempted,
+        "last_result": result,
+        "age_seconds": _deploy_age(record.get("last_success_at"), now),
+        "attempt_age_seconds": _deploy_age(record.get("last_attempt_at"), now),
+    }
+
+    if result is None:
+        # A record with no verdict in it tells us nothing about the box.
+        return {**out, "state": "unknown"}
+    if result != "success":
+        # Honest even when running is None: the attempt failed either way.
+        return {**out, "state": "failed"}
+    if not running:
+        return {**out, "state": "pending"}
+    if attempted and running != attempted:
+        # deploy.sh sets running = attempted on success, so these disagreeing
+        # means the record is inconsistent. Report that we don't know rather
+        # than picking whichever field flatters the box.
+        return {**out, "state": "unknown"}
+    return {**out, "state": "current"}
