@@ -617,3 +617,71 @@ def test_a_truncated_window_makes_every_money_figure_unknown():
                 "savings_total", "from_savings", "per_day"):
         assert c[key] is None, f"{key} survived a truncated window"
     assert c["state"] == "unknown"
+
+
+# ══ the counter-case: a description cannot establish direction ═══════════
+#
+# This one row broke three separate implementations of the direction fix,
+# mine included, so it is pinned here rather than left as a review anecdote.
+#
+#     desc="Savings withdrawal"  source="Fidelity"  destination="Checking"
+#
+# Every guard that consulted the description as a fallback booked this as a
+# CONTRIBUTION, because the source account ("Fidelity") does not contain the
+# matched term ("savings") — so the direction guard never fired and the rule
+# fell through to the description, which does contain it.
+#
+# The word appears identically on both legs of a transfer. Only the accounts
+# carry direction. A row whose accounts do not name the savings target is an
+# unknown, and an unknown reported as a contribution overstates savings and
+# overstates what is left to spend — the exact error the direction work
+# existed to remove, pointed the other way.
+
+DIR_MONTH = {"start": "2026-09-01", "days_elapsed": 7, "label": "September 2026",
+             "days_total": 30, "days_left": 23}
+DIR_FRESH = {"ingest_days": 0, "window_complete": True,
+             "complete": {"withdrawals": True, "deposits": True, "transfers": True}}
+DIR_PAY = [txn("2026-09-04", "Payroll", 2000.0,
+               source="Employer", destination="Checking")]
+DIR_CFG = {"enabled": True, "match": ["payroll"], "min_amount": 500,
+           "allocations": [{"name": "Savings", "match": ["savings"], "amount": 0}]}
+
+
+def _dir_cycle(withdrawals=(), transfers=()):
+    return paycheck_cycle(DIR_CFG, "2026-09-07", DIR_MONTH, DIR_PAY,
+                          list(withdrawals), list(transfers), DIR_FRESH)["cycle"]
+
+
+def test_a_description_never_makes_an_outflow_a_contribution():
+    """Money leaving Fidelity, described "Savings withdrawal"."""
+    c = _dir_cycle(transfers=[txn("2026-09-05", "Savings withdrawal", 150.0,
+                                  source="Fidelity", destination="Checking")])
+    assert c["savings_total"] == 0.0, \
+        "the description set the direction; money leaving savings was booked into it"
+    assert c["left"] == 2000.0, "a phantom contribution reduced what is left to spend"
+
+
+def test_the_counter_case_is_wrong_on_a_complete_window_too():
+    """It is not rescued by completeness suppression. With a complete window
+    nothing blanks the figure, so the wrong number renders in the calm state
+    with a confident $/day beside it."""
+    c = _dir_cycle(transfers=[txn("2026-09-05", "Savings withdrawal", 150.0,
+                                  source="Fidelity", destination="Checking")])
+    assert c["state"] == "ok", "precondition: this window is complete and unsuppressed"
+    assert "$2,000" in c["text"], c["text"]
+
+
+def test_the_three_rows_that_all_say_savings_are_told_apart():
+    """The truth table the whole direction fix rests on."""
+    into = _dir_cycle(transfers=[txn("2026-09-05", "Transfer", 400.0,
+                                     source="Checking", destination="Savings")])
+    assert into["savings_total"] == 400.0, "a real contribution stopped counting"
+
+    out_of = _dir_cycle(transfers=[txn("2026-09-05", "Transfer", 300.0,
+                                       source="Savings", destination="Checking")])
+    assert out_of["savings_total"] == 0.0
+
+    purchase = _dir_cycle(withdrawals=[txn("2026-09-05", "Groceries", 250.0,
+                                           source="Savings", destination="Store")])
+    assert purchase["savings_total"] == 0.0
+    assert purchase["left"] == 1750.0, "a purchase funded from savings vanished from spending"
