@@ -117,7 +117,12 @@ def _paycheck(cfg: dict, cycle: dict | None) -> dict:
         freshness={"ingest_days": cycle.get("ingest_days"),
                    "activity_days": cycle.get("days_stale"),
                    "month_ingested": cycle.get("month_ingested"),
-                   "ledger_latest_txn": cycle.get("ledger_latest_txn")},
+                   "ledger_latest_txn": cycle.get("ledger_latest_txn"),
+                   # A window read only as far as the page cap cannot support
+                   # a total. Absent (an older firefly service) is treated as
+                   # complete, which is what it meant before the field existed.
+                   "complete": cycle.get("complete") or {},
+                   "window_complete": cycle.get("window_complete", True)},
     )
 
 

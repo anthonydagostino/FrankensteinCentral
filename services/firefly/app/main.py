@@ -226,12 +226,30 @@ async def dashboard():
             "connected": _connected()}
 
 
+class Txns(list):
+    """Transactions, plus whether that is ALL of them.
+
+    A plain list cannot distinguish "the ledger holds 40 withdrawals" from
+    "the ledger holds 4000 and we stopped at the page cap". Both render as a
+    confident total. `complete` carries the difference so a caller can refuse
+    to publish a number it cannot support — see docs/BUDGETS.md: never
+    present a partial window as a complete one.
+    """
+
+    complete: bool = True
+
+
 async def _fetch_txns(client, txn_type: str, start: str, end: str,
-                      max_pages: int = 6) -> list[dict]:
+                      max_pages: int = 6) -> Txns:
     """All splits of one type in [start, end], paging through Firefly.
     Transfers are never fetched here — moving money between your own accounts
-    is not spending or income."""
-    out, page = [], 1
+    is not spending or income.
+
+    `max_pages` is a real resource limit, not a guess at how much data exists.
+    When it is reached while Firefly is still returning full pages, the result
+    is marked incomplete rather than returned as if it were everything.
+    """
+    out, page = Txns(), 1
     while page <= max_pages:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
                              params={"type": txn_type, "start": start, "end": end,
@@ -266,8 +284,12 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
                             "destination": t.get("destination_name") or "",
                             "category": t.get("category_name") or "Uncategorized"})
         if len(data) < 50:
-            break
+            break          # a short page is the last page: genuinely complete
         page += 1
+    else:
+        # Fell out of the `while` by exhausting max_pages, and the last page
+        # was full — so there is more in the ledger than we read.
+        out.complete = False
     return out
 
 
@@ -575,14 +597,20 @@ async def _cycle_payload() -> dict:
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=10)
-        dep = await _fetch_txns(client, "deposit", start, end, max_pages=4)
-        tr = await _fetch_txns(client, "transfer", start, end, max_pages=4)
+        # Raised from 10/4/4. The window is ~75 days; at 50 splits a page
+        # these limits cover a far heavier ledger than the old caps while
+        # still bounding the work. Whatever the cap, hitting it is REPORTED
+        # (see `complete` below) rather than silently truncating the answer.
+        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=40)
+        dep = await _fetch_txns(client, "deposit", start, end, max_pages=20)
+        tr = await _fetch_txns(client, "transfer", start, end, max_pages=20)
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep + tr)
     # Firefly is asked for one day past today so the range is never
     # zero-length; drop anything future-dated so no claim covers days that
     # haven't happened.
+    complete = {"withdrawals": wd.complete, "deposits": dep.complete,
+                "transfers": tr.complete}
     keep = lambda rows: [t for t in rows if t["date"] and t["date"] <= today.isoformat()]  # noqa: E731
     wd, dep, tr = keep(wd), keep(dep), keep(tr)
     return {
@@ -601,6 +629,13 @@ async def _cycle_payload() -> dict:
         "ingest_days": (max(0, (today - ingest_latest).days) if ingest_latest else None),
         "month_ingested": bool(ingest_latest and ingest_latest >= month_start),
         "importer_url": FIREFLY_IMPORTER_URL or None,
+        # Whether each list is the WHOLE window or as far as the page cap
+        # reached. A partial withdrawal list undercounts spending; a partial
+        # deposit list can miss the paycheck itself and put the cycle in the
+        # wrong window. The budget service refuses to publish totals or
+        # guidance it cannot support — docs/BUDGETS.md.
+        "complete": complete,
+        "window_complete": all(complete.values()),
         "withdrawals": wd,
         "deposits": dep,
         "transfers": tr,

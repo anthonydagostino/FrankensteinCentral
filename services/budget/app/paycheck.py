@@ -181,6 +181,24 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         stale_reason = (f"financial data hasn't been imported for {ingest_days} days, "
                         "so anything spent since then is missing")
 
+    # ---- completeness ----------------------------------------------------
+    # The ledger window is read page by page under a cap. Reaching that cap
+    # means there is more in Firefly than was read, and a sum over a partial
+    # window is not a smaller true number — it is a wrong one. Absent fields
+    # mean "complete", which is what their absence meant before they existed.
+    complete = fr.get("complete") or {}
+    wd_ok = complete.get("withdrawals", True)
+    dep_ok = complete.get("deposits", True)
+    tr_ok = complete.get("transfers", True)
+    partial = [name for name, ok in (("spending", wd_ok), ("deposits", dep_ok),
+                                     ("transfers", tr_ok)) if not ok]
+    partial_reason = None
+    if partial:
+        partial_reason = (
+            "the ledger holds more " + " and ".join(partial)
+            + " than this window could read, so the totals that depend on "
+              "them can't be worked out")
+
     # ---- allocations: the money that leaves the pot on payday -------------
     allocs_cfg = [a for a in (cfg.get("allocations") or []) if isinstance(a, dict)]
     alloc_terms: list[str] = []
@@ -211,9 +229,13 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "days_left": month.get("days_left"),
         # An empty month with nothing imported computes to $0. That is
         # arithmetic, not knowledge — say unknown.
-        "spent": None if month_ingested is False else _round(month_spent),
-        "savings": None if month_ingested is False else _round(month_savings),
-        "daily_avg": (None if month_ingested is False
+        # Unknown and zero are different states (docs/BUDGETS.md). An
+        # un-ingested month and a truncated read are both unknown.
+        "spent": (None if month_ingested is False or not wd_ok
+                  else _round(month_spent)),
+        "savings": (None if month_ingested is False or not (wd_ok and tr_ok)
+                    else _round(month_savings)),
+        "daily_avg": (None if month_ingested is False or not wd_ok
                       else _round(month_spent / days_elapsed)),
     }
 
@@ -351,14 +373,21 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     spendable = round(paycheck_amount - savings_total, 2)
     spent = round(sum(_amount(t) for t in withdrawals
                       if _in(t, last_date, today) and not is_savings(t)), 2)
-    left = None if overdue else round(spendable - spent, 2)
+    # `left` subtracts spending from a pot sized by savings, so it is only as
+    # trustworthy as the least complete of the two reads. A partial deposit
+    # list is worse still: the paycheck that anchors the whole cycle may be
+    # the one that was not read.
+    if overdue or partial:
+        left, spent_out = None, (None if not wd_ok else spent)
+    else:
+        left, spent_out = round(spendable - spent, 2), spent
 
     # ---- guidance (only when the ledger can support it) ------------------
     per_day = None
     if left is not None and fresh and days_to_next > 0:
         per_day = round(max(left, 0.0) / days_to_next, 2)
 
-    if overdue:
+    if overdue or partial:
         state = "unknown"
     elif left < 0:
         state = "over"
@@ -368,7 +397,11 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         state = "ok"
 
     money = lambda v: f"${v:,.0f}"  # noqa: E731
-    if overdue:
+    if partial:
+        text = ("Only part of this window's " + " and ".join(partial)
+                + " could be read from the ledger, so what's left of this "
+                  "paycheck can't be worked out from it.")
+    elif overdue:
         text = (f"A paycheck was expected around {next_payday.isoformat()} and isn't in "
                 "the ledger yet, so what's left of it can't be worked out. "
                 "Import your latest transactions.")
@@ -389,6 +422,10 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "reason": None,
         "fresh": fresh,
         "stale_reason": stale_reason,
+        # Named separately from staleness: stale data is old but whole, a
+        # partial read is incomplete but current. They need different fixes.
+        "partial_reason": partial_reason,
+        "window_complete": not partial,
         "ingest_days": ingest_days,
         "activity_days": activity_days,
         "as_of": fr.get("ledger_latest_txn"),
@@ -407,7 +444,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             # two would hide it.
             "reverse_from_savings": reverse_total,
             "spendable": spendable,
-            "spent": spent,
+            "spent": spent_out,
             "left": left,
             "per_day": per_day,
             "next_payday": next_payday.isoformat(),

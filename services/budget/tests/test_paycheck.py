@@ -527,3 +527,99 @@ def test_left_to_spend_reflects_the_corrected_totals():
     # 2000 paycheck, nothing genuinely saved, 250 genuinely spent.
     assert r["cycle"]["savings_total"] == 0.0
     assert r["cycle"]["left"] == 1750.0
+
+
+# ══ a partial window supports no total (PO_REVIEW_e7adf83 finding 3) ══════
+#
+# The /cycle endpoint pages through Firefly under a cap. Reaching that cap
+# means the ledger holds more than was read. A sum over a partial window is
+# not a smaller true number — it is a wrong one, and it used to be published
+# with a confident $/day figure beside it.
+
+
+def _partial(**flags):
+    fr = dict(DIRN_FRESH)
+    fr["complete"] = {"withdrawals": True, "deposits": True, "transfers": True}
+    fr["complete"].update(flags)
+    fr["window_complete"] = all(fr["complete"].values())
+    return fr
+
+
+def _cycle_fr(cfg, fr, withdrawals=(), transfers=()):
+    return paycheck_cycle(cfg, DIRN_TODAY, DIRN_MONTH, DIRN_PAY,
+                          list(withdrawals), list(transfers), fr)
+
+
+SOME_SPEND = [{"date": "2026-09-05", "amount": 250.0, "desc": "Groceries",
+               "source": "Checking", "destination": "Store"}]
+
+
+def test_a_complete_window_still_publishes_its_totals():
+    """The control. Suppression must be caused by incompleteness, not by the
+    completeness fields merely being present."""
+    r = _cycle_fr(ONE_RULE, _partial(), withdrawals=SOME_SPEND)
+    assert r["month"]["spent"] == 250.0
+    assert r["cycle"]["left"] == 1750.0
+    assert r["window_complete"] is True
+    assert r["partial_reason"] is None
+
+
+def test_a_truncated_spending_read_suppresses_spending():
+    r = _cycle_fr(ONE_RULE, _partial(withdrawals=False), withdrawals=SOME_SPEND)
+    assert r["month"]["spent"] is None, "a partial total was published as complete"
+    assert r["month"]["daily_avg"] is None
+    assert r["cycle"]["spent"] is None
+    assert r["cycle"]["left"] is None
+
+
+def test_a_truncated_read_suppresses_forward_guidance():
+    """The $/day figure is the most confident thing on the card."""
+    r = _cycle_fr(ONE_RULE, _partial(withdrawals=False), withdrawals=SOME_SPEND)
+    assert r["cycle"]["per_day"] is None
+    assert r["cycle"]["state"] == "unknown"
+
+
+def test_a_truncated_transfer_read_suppresses_savings():
+    """Transfers carry the savings contributions; a partial read understates
+    them, which overstates what is left to spend."""
+    r = _cycle_fr(ONE_RULE, _partial(transfers=False))
+    assert r["month"]["savings"] is None
+    assert r["cycle"]["left"] is None
+
+
+def test_a_truncated_deposit_read_suppresses_the_cycle():
+    """Worst case: the paycheck that anchors the cycle may be the row that
+    was not read."""
+    r = _cycle_fr(ONE_RULE, _partial(deposits=False))
+    assert r["cycle"]["left"] is None
+    assert r["cycle"]["state"] == "unknown"
+
+
+def test_the_partial_reason_names_what_was_truncated():
+    r = _cycle_fr(ONE_RULE, _partial(withdrawals=False, transfers=False))
+    assert r["partial_reason"] is not None
+    assert "spending" in r["partial_reason"]
+    assert "transfers" in r["partial_reason"]
+    assert r["window_complete"] is False
+
+
+def test_incompleteness_is_reported_separately_from_staleness():
+    """Stale data is old but whole; a partial read is current but incomplete.
+    They need different fixes, so they must not share one message."""
+    fr = _partial(withdrawals=False)
+    fr["ingest_days"] = 0                     # perfectly fresh
+    r = _cycle_fr(ONE_RULE, fr, withdrawals=SOME_SPEND)
+    assert r["stale_reason"] is None
+    assert r["partial_reason"] is not None
+    assert "can't be worked out" in r["cycle"]["text"]
+
+
+def test_a_missing_completeness_field_means_complete():
+    """An older firefly service does not send the field. Its absence has to
+    keep meaning what it meant before the field existed, or every deploy
+    ordering would blank the card."""
+    r = paycheck_cycle(ONE_RULE, DIRN_TODAY, DIRN_MONTH, DIRN_PAY,
+                       list(SOME_SPEND), [], {"ingest_days": 0})
+    assert r["month"]["spent"] == 250.0
+    assert r["cycle"]["left"] == 1750.0
+    assert r["window_complete"] is True
