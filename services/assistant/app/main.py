@@ -9,7 +9,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (firefly_state, parse_event_dt, since_changes,
+                        since_snapshot, upcoming_events)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -731,6 +732,20 @@ def _budget_brief(status) -> dict:
     }
 
 
+def _since_block(seen, data, now):
+    """The "since you last checked" block, plus the fingerprint to store."""
+    seen = seen if isinstance(seen, dict) else {}
+    seen_at = parse_event_dt(seen.get("seen_at"), LOCAL_TZ) if seen.get("seen_at") else None
+    current = since_snapshot(data)
+    block = since_changes(seen.get("snapshot"), current, seen_at, now)
+    # The client stores this back verbatim, so the baseline is always the
+    # fingerprint of a payload that was actually rendered.
+    block["snapshot"] = current
+    block["seen_at"] = seen.get("seen_at")
+    block["seen_on"] = seen.get("device")
+    return block
+
+
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
     if (not fresh and cached["data"] and cached["at"]
@@ -738,10 +753,15 @@ async def build_home(fresh: bool = False) -> dict:
         return cached["data"]
 
     async with httpx.AsyncClient() as client:
-        (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, deals, stocks, vault, captures) = await asyncio.gather(
+        (settings, core, seen, emails_r, avail, finance, budget, firefly,
+         spending, networth, schedule, deals, stocks, vault,
+         captures) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
+            # The shared "already shown" baseline. Fetched here so the diff is
+            # computed once, server-side, instead of five devices each keeping
+            # their own answer in localStorage.
+            _get(client, f"{CORE_URL}/seen"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
             _get(client, f"{GMAIL_URL}/thread-availability"),
             _get(client, f"{FINANCE_URL}/summary"),
@@ -798,6 +818,9 @@ async def build_home(fresh: bool = False) -> dict:
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }
+    # Computed against the payload we are ABOUT to return, so the fingerprint
+    # the client marks as seen is exactly what it was shown.
+    data["since"] = _since_block(seen, data, now_local)
     _HOME_CACHE["data"] = data
     _HOME_CACHE["at"] = datetime.now(LOCAL_TZ)
     return data
