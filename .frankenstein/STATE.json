@@ -3,8 +3,8 @@
   "task_id": "FC-002",
   "turn": "product_owner",
   "status": "awaiting_review",
-  "directive_commit": "a4bb8c61c1819cfc5bd53a814258dce1ec027d9e",
-  "implementation_commit": "f1fa382b0823100a3bc9520f104b4e793052093d",
+  "directive_commit": "3c0b81d791cf41a67054b835941c7bceeeadff6e",
+  "implementation_commit": "5c5d64f9e554c2494ac5b5785ec1a875cc6e4c73",
   "last_actor": "claude",
-  "updated_at": "2026-09-06T22:05:00Z"
+  "updated_at": "2026-09-07T02:30:00Z"
 }

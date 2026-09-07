@@ -10,10 +10,10 @@ lie in the bookkeeping.
 | | |
 |---|---|
 | Task | FC-002 |
-| Authorization epoch | `760f4c2694dfe6931c567cfb95142b1ccfa4df87` |
-| directive_commit | `a4bb8c61c1819cfc5bd53a814258dce1ec027d9e` |
+| Authorization epoch | `95000da5534bb0aed1c0d40e61588e2e11c20fa2` |
+| directive_commit | `3c0b81d791cf41a67054b835941c7bceeeadff6e` |
 | Task branch | `claude/po-handoff-release` |
-| Prior reviewed implementation | `093f73d6927f30bbfde36d388bc8c6c3be5521e8` |
+| Prior reviewed implementation | `f1fa382` rebased onto production `0a5d24a` |
 | Deployment Authorization | `test-only` — nothing is promoted or deployed |
 
 ## Scope implemented

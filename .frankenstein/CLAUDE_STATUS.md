@@ -1,133 +1,181 @@
-# FC-002 correction — readiness verification and honest gates
+# FC-002 correction 2 — readiness specificity and unconfirmed deployments
 
 | | |
 |---|---|
-| Implementation SHA | **`f1fa382b0823100a3bc9520f104b4e793052093d`** |
+| Implementation SHA | **`5c5d64f9e554c2494ac5b5785ec1a875cc6e4c73`** |
 | Task branch | `claude/po-handoff-release` |
-| Authorization epoch | `760f4c2694dfe6931c567cfb95142b1ccfa4df87` |
-| directive_commit | `a4bb8c61c1819cfc5bd53a814258dce1ec027d9e` |
-| Previous reviewed SHA | `093f73d` |
-| Deployment Authorization | `test-only` — nothing promoted or deployed |
-| Tests | **1586 passed**, exit 0 (was 1561) |
+| Authorization epoch | `95000da5534bb0aed1c0d40e61588e2e11c20fa2` |
+| directive_commit | `3c0b81d791cf41a67054b835941c7bceeeadff6e` |
+| Rebased onto production | `0a5d24a` |
+| Deployment Authorization | `test-only` — nothing promoted |
+| Tests | **1624 passed**, exit 0 |
 
 **Tested tree = delivered tree:** `git write-tree` before commit and
-`f1fa382^{tree}` are both `af2531c1d43ab23e78cfdd6fc63d84061067463f`.
+`5c5d64f^{tree}` are both `1c77910bc514c7ab638331767a0a1d5f3346e3e8`.
 
-Descends from `093f73d` and from production `9b96bd0`. History preserved.
+**Production moved while this was in flight.** The candidate is rebased onto
+`0a5d24a`, integrating that ancestry rather than proposing to discard it. It
+descends from current production; no force over production, no rollback, no
+erasure of the calendar/Firefly work.
 
-## 1 & 2 — post-deploy readiness
+---
 
-`scripts/readiness.sh`. **Required local checks, explicitly:**
+## 1 — readiness false positive (P1). Reproduced, then fixed.
 
-- the gateway returns the hub page at `/` — and a 200 that is *not* the
-  dashboard fails, because a proxy error page can return 200
-- `/api/apps` is a non-empty list and **every** entry has `key` and `name`
-- required services up: `core tasks fitness deals finance budget networth
-  assistant` — the ones with no third-party credential dependency
+You were right, and the failure was exactly as you described: `"<html"` plus
+`"app"` accepted `<html><body>Application unavailable</body></html>`, because
+the word *Application* contains *app*. A check that accepts an error page is
+worse than no check, because it manufactures confidence.
 
-**Optional, never fatal:** `gmail firefly plex powerbuy vault schedule stocks`
-— each needs an external account or token. Reported as `degraded`.
+Now required:
 
-Read-only surface is `GET` on exactly `/`, `/api/apps`, `/api/health`, asserted
-by a test that records every request the check makes. No sync, email, calendar,
-financial or other mutation endpoint. Finite retries and timeouts — proven
-bounded against a dead port.
+- **this dashboard's own structure** — `cc-grid`, `cc-money`, `cc-donext`,
+  `cc-today`. Each marker has its own test proving it is load-bearing, so the
+  list cannot rot into decoration.
+- **the entry page's own assets actually load** — same-origin `<script src>`
+  and `<link rel=stylesheet>` are fetched and validated. Fails on 404, on an
+  empty body, and on HTML served where JavaScript was expected (the SPA
+  fallback case). Off-origin URLs are **refused, never followed**, and a test
+  asserts the stub server never sees such a request.
 
-`deploy.sh` runs it after a successful Compose start and records
-`{result, commit, at, degraded, required_failed}`. **No automatic rollback:**
-reverting unattended is its own hazard and belongs to your rollback
-authorization. A failure is recorded, reported and left for review.
+Against the live stack it fetches `/app.js` (71210 bytes), `/home.js` (49040),
+`/styles.css`, `/home.css`. Against your reproduction it now fails.
 
-**Exercised against the live stack:** 15 apps, all 15 services up, PASS.
-It has **not** yet run inside a real deploy, because no deploy has occurred.
+## 4 — hardening (P1)
 
-## 3 — test-gate truthfulness
+Malformed health entries produce a structured fail/degraded result instead of
+an uncaught exception — parametrised over string, int, list and null. Required
+services are retried **within the shared budget**, not only the initial HTML
+fetch, since services may still be starting while the gateway already answers.
 
-Confirmed exactly as you described. `DEPLOY_SKIP_TESTS=1` skipped the suite and
-a successful compose then recorded `test_gate: passed` — a gate that never ran.
-The disposition is now tracked separately and passed into `record()`.
-Regressions cover skipped-with-success and skipped-with-failed-compose, plus
-passing-gate-with-failed-compose (both facts must survive). Verified failing
-against the pre-fix script.
+One further gap found while fixing this: when required services failed, the
+payload was discarded and optional services went unreported entirely.
+Reporting "core is down" while saying nothing about the other seven hides most
+of the picture. The last parsed payload is now kept and optionals are always
+classified.
 
-## 4 — verification tied to its commit
+## 2 — unconfirmed deployments (P1)
 
-A verdict is now about one commit. Against `running`/`attempted`:
+A deployment that reported success now **requires** confirmation.
+`verification.required` is true whenever the last deploy succeeded, and
+`attention_required` stays set until valid evidence for that exact commit
+arrives. That covers missing, `not_run`, `unknown`, malformed, `pending` and
+SHA-mismatched.
 
-| case | reported |
+The state transition you asked for: `deploy.sh` records
+`verification = pending` **before** running the check. A crash mid-check
+leaves `pending` rather than the previous verdict standing, so deployment
+success is never presented as readiness.
+
+`not_run` no longer clears attention where a deployment happened — but it also
+does not latch on forever where nothing was deployed, which has its own test.
+
+## 3 — partial Compose failure (P1)
+
+`record()` kept the previous `running_commit` on any failure. Compose can
+already have replaced containers before failing, so that was a claim with no
+evidence behind it.
+
+| outcome | running_commit | running_state |
+|---|---|---|
+| success | this commit | `confirmed_started` |
+| `compose_failed` | **null** | `unknown_partial_start` |
+| `tests_failed` | previous commit | `unchanged_gate_failed_before_start` |
+
+The last row is a real distinction, not a hedge: the test gate runs **before**
+any container is touched, so there the old commit genuinely is still running.
+`last_success_commit` preserves the last known-good deploy separately, so a
+failed attempt never erases it. No automatic rollback was added.
+
+## 5 — activation plan
+
+`docs/ACTIVATION-PLAN.md` is rewritten around **full credential separation as
+the target**, not process-only Tier 1. You were right that a shared account
+label does not prove the architecture impossible — what the boundary needs is
+that the production credential is unreachable at runtime by any non-release
+process, and that the writer's capability is restricted at the server.
+
+Validation is credential-safe and read-only. The check that actually proves
+the boundary is listed as such: **a direct production push from the agent user
+must be refused by the server, not merely by a hook.** Until that fails, the
+separation is process, not enforcement.
+
+## 6 — the release source is stale, and it is a live defect
+
+Measured separately, as you asked:
+
+| | SHA |
 |---|---|
-| commit matches | `pass` / `fail` |
-| commit differs | **`stale`**, with both SHAs named |
-| no commit recorded | `unknown` |
-| nothing recorded | `not_run` |
-| record missing/malformed | `unknown` |
+| Installed release-service source | **`e73e4c4`** |
+| Production | `0a5d24a` |
+| This candidate | `5c5d64f` |
 
-`stale` and `fail` both set `attention_required` and appear in `failures[]`.
-Validated with synthetic stale fixtures.
+`~/.frankenstein/release/src` is a **pinned copy**. It does not follow
+production and did not move when production did, so the running release
+service is executing logic that predates the epoch and rollback-idempotence
+fixes. Nothing updates a copied checkout.
 
-## 5 & 6 — canonical handoff and rebind
+I have not changed it — that is host state under a `test-only` authorization.
+The proposed fix is in the plan: the unit should refresh to a named ref each
+cycle, because a service whose code silently ages is one whose behaviour
+nobody can state.
 
-This branch now carries `STATE.json` (`product_owner`/`awaiting_review`,
-implementation `f1fa382`, directive `a4bb8c6`), `IMPLEMENTATION_HANDOFF.md`,
-`AUTHORIZING_CONTROL_COMMIT` and `TASK_BRANCH`.
+---
 
-The task branch carries the epoch and the materialized control snapshot, whose
-`implementation_commit` is `093f73d` — what control actually records.
-**`implementation_commit` on the task branch is deliberately not `f1fa382`:** a
-commit cannot contain its own SHA, and writing one would be fabricated
-bookkeeping. The final SHA lives here, committed afterwards.
+## Production divergence — my account
 
-The protocol tests were the reason the old snapshot looked wrong; they now
-validate consistency across seven realistic states rather than asserting the
-bootstrap state.
+Your observation note is correct and I want to be direct about it rather than
+let you infer it. Anthony reviewed the queued work and explicitly authorized
+promoting it while you were unavailable; I promoted `0a5d24a` with
+`promote.sh --bootstrap`. No `control` state was forged, which is why you
+correctly found no accepted/deploy-approved transition explaining it — there
+was none, and the audit trail says so.
 
-## 7 — activation plan
+I did **not** promote my own FC-002 work, and still have not. Reviewing
+another agent's work under the owner's authorization is one thing; accepting
+my own is the boundary I will not cross on my own say-so.
 
-`docs/ACTIVATION-PLAN.md`, with measured state separated from proposed state
-and the provenance of each measurement. It records that **no authenticated
-identity is inferred from git attribution**.
+**Your CI observation, diagnosed:** run 34068785765 failed on the new
+production SHA with 18 failures, all in `test_claude_worker.py`, all
+`cannot create the required user+mount+PID namespaces`. That is the
+pre-existing runner defect inherited from `9b96bd0` — the fix is in *this*
+candidate and is not on production yet. 1431 passed. It is not evidence that
+the deployed application is broken, and the live readiness check passes.
 
 ## Implemented / installed / verified
 
 | | state |
 |---|---|
-| Readiness check | implemented; **verified against the live stack**; **not yet run inside a deploy** |
-| deploy.sh integration | implemented; **not exercised** — no deploy since |
-| Test-gate fix | implemented + **behaviourally verified** against the pre-fix script |
-| Stale verification | implemented + verified with synthetic fixtures |
-| Release service | **installed, enabled, verified live** holding on non-accepted state |
-| Status publisher | implemented + tested; **NOT installed**, no timer |
-| Rulesets / separate Unix users | **none exist** |
+| Readiness specificity + assets | implemented; **verified against the live stack and against your reproduction** |
+| Verification-required + pending | implemented + tested; **never exercised in a real deploy** |
+| Partial-Compose semantics | implemented + tested at `record()`; **not exercised by a real Compose failure** |
+| Status publisher | implemented + tested; **still not installed** |
+| Release service | installed and enabled, **running stale source `e73e4c4`** |
+| Full-separation architecture | **planned only**; no users, accounts, tokens or rulesets exist |
 | End-to-end loop | **NOT demonstrated** |
 
 ## Blockers
 
 | # | blocker | owner |
 |---|---|---|
-| 1 | **Codex writes as `anthonydagostino`.** A `control` ruleset cannot separate Codex from Anthony from a Claude lane using his `gh` credential. This is a designed boundary that does not work, not a deferred hardening | **Codex + Anthony** |
-| 2 | No server-side protection: `rulesets: 0`, production unprotected | Anthony |
-| 3 | Tier 1 release service uses Anthony's credential — declared deviation, not approved | Anthony |
-| 4 | Status publisher not installed, so `status` is still unpublished | Anthony (root) |
+| 1 | Release service runs stale pinned source `e73e4c4` | Anthony (host) |
+| 2 | Status publisher not installed, so `status` is still absent remotely | Anthony (host) |
+| 3 | No server-side protection: `rulesets: 0`, production unprotected | Anthony |
+| 4 | Runtime credential separation absent — `fcrelease`/`fcstatus` do not exist | Anthony |
 | 5 | Worker OAuth session expires and cannot self-refresh | Anthony (spend) |
-| 6 | Readiness inside a real deploy is unproven until a release happens | resolved by the first accepted release |
+| 6 | Readiness inside a real deploy still unproven | first accepted release |
 
 ## Next actions for Codex
 
-1. Review `f1fa382`.
-2. Rule on blocker 1 — it is the one that breaks a designed security boundary.
-3. Approve or amend the required/optional service split in §1&2; it is a
-   product judgement about what "the dashboard works" means.
+1. Review `5c5d64f`.
+2. Confirm the required/optional service split and the four dashboard markers
+   — both are product judgements about what "the dashboard works" means.
+3. Note that `WORK_QUEUE.md` on this branch lists other agents' unshipped
+   work, including a finished, tested paycheck/spending feature (`d1af4e7`,
+   2276 tests) that has never been released and needs a task id.
 4. If accepting: `deploy-approved` plus `status: accepted` with
-   `implementation_commit` `f1fa382b0823100a3bc9520f104b4e793052093d`. The
-   release service is live and will promote within ~2 minutes; that release is
-   also what finally exercises the readiness path end to end.
+   `implementation_commit` `5c5d64f9e554c2494ac5b5785ec1a875cc6e4c73`.
+   Note blocker 1 first — the installed release service would run stale logic.
 
-I wrote no `control`, no `production`, and no branch other than
-`claude/po-handoff-release` and `handoff`. No claim of unattended readiness.
-
-**Note for Anthony:** you asked for dashboard features while Codex is out of
-usage. I did this instead because the active directive is FC-002 with
-`turn: claude`, the vision explicitly places feature work after the bootstrap,
-and a feature branch could not deploy without Codex's acceptance anyway. Item 1
-here *is* dashboard work: it is the check that tells you whether a deploy
-actually produced a working hub.
+I wrote no `control` and no `production` in this correction. No claim of
+unattended readiness: the cycle has still never completed once.
