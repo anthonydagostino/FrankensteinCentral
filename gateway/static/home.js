@@ -324,7 +324,13 @@
     if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
-          : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
+          : a.source === "withheld_before_deposit" ? " withheld pre-deposit"
+          // Two rules describing the same movement. It is counted once, under
+          // the other rule; saying so beats an unexplained $0 in a line whose
+          // whole job is to be retraceable.
+          : a.source === "ambiguous_rule"
+            ? ` already counted under ${esch((a.claimed_by || []).join(", ") || "another rule")}`
+            : "";
         return `${esch(a.name)} ${money(a.source === "withheld_before_deposit" ? a.planned : a.amount)}${tag}`;
       }).join(" · ");
       const perDay = pay.per_day != null

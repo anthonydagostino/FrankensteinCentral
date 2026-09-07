@@ -77,10 +77,50 @@ def _haystack(t: dict) -> str:
 
 
 def _matches(t: dict, terms: list[str]) -> bool:
+    """Does this transaction mention one of `terms` anywhere?
+
+    Direction-blind on purpose: this answers "is this about the savings
+    account", not "is this money going into it". Use `is_savings_inflow` for
+    anything that decides an amount. Kept for finding the PAYCHECK, where a
+    deposit has only one plausible direction.
+    """
     if not terms:
         return False
     hay = _haystack(t)
     return any(term in hay for term in terms)
+
+
+def _field_matches(t: dict, terms: list[str], *fields: str) -> bool:
+    hay = " ".join(str(t.get(f) or "") for f in fields).lower()
+    return bool(terms) and any(term in hay for term in terms)
+
+
+def is_savings_inflow(t: dict, terms: list[str]) -> bool:
+    """Is this money ARRIVING in a savings account?
+
+    Matching a name anywhere in the row was the original rule, and it could not
+    tell a contribution from its exact opposite. Three real rows all mention
+    "Savings" and only one of them is saving:
+
+        Checking -> Savings        a contribution
+        Savings  -> Checking       money coming BACK OUT; not a contribution
+        Savings  -> Coffee Shop    an ordinary purchase, funded from savings
+
+    Counting the second as a contribution overstates savings and understates
+    what is left to spend. Counting the third as one does that *and* deletes a
+    real purchase from "spent this month" — a withdrawal that happened,
+    reported as a confident $0, which is the failure docs/BUDGETS.md exists to
+    prevent.
+
+    So the SOURCE decides first: money leaving a savings account is never a
+    contribution, whatever the description says. Only then may the destination,
+    description or category identify an inflow — the description still matters
+    because a Firefly transfer is often described "Savings" while only the
+    destination account says "Fidelity".
+    """
+    if _field_matches(t, terms, "source"):
+        return False
+    return _field_matches(t, terms, "destination", "desc", "category")
 
 
 def _in(t: dict, start: date, end: date) -> bool:
@@ -113,13 +153,22 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     ingest_days = fr.get("ingest_days")
     activity_days = fr.get("activity_days")
     month_ingested = fr.get("month_ingested")
+    # A page cap truncated the ledger window. The totals below are true of what
+    # was read and look exactly like complete ones, so the only honest move is
+    # to say so and stop projecting from them — a $/day figure derived from an
+    # unknown fraction of the window is a guess wearing a decimal point.
+    window_complete = fr.get("window_complete", True) is not False
     fresh = ingest_days < INGEST_MAX_DAYS if ingest_days is not None else False
+    fresh = fresh and window_complete
     stale_reason = None
     if ingest_days is None:
         stale_reason = "no import evidence in the ledger, so guidance is paused"
-    elif not fresh:
+    elif not fresh and window_complete:
         stale_reason = (f"financial data hasn't been imported for {ingest_days} days, "
                         "so anything spent since then is missing")
+    if not window_complete:
+        stale_reason = ("only part of this window could be read from the ledger, "
+                        "so these totals are a floor, not a full picture")
 
     # ---- allocations: the money that leaves the pot on payday -------------
     allocs_cfg = [a for a in (cfg.get("allocations") or []) if isinstance(a, dict)]
@@ -128,7 +177,8 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         alloc_terms += _terms(a.get("match")) or _terms([a.get("name")])
 
     def is_savings(t: dict) -> bool:
-        return _matches(t, alloc_terms)
+        """A contribution TO savings — not merely a row that names one."""
+        return is_savings_inflow(t, alloc_terms)
 
     # ---- month to date ---------------------------------------------------
     month_start = _as_date(month.get("start")) or today.replace(day=1)
@@ -182,7 +232,8 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             why = f"no deposit was at least ${min_amount:,.0f}"
         return {"configured": True, "available": False, "month": month_out,
                 "cycle": None,
-                "fresh": fresh, "ingest_days": ingest_days,
+                "fresh": fresh, "window_complete": window_complete,
+        "ingest_days": ingest_days,
                 "activity_days": activity_days,
                 "as_of": fr.get("ledger_latest_txn"),
                 "reason": f"no paycheck found in the ledger — {why}"}
@@ -216,13 +267,33 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     cycle_out_txns = [t for t in (withdrawals + transfers) if _in(t, last_date, today)]
     allocations = []
     savings_total = 0.0
+    # Each movement belongs to at most ONE rule. Every rule used to scan every
+    # transaction independently, so two rules both matching "savings" each
+    # claimed the same $100 transfer and the pot was debited $200 for it. The
+    # first rule in configured order wins; a later rule that would have matched
+    # the same row reports it as claimed rather than counting it again.
+    #
+    # Claimed by INDEX, not by value: two genuinely separate $50 transfers on
+    # the same day are identical dicts, and both must still count. That is the
+    # split-transaction case, and deduplicating by content would silently
+    # halve it.
+    claimed: dict[int, str] = {}
     for a in allocs_cfg:
         terms = _terms(a.get("match")) or _terms([a.get("name")])
         try:
             planned = float(a.get("amount") or 0)
         except (TypeError, ValueError):
             planned = 0.0
-        seen = [t for t in cycle_out_txns if _matches(t, terms)]
+        name = a.get("name") or "Savings"
+        seen, contested = [], []
+        for i, t in enumerate(cycle_out_txns):
+            if not is_savings_inflow(t, terms):
+                continue
+            if i in claimed:
+                contested.append(claimed[i])
+                continue
+            claimed[i] = name
+            seen.append(t)
         observed = round(sum(_amount(t) for t in seen), 2)
         withheld = bool(a.get("already_withheld"))
         if withheld:
@@ -232,17 +303,28 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             amount, src = 0.0, "withheld_before_deposit"
         elif seen:
             amount, src = observed, "observed"
+        elif contested:
+            # Every movement this rule matched was already counted under an
+            # earlier rule, so the two rules describe the same money. Falling
+            # back to `planned` here is what made deduplication pointless: the
+            # shared $100 came out once as observed and again as expected.
+            # Neither is knowable, so claim nothing and say why.
+            amount, src = 0.0, "ambiguous_rule"
         else:
             amount, src = round(planned, 2), "expected"
         savings_total += amount
         allocations.append({
-            "name": a.get("name") or "Savings",
+            "name": name,
             "amount": amount,
             "planned": round(planned, 2),
             "observed": observed if seen else None,
             "source": src,
             "date": max((_as_date(t.get("date")).isoformat() for t in seen),
                         default=None) if seen else None,
+            # Named so an unexpectedly "expected" allocation is explainable:
+            # its movement was already counted under another rule, rather than
+            # being missing from the ledger.
+            "claimed_by": sorted(set(contested)) or None,
         })
 
     spendable = round(paycheck_amount - savings_total, 2)
@@ -285,6 +367,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "available": True,
         "reason": None,
         "fresh": fresh,
+        "window_complete": window_complete,
         "stale_reason": stale_reason,
         "ingest_days": ingest_days,
         "activity_days": activity_days,

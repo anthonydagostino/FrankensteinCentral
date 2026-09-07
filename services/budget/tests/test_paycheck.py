@@ -367,3 +367,156 @@ def test_negative_amounts_are_read_as_magnitudes():
             deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
             withdrawals=[txn(date(2026, 9, 1), "Groceries", -212.0)])["cycle"]
     assert d["spent"] == 212.0
+
+
+# ---- direction: which way the money actually moved -----------------------
+#
+# Matching an account name anywhere in the row cannot tell a contribution from
+# its exact opposite. All three rows below mention "Fidelity" and only the
+# first is saving. Codex reproduced the first two against production e7adf83;
+# the third is the same defect seen from the spending side.
+
+def test_money_coming_back_out_of_savings_is_not_a_contribution():
+    """`Fidelity -> Checking` is the opposite of saving.
+
+    Counted as a contribution it inflates savings and understates what is
+    left, which is the shape Codex reproduced: a $300 reverse transfer read as
+    $300 saved.
+    """
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "Transfer", 300.0,
+                           source="Fidelity Brokerage", destination="Checking")],
+            cfg={**CFG, "allocations": [{"name": "Fidelity", "amount": 0,
+                                         "match": ["fidelity"]}]})["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Fidelity"]["observed"] is None, "a withdrawal FROM savings was booked as a contribution"
+    assert d["savings_total"] == 0.0
+    assert d["left"] == 2400.0
+
+
+def test_a_purchase_funded_from_savings_is_spending():
+    """`Fidelity -> Coffee Shop` is a purchase, not a deposit.
+
+    The sharper half of the same bug: the row is removed from `spent` AND
+    added to savings, so $45 that left the account renders as a confident
+    $0.00 spent. docs/BUDGETS.md exists to stop exactly that.
+    """
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            withdrawals=[txn(date(2026, 9, 2), "Coffee shop", 45.0, "Dining",
+                             source="Fidelity Brokerage", destination="Coffee Shop")],
+            cfg={**CFG, "allocations": [{"name": "Fidelity", "amount": 0,
+                                         "match": ["fidelity"]}]})
+    assert d["cycle"]["spent"] == 45.0, "a real purchase vanished from spending"
+    assert d["month"]["spent"] == 45.0
+
+
+def test_the_destination_still_identifies_savings_the_description_does_not_name():
+    """The reason direction is not simply "read the description".
+
+    A Firefly transfer is routinely described "Savings" while only the
+    destination account says "Fidelity". Narrowing to the destination must not
+    break that, and narrowing to the description would.
+    """
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "Savings", 1100.0,
+                           source="Checking", destination="Fidelity Brokerage")])["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Fidelity"]["source"] == "observed"
+    assert allocs["Fidelity"]["observed"] == 1100.0
+
+
+# ---- one movement, one rule ---------------------------------------------
+
+def test_two_rules_matching_the_same_movement_deduct_it_once():
+    """Every rule used to scan every transaction independently, so one $100
+    transfer was debited twice when two rules both matched "savings"."""
+    cfg = {**CFG, "allocations": [
+        {"name": "Savings", "amount": 100, "match": ["savings"]},
+        {"name": "Savings Pot", "amount": 100, "match": ["savings"]}]}
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 100.0,
+                           source="Checking", destination="Savings")],
+            cfg=cfg)["cycle"]
+    assert d["savings_total"] == 100.0, "the same $100 was deducted under two rules"
+    assert d["left"] == 2300.0
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Savings"]["source"] == "observed"
+    # The loser reports why it has nothing, rather than falling back to its
+    # configured amount — which would re-create the double deduction as
+    # "expected" and leave it unexplainable on screen.
+    assert allocs["Savings Pot"]["source"] == "ambiguous_rule"
+    assert allocs["Savings Pot"]["amount"] == 0.0
+    assert allocs["Savings Pot"]["claimed_by"] == ["Savings"]
+
+
+def test_a_split_transfer_still_counts_every_part():
+    """The guard against over-correcting. Two genuinely separate $50 transfers
+    on the same day are identical dicts; deduplicating by content rather than
+    by position would silently halve them."""
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 50.0,
+                           source="Checking", destination="Marcus Savings"),
+                       txn(date(2026, 8, 29), "To savings", 50.0,
+                           source="Checking", destination="Marcus Savings")],
+            cfg={**CFG, "allocations": [{"name": "Marcus", "amount": 500,
+                                         "match": ["marcus"]}]})["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Marcus"]["observed"] == 100.0, "one half of a split transfer was dropped"
+
+
+def test_an_unmatched_rule_still_reports_its_expected_amount():
+    """`ambiguous_rule` must fire only on a genuine collision. A rule whose
+    movement simply has not been imported yet is still `expected`, unchanged."""
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "Savings", 1100.0,
+                           destination="Fidelity Brokerage")])["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Marcus"]["source"] == "expected"
+    assert allocs["Marcus"]["amount"] == 500.0
+    assert allocs["Marcus"]["claimed_by"] is None
+
+
+# ---- a partial window is never presented as a complete one ---------------
+
+def test_a_truncated_ledger_window_keeps_totals_but_stops_projecting():
+    """`window_complete: False` means a page cap cut the window short.
+
+    The totals stay — they are true of what was read, and a floor is more use
+    than nothing. The $/day figure does not: projecting to payday from an
+    unknown fraction of the window is a guess with a decimal point on it. The
+    reason is named rather than left for the reader to notice.
+    """
+    full = run(date(2026, 9, 4),
+               deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+               withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")])
+    assert full["cycle"]["per_day"] is not None
+    assert full["stale_reason"] is None
+    assert full["window_complete"] is True
+
+    part = paycheck_cycle(
+        cfg=CFG, today=date(2026, 9, 4), month=month_of(date(2026, 9, 4)),
+        deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+        withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")],
+        transfers=[],
+        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+                   "ledger_latest_txn": "2026-09-04", "window_complete": False})
+    assert part["window_complete"] is False
+    assert part["cycle"]["spent"] == 212.0, "totals should survive; they are a floor"
+    assert part["cycle"]["per_day"] is None, "projected guidance from a partial window"
+    assert "only part of this window" in (part["stale_reason"] or "")
+
+
+def test_a_ledger_that_cannot_report_completeness_is_not_marked_incomplete():
+    """An older firefly omits the flag entirely. Treating every such window as
+    partial would suppress guidance permanently and cry wolf."""
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            withdrawals=[txn(date(2026, 9, 1), "Groceries", 212.0, "Groceries")])
+    assert d["window_complete"] is True
+    assert d["cycle"]["per_day"] is not None

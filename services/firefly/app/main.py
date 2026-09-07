@@ -227,18 +227,30 @@ async def dashboard():
 
 
 async def _fetch_txns(client, txn_type: str, start: str, end: str,
-                      max_pages: int = 6) -> list[dict]:
+                      max_pages: int = 6) -> tuple[list[dict], bool]:
     """All splits of one type in [start, end], paging through Firefly.
     Transfers are never fetched here — moving money between your own accounts
-    is not spending or income."""
-    out, page = [], 1
-    while page <= max_pages:
+    is not spending or income.
+
+    Returns `(rows, complete)`. `complete` is False when `max_pages` ran out
+    with more still to fetch — a cap WE chose, not the end of the ledger.
+
+    It has to be returned rather than assumed, because the caller cannot tell
+    the two apart by looking at the rows. A long ledger silently truncated
+    here still produces a plausible "spent this month" and a plausible
+    $/day figure, both computed from part of the window and presented as
+    whole. That is the same class of claim docs/BUDGETS.md rules out: a
+    partial window is never presented as complete.
+    """
+    out, page, complete = [], 1, True
+    while True:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
                              params={"type": txn_type, "start": start, "end": end,
                                      "limit": 50, "page": page},
                              headers=_headers(), timeout=20)
         r.raise_for_status()
-        data = r.json().get("data", [])
+        body = r.json()
+        data = body.get("data", [])
         if not data:
             break
         for g in data:
@@ -265,14 +277,26 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
                             "source": t.get("source_name") or "",
                             "destination": t.get("destination_name") or "",
                             "category": t.get("category_name") or "Uncategorized"})
-        if len(data) < 50:
+        # Firefly's own pagination is the authority on whether more exists.
+        # Falling back to a short page is right too, but only that: a full
+        # last page with no metadata is indistinguishable from a truncated
+        # one, so the page cap below decides it rather than a guess.
+        pages_total = ((body.get("meta") or {}).get("pagination") or {}).get("total_pages")
+        if isinstance(pages_total, int) and pages_total > 0:
+            if page >= pages_total:
+                break
+        elif len(data) < 50:
+            break
+        if page >= max_pages:
+            complete = False
             break
         page += 1
-    return out
+    return out, complete
 
 
 async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
-    return await _fetch_txns(client, "withdrawal", start, end)
+    rows, _ = await _fetch_txns(client, "withdrawal", start, end)
+    return rows
 
 
 async def _ingest_latest(client, txns: list[dict]) -> date | None:
@@ -477,8 +501,10 @@ async def _month_payload() -> dict:
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_txns(client, "withdrawal", month_start.isoformat(), today.isoformat())
-        dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
+        wd, wd_all = await _fetch_txns(client, "withdrawal",
+                                       month_start.isoformat(), today.isoformat())
+        dep, dep_all = await _fetch_txns(client, "deposit",
+                                         month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep)
     days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
@@ -514,6 +540,10 @@ async def _month_payload() -> dict:
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
+        # False when a page cap truncated the window. Carried as its own fact:
+        # the totals below are still true of what was read, and are exactly as
+        # plausible either way, so the caller cannot infer this from them.
+        "window_complete": bool(wd_all and dep_all),
         "days_stale": days_stale,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
@@ -575,9 +605,9 @@ async def _cycle_payload() -> dict:
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=10)
-        dep = await _fetch_txns(client, "deposit", start, end, max_pages=4)
-        tr = await _fetch_txns(client, "transfer", start, end, max_pages=4)
+        wd, wd_all = await _fetch_txns(client, "withdrawal", start, end, max_pages=10)
+        dep, dep_all = await _fetch_txns(client, "deposit", start, end, max_pages=4)
+        tr, tr_all = await _fetch_txns(client, "transfer", start, end, max_pages=4)
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep + tr)
     # Firefly is asked for one day past today so the range is never
@@ -595,6 +625,10 @@ async def _cycle_payload() -> dict:
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
+        # False when a page cap truncated the window. Carried as its own fact:
+        # the totals below are still true of what was read, and are exactly as
+        # plausible either way, so the caller cannot infer this from them.
+        "window_complete": bool(wd_all and dep_all and tr_all),
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "days_stale": max(0, (today - ledger_latest).days) if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
@@ -666,10 +700,10 @@ async def audit():
         today = _today()
         year_ago = today - timedelta(days=365)
         async with httpx.AsyncClient() as client:
-            wd = await _fetch_txns(client, "withdrawal", year_ago.isoformat(),
-                                   today.isoformat(), max_pages=10)
-            dep = await _fetch_txns(client, "deposit", year_ago.isoformat(),
-                                    today.isoformat(), max_pages=4)
+            wd, _ = await _fetch_txns(client, "withdrawal", year_ago.isoformat(),
+                                      today.isoformat(), max_pages=10)
+            dep, _ = await _fetch_txns(client, "deposit", year_ago.isoformat(),
+                                       today.isoformat(), max_pages=4)
             ledger_latest = await _ledger_latest(client)
             fb = await client.get(f"{FIREFLY_URL}/api/v1/budgets",
                                   headers=_headers(), timeout=15)

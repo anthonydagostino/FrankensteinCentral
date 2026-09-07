@@ -183,14 +183,14 @@ often described just "Savings" while only the destination account says
 | value | definition |
 |---|---|
 | paycheck | Σ matching deposits **on the most recent paycheck date** (split direct deposits are one paycheck) |
-| allocation (each) | the **observed** matching transfer/withdrawal in the cycle if there is one; otherwise the **configured** amount, labelled `expected` |
+| allocation (each) | the **observed** contribution in the cycle if there is one; otherwise the **configured** amount, labelled `expected`. A movement counts for at most **one** allocation; a later rule matching the same movement reports `ambiguous_rule` and contributes **0** |
 | savings_total | Σ allocations (an `already_withheld` allocation contributes **0** — the deposit is already net of it) |
 | spendable | paycheck − savings_total |
-| spent | Σ withdrawals since the paycheck date, **excluding** allocation-matched ones |
+| spent | Σ withdrawals since the paycheck date, **excluding contributions TO savings**. Money leaving a savings account — including a purchase funded from one — is spending |
 | left | spendable − spent |
 | per_day | max(left, 0) / days to next payday |
-| month.spent | Σ month-to-date withdrawals excluding allocation-matched ones |
-| month.savings | Σ allocation-matched outflows this month (shown, never counted as spending) |
+| month.spent | Σ month-to-date withdrawals excluding contributions TO savings |
+| month.savings | Σ contributions TO savings this month (shown, never counted as spending) |
 
 The next payday is `last paycheck + cadence`, where cadence is the **observed**
 gap between the last two paychecks when it is plausible (5–40 days) and the
@@ -205,6 +205,26 @@ configured `cadence_days` otherwise.
   is savings, not spending, so the same $1,100 can never be taken out as a
   deduction *and* again as spend. `already_withheld` covers the opposite
   case (employer withholds pre-deposit, so the deposit is already net).
+- **Direction decides, not the name.** Three rows all mention "Fidelity" and
+  only the first is saving: `Checking -> Fidelity` is a contribution,
+  `Fidelity -> Checking` is money coming back out, and
+  `Fidelity -> Coffee Shop` is a purchase. The **source** settles it — money
+  leaving a savings account is never a contribution, whatever the description
+  says. Matching the name anywhere in the row counted all three as saving,
+  which both inflated savings and deleted real purchases from `spent`.
+- **One movement, one rule.** Rules used to scan every transaction
+  independently, so two rules matching "savings" each claimed the same $100
+  and the pot was debited $200. The first rule in configured order takes it;
+  a later rule that would have matched reports `ambiguous_rule` with
+  `claimed_by`, rather than falling back to its configured amount — which
+  would re-create the double deduction under the label `expected`. Splits are
+  unaffected: two genuinely separate $50 transfers both still count.
+- **A partial ledger window is never presented as a whole one.** Paging
+  through Firefly has a page cap; when it runs out with more to fetch,
+  `window_complete` is false. Totals still show — they are a floor, and a
+  floor beats nothing — but `per_day` is suppressed and the reason is named.
+  A projection computed from an unknown fraction of the window is a guess
+  with a decimal point on it.
 - **A missing paycheck is not an overspend.** Past `next payday +
   OVERDUE_GRACE_DAYS` with no newer deposit, `left` is `null` with the
   reason — a ledger that is behind is not a user who is $2,000 in the hole.
