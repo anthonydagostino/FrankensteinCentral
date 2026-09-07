@@ -1,77 +1,112 @@
 # Product Directive
 
-Task ID: FC-002
-Status: changes_requested
-Priority: highest
-Deployment Authorization: test-only
+Task ID: FC-008
+Status: ready_for_implementation
+Priority: high
+Deployment Authorization: none
 
 ## Objective
 
-Bootstrap the existing autonomous Product Owner / Claude / release-service loop by giving the reviewed infrastructure a genuine authorization binding, following docs/BOOTSTRAP.md at 7fa81627d0834d6b8c1e386c7fdb010cc85fcc30.
+Replace the main dashboard's flat "Schedule" list with a genuine seven-day
+weekly calendar: today plus the next six days, each day labelled with its day
+of the week, its month, and an ordinal day of the month.
 
 ## Product Context
 
-Anthony authorizes this bootstrap. Codex has successfully written control (probe 8a3c47597491d9d1f4f78f17e61a94983586b626), and a recurring Codex Product Owner wakeup is configured every 15 minutes. Anthony must not relay routine messages or perform routine release mechanics.
+Anthony authorized this task directly, as Product Owner, on 2026-09-07.
+
+This directive is recorded by Claude at Anthony's explicit instruction. It is
+not a Codex-issued directive and is not a Claude-invented task. Two standing
+positions are knowingly overridden by the owner, and are recorded here rather
+than left for Codex to discover:
+
+- `PRODUCT_VISION.md` priority 0 states "No feature initiative interrupts
+  FC-002."
+- The FC-002 directive states "No new product features" and lists new product
+  work as explicitly out of scope.
+
+**FC-002 is paused, not abandoned, and not accepted.** Its four open Codex P1
+findings (readiness false positive, missing-verification clearing attention,
+partial-Compose `running_commit`, malformed health entries) remain outstanding
+and unreviewed. Its work is preserved on `claude/po-handoff-release` at
+`f1fa382b0823100a3bc9520f104b4e793052093d`, and its directive text remains in
+this file's git history at directive commit
+`3c0b81d791cf41a67054b835941c7bceeeadff6e`. Codex retains acceptance authority
+over FC-002 and may re-prioritize it ahead of this task.
+
+The dashboard's current schedule card (`renderCalendar`, `gateway/static/home.js`)
+renders upcoming events as one undifferentiated chronological list. It answers
+"what is next" but not "what does my week look like", which is the vision's
+stated question "What commitments, deadlines or conflicts are approaching?".
 
 ## Requirements
 
-1. Use existing task branch claude/po-handoff-release and baseline 7fa81627d0834d6b8c1e386c7fdb010cc85fcc30. Preserve its history. No new product features.
-2. Resolve E as the control commit that changes STATE.json to authorize this directive. Read scope and state at E. Add .frankenstein/AUTHORIZING_CONTROL_COMMIT containing the full SHA E. Do not invent or copy a previous authorization.
-3. Ensure the task branch's protocol metadata identifies this task and the exact directive_commit supplied in control. Record the implementation and handoff consistently so the protocol test gate passes.
-4. Run bash scripts/test.sh at the resulting bound implementation. Publish the exact resulting SHA, baseline-to-result diff summary, test output summary, deviations and remaining activation blockers to handoff, with AUTHORIZING_CONTROL_COMMIT and TASK_BRANCH. Never write control or production.
-5. Stop after the handoff for independent Codex review. Codex is separately reviewing baseline 7fa8162 against handoff df4933c and may issue corrections. No acceptance or release is implied by this directive.
-6. Report release-service and status-publisher installation/enabled state honestly and separately from code readiness. Do not activate a shared-credential release path, alter credentials/accounts or security boundaries, incur new spend, or promote/deploy under this directive.
+1. The schedule card on the main dashboard shows exactly seven day units:
+   the current local day and the following six. Never a fixed Sunday–Saturday
+   week, never a past day, never an eighth day.
+2. Each day shows its weekday name, its month name, and its day of the month
+   with a correct English ordinal suffix (1st, 2nd, 3rd, 4th … 11th, 12th,
+   13th … 21st, 22nd, 23rd). The 11/12/13 exceptions must be correct.
+3. The window rolls over at local midnight without a manual reload, and a
+   window that spans two months labels the month boundary rather than hiding
+   it.
+4. Existing schedule behaviour is preserved, not regressed: `confirmed`,
+   `pending` and `countered` holds all remain visible and visually
+   distinguishable, and `countered` remains marked as needing Anthony's reply.
+   Dropping non-confirmed holds was a previously fixed bug and must not return.
+5. Approaching conflicts are surfaced: overlapping commitments on the same day
+   are detectable at a glance.
+6. Honest states, per vision principle 1. An empty day, an unreachable
+   schedule service and a disconnected/unconfigured integration are three
+   different states and must read differently. Absence of data is never
+   rendered as an empty but healthy week.
+7. Calm, fast and usable on phone and desktop, per vision principle 4. The
+   seven-day layout must remain legible at narrow widths; it may change shape,
+   but it may not require horizontal scrolling of the page.
+8. Accessible: each day is reachable and announced with its full date, colour
+   is never the sole carrier of status, and animated decoration honours
+   `prefers-reduced-motion`.
+9. Month-themed decoration is authorized and encouraged (for example pumpkins
+   in October, snow in December). It is decoration only: it may not alter text
+   contrast, obscure content, block interaction, or change what the data says.
+   It must be disableable, and the setting must persist.
+10. Date-dependent logic goes through the existing single clock seam and is
+    tested across a calendar sweep, never against "today" — see
+    `docs/TESTING.md`. Ordinals, month spans, DST days and leap days are part
+    of the sweep.
 
 ## Acceptance Criteria
 
-- Bound implementation descends from the specified baseline and current production, with no unrelated product changes.
-- Binding names the actual authorization epoch; task and directive identities match control.
-- Full suite passes on the bound implementation, and all material Codex review findings are resolved before acceptance.
-- Handoff provides the exact SHA and enough evidence to independently verify it.
-- Release remains gated by subsequent Codex acceptance plus deploy-approved. Only the deterministic release service may promote.
-- No claim of unattended readiness before an observed end-to-end deployment and verification.
+- Seven days render, the first is the current local day, the seventh is five
+  days after tomorrow, verified at multiple synthetic clock values including a
+  month boundary, a DST transition and 29 February.
+- Ordinal suffixes are correct for all of days 1–31.
+- `pending` and `countered` holds are present and distinguishable in the new
+  layout; a regression test covers their survival.
+- Empty, error and disconnected states are distinguishable in the rendered
+  output and covered by tests.
+- `bash scripts/test.sh` passes in full on the final tree.
+- No change to money, budget, Firefly, Gmail or credential handling.
 
 ## Explicitly Out of Scope
 
-New product work; direct production pushes; bypass flags; manual promotion by Anthony; changes to credentials, accounts, spend or security boundaries; host activation under this test-only authorization.
+Calendar write operations of any kind; new third-party integrations; new
+credentials, accounts, spend or security-boundary changes; promotion or
+deployment; changes to the FC-002 release-infrastructure work; editing the
+paused FC-002 handoff.
 
 ## Verification Required
 
-Full suite exit status and counts, exact implementation SHA, authorization epoch and directive SHA, read-back of published handoff binding, and explicit installed/enabled/verified distinctions.
+Full suite exit status and counts, the exact implementation SHA, the calendar
+sweep's covered dates, and an explicit statement of which schedule states were
+exercised.
 
 ## Product Owner Notes
 
-This authorizes binding and verification of existing infrastructure, not retroactive acceptance. Keep Deployment Authorization unchanged; Codex alone decides acceptance. Publish through handoff, never control. Existing bootstrap Tier 1 credential-sharing is a declared deviation requiring review, not automatically approved by referencing BOOTSTRAP.md.
+Deployment Authorization is `none`: push the task branch for review, deploy
+nothing. Codex retains acceptance authority and may reorder this against
+FC-002. Claude implements and stops at the handoff; it does not accept this
+work.
 
-
-## Product Owner correction — review of 093f73d (2026-09-06)
-
-The bound implementation and handoff at 11ba8d0 answer epoch 0696ac0. Codex independently verified GitHub Actions run 34061422396 on exact SHA 093f73d6927f30bbfde36d388bc8c6c3be5521e8: 1561 passed and ALL TESTS PASSED, including the sandbox preflight. Findings 1 and 2 are addressed in code; finding 3 now has passing CI evidence. The corrective changes within the existing bootstrap reliability objective are recognized. Finding 4 remains incomplete. Acceptance is withheld.
-
-This correction explicitly expands implementation scope as follows, superseding the earlier binding-only limit where necessary. Continue the existing claude/po-handoff-release branch from 093f73d; do not begin a feature task or replace the work with production's old implementation.
-
-1. Add a bounded, read-only post-deploy smoke check of the core dashboard: gateway serves the expected dashboard/static assets and a valid app catalog; the required local services/database are ready. Define required local checks explicitly. Optional third-party integrations that are unconfigured/disconnected must be reported as degraded or unavailable, not cause core deployment failure. Do not gate deployment on the broad live-integration verify.sh as a whole. Do not invoke sync, email, calendar writes, financial actions or other mutation endpoints.
-2. Run the check after successful Compose startup with finite retries/timeouts. Record result, exact checked commit and timestamp. Distinguish successfully started containers from verified application readiness. A failed readiness check must be actionable, with truthful running/last-successful/attempted semantics; do not claim that a previous version is still running after a partial Compose replacement without evidence. Do not add automatic destructive rollback.
-3. Fix test-gate truthfulness: DEPLOY_SKIP_TESTS=1 currently still leads record(success/compose_failed) to label test_gate as passed, because no call supplies tests_skipped. Preserve and report the actual test disposition independently from deployment disposition; add regressions for skipped tests with successful and failed Compose.
-4. Tie verification to the running/attempted SHA. The publisher currently accepts a pass/fail field without checking that verification.commit matches the running commit. An old pass must not confirm a new deployment. Missing, not_run, malformed or mismatched verification must be clearly distinguishable and actionable when a released deployment requires confirmation. Validate this with synthetic stale-verification fixtures.
-5. Publish the canonical handoff files as well as any human-readable status: .frankenstein/STATE.json (product_owner/awaiting_review, exact implementation SHA, directive identity), IMPLEMENTATION_HANDOFF.md, AUTHORIZING_CONTROL_COMMIT and TASK_BRANCH. The current handoff has no STATE.json or IMPLEMENTATION_HANDOFF.md; the task branch still carries an implementing authorization snapshot. Make the task/report distinction consistent with protocol tests. Keep implementation SHA bookkeeping truthful; do not fabricate a self-referential commit.
-6. Rebind to the NEW authorization epoch created by this correction's STATE.json flip and the NEW directive_commit in that state. Preserve history and publish the tested final tree. Run the full Linux suite and CI on that exact tree, with containment coverage required.
-7. Prepare a concrete minimal installation/validation plan for the status publisher and release-verification path. Do not activate hosts, grant credentials, change accounts or security boundaries, or spend money under this correction. Report actual installed/enabled state and its provenance separately from proposed state. Do not infer authenticated authorization identity from git authors/committers.
-
-Deployment Authorization remains test-only. Do not promote or deploy. Codex will assess the corrected handoff and operational prerequisites before a separate acceptance/deployment decision. Product vision work follows a completed bootstrap; it is not part of this correction.
-
-
-## Product Owner correction 2 — review of f1fa382 (2026-09-07 UTC)
-
-Reviewed bound implementation f1fa382b0823100a3bc9520f104b4e793052093d and canonical handoff matching epoch 760f4c2. GitHub Actions run 34062513900 is green: 1586 passed and ALL TESTS PASSED. Test-gate disposition and canonical handoff corrections are present. Core readiness versus optional integrations is the approved bootstrap policy. Acceptance remains withheld for the following concrete remaining cases.
-
-Continue from f1fa382 on claude/po-handoff-release; preserve the existing fixes. This is bounded correction scope for FC-002, not a new product initiative:
-
-1. P1 — readiness false positive. Codex reproduced a PASS for <html><body>Application unavailable</body></html> with valid catalog/health fixtures. The current "<html" and "app" substring check cannot distinguish the hub from an error page, and no static asset is requested. Require stable dashboard-specific structure plus successful nonempty responses for the essential same-origin JS/CSS used by the entry page, with suitable type/content validation. Do not follow arbitrary/external asset URLs. Regression cases: a generic 200 error page containing "Application"; missing/404 JS; wrong content served as JS; genuine hub success. Keep reads bounded and read-only.
-2. P1 — missing verification silently clears attention. Codex reproduced a successful deployment with no verification record yielding verification.result=not_run and attention_required=false. This also covers readiness crashes that record not_run. For a deployment requiring confirmation, missing/not_run/unknown/malformed or SHA-mismatched verification must require attention until valid evidence arrives. Use a clear verification-state transition so deployment success is not presented as ready before the check finishes. Preserve the corrected stale verdict.
-3. P1 — partial Compose failure still retains running_commit from the prior successful record. Some containers can already have been replaced when Compose fails, so this is not evidence the old SHA remains uniformly running. Record previous success separately, and mark current running state unknown/mixed after partial-start failure unless directly confirmed. Do not assert rollback or preserved old deployment without evidence. Add the partial-Compose regression and keep automatic rollback out of scope.
-4. Harden the same readiness code while fixing (1): malformed health entries must produce structured fail/degraded results instead of an uncaught exception. Retry required service readiness within the bounded overall budget, not only the initial HTML response. Keep optional third-party failures nonfatal. Existing database-backed local health endpoints can provide the required DB evidence; no credential-bearing or mutation endpoint is needed.
-5. Prepare the full-separation activation plan as the target, not process-only Tier 1. A shared account label does not by itself prove the architecture impossible: the required boundary is enforced runtime credential separation and restricted writer capabilities. Do not infer a pushing identity from commit authors/committers. Provide a concrete minimal owner-consent/setup plan and credential-safe read-only validation evidence, with all executable paths in unit templates consistent. This is planning only; no credential/account/host/ruleset changes or spending is authorized.
-6. Rebind to this correction's new STATE.json epoch and directive_commit, run the full Linux suite/CI at the exact final tree, then publish all canonical handoff files and stop. Report the installed release-source SHA separately from the candidate SHA, since a copied release-service checkout does not automatically update when production moves.
-
-The status publisher remains absent remotely. Deployment Authorization stays test-only. No acceptance, production promotion, shared-credential activation or product feature scope is authorized by this correction.
+Repository is public (vision principle 6): any sample or fixture data must be
+synthetic. No real commitments, names or account details.
