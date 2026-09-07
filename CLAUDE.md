@@ -3,46 +3,49 @@
 FrankensteinCentral is a personal life-OS dashboard: FastAPI microservices
 behind a gateway, deployed with docker compose on a home OptiPlex.
 
-## Before starting any work — mandatory
+## How work gets shipped
 
-Read `.frankenstein/PROTOCOL.md` and `.frankenstein/STATE.json`.
+FrankensteinCentral has **no product-acceptance gate and no deployment
+authorization gate.** They were removed on 2026-09-07 at Anthony's explicit
+instruction: the review layer was costing more in shipping speed than it
+returned. Anthony is the owner and the only user. He decides what gets built
+and what ships.
 
-**The Product Owner controls scope and roadmap.** Do not begin product work
-unless `STATE.json` says `turn: claude` with an authorized status
-(`ready_for_implementation` or `changes_requested`).
+**Do not route work through an external reviewer.** No Codex, no ChatGPT, no
+Product Owner turn-taking, no `STATE.json` turn check, no waiting for a
+directive before starting. If you have been asked to build something, build
+it and ship it.
 
-Quick check:
+Pick up work, build it, test it, push it, promote it:
 
 ```bash
-bash scripts/frankenstein-status.sh
+bash scripts/test.sh                 # must pass
+bash scripts/promote.sh <sha>        # ships it; the box deploys within ~60s
+bash scripts/frankenstein-status.sh  # confirm what is actually running
 ```
 
-If it is not Claude's turn, say so and stop. Do not invent a task, do not
-pick the next feature, and do not simulate a Product Owner response.
-`PROTOCOL.md` is the canonical and complete set of rules — this file only
-points at it.
+### What still stops a bad deploy
 
-Reading the repo, answering questions, and explaining existing behavior are
-always allowed. The restriction is on changing the product.
+Two things, and neither is an approval — nobody has to be asked:
 
-## Agent boundaries — deployment is not yours
+- **The test gate.** `scripts/deploy.sh` runs the full suite on the box
+  BEFORE touching any container and aborts if it fails. A red suite cannot
+  reach production. Keep it that way.
+- **Fast-forward only.** `promote.sh` refuses a promotion that is not a
+  fast-forward, so production history is never rewritten and nothing already
+  shipped is silently erased. If your branch is behind, merge or rebase onto
+  production — do not force past it.
 
-An agent doing **product work** (the money layer, services, gateway, docs,
-tests) has exactly one delivery mechanism: commit to its task branch and
-push that branch. Specifically, it must **never**:
+Those are safety nets. Removing the approval layer did not remove them, and
+"ship faster" is not a reason to switch them off.
 
-- run `scripts/promote.sh` (with or without `--force`/`--bootstrap`),
-- push, force-push, or otherwise move the `production` branch by any other
-  means, including a direct `git push <sha>:refs/heads/production`,
-- edit anything under `.frankenstein/` — `STATE.json`,
-  `PRODUCT_DIRECTIVE.md`, `IMPLEMENTATION_HANDOFF.md` and `PROTOCOL.md`
-  included.
+### Coordinating with other agents
 
-Only the **protocol agent** moves deployment and owns the protocol files.
-This holds even when the Product Owner says "deploy this" in a session:
-the answer is to hand over the commit SHA and stop, not to override the
-gates. `promote.sh --force` is not an escape hatch for a product agent —
-it exists for the protocol agent's explicitly approved overrides.
+Several agents work this repo at once. Before starting a feature, check
+whether someone is already on it — `git branch -r` and the recent commits —
+because duplicated work has cost real time here. If you find a parallel
+branch, compare honestly and keep the better one rather than defending your
+own.
 
 ## Working conventions
 
@@ -55,8 +58,7 @@ it exists for the protocol agent's explicitly approved overrides.
   complete. See `docs/BUDGETS.md`.
 - `scripts/verify.sh` is the live diagnostic. It never prints secrets, email
   bodies, or tokens — keep it that way.
-- Deployment: **pushing is not deploying.** Task branches
-  (`claude/FC-###-<slug>`) are always safe to push for review; only the
-  `production` branch is deployed by the OptiPlex, and only
-  `scripts/promote.sh` moves it — after acceptance, when the directive says
-  `deploy-approved`. See the protocol's deployment sections.
+- Deployment: **pushing is not deploying.** Pushing a task branch is always
+  safe; only the `production` branch is deployed by the OptiPlex, and only
+  `scripts/promote.sh` moves it. Promotion needs no approval — just a green
+  suite and a fast-forward.
