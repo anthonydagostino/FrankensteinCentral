@@ -9,7 +9,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (firefly_state, parse_event_dt, portfolio_state,
+                        upcoming_events)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -784,18 +785,35 @@ async def build_home(fresh: bool = False) -> dict:
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
-        "portfolio": stocks or {"configured": False},
+        # `stocks or {"configured": False}` rendered an unreachable service as
+        # "No holdings yet. Add your stocks →" -- an instruction to fix setup
+        # that is already correct. The service says `configured: False` itself
+        # when it really has none, so an empty payload means it never answered.
+        "portfolio": dict(stocks or {}, state=portfolio_state(stocks),
+                          configured=(stocks or {}).get("configured", False)),
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
             "water": (core or {}).get("water", {}),
             "nutrition": (core or {}).get("nutrition", {}),
         },
-        "score": (core or {}).get("score", {"score": 0, "parts": {}}),
+        # A missing core payload means we do not KNOW the score. The old
+        # default asserted 0, which the header then displayed as a real bad day
+        # during any core outage.
+        "score": (core or {}).get(
+            "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
         "calendar": calendar,
-        "systems": {"healthy": not down, "down": down},
+        # NOT a claim about the stack. This only ever probed the two sub-apps
+        # the home payload itself needs, so `healthy: true` here meant "core and
+        # gmail answered", while thirteen other services could be down and the
+        # footer still read "Systems healthy". The footer now renders the
+        # gateway's /api/health, which probes every registered service; this
+        # field says what it actually looked at, so no reader can mistake it
+        # for the whole picture again.
+        "systems": {"checked": ["core", "email"], "down": down,
+                    "covers_all_services": False},
         "last_updated": t["now"],
     }
     _HOME_CACHE["data"] = data

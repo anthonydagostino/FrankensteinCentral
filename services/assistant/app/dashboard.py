@@ -62,6 +62,24 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
     return picked[:limit] if limit else picked
 
 
+def portfolio_state(stocks):
+    """`ok`, `unreachable` or `not_configured` — the same three states
+    `firefly_state` draws, for the same reason.
+
+    `_get` swallows a timeout and returns `{}`, and `stocks or {"configured":
+    False}` turned that into a confident "No holdings yet. Add your stocks →".
+    So a blip in the stocks container told you to go and set up a portfolio you
+    had already set up. The stocks service answers `{"configured": False}` on
+    its own when it genuinely has no holdings, so an EMPTY payload can only
+    mean it never answered.
+    """
+    if not stocks:
+        return "unreachable"
+    if stocks.get("configured") is False:
+        return "not_configured"
+    return "ok"
+
+
 def firefly_state(firefly):
     """`ok`, `unreachable` or `not_configured` — three states, not two.
 

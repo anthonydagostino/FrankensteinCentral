@@ -155,3 +155,41 @@ def test_a_working_firefly_is_ok():
     assert dash.firefly_state({"connected": True, "net_worth": {}}) == "ok"
     # A payload with no explicit flag is not evidence of a missing credential.
     assert dash.firefly_state({"net_worth": {}}) == "ok"
+
+
+# ══ PRODUCT_IDEAS #13 — "not configured" and "unreachable" are different ══
+#
+# `_get` swallows a timeout and returns `{}`, and the portfolio card turned that
+# into "No holdings yet. Add your stocks →" — an instruction to go and fix setup
+# that is already correct. The stocks service says `configured: False` itself
+# when it genuinely has none, so an EMPTY payload can only mean it never
+# answered. Money already drew this distinction; the portfolio did not.
+
+def test_an_unreachable_stocks_service_is_not_an_empty_portfolio():
+    """The acceptance signal from the idea doc: stop the stocks container and
+    the card must say it is unreachable, not that you own nothing."""
+    assert dash.portfolio_state({}) == "unreachable"
+    assert dash.portfolio_state(None) == "unreachable"
+
+
+def test_a_stocks_service_reporting_no_holdings_is_not_configured():
+    assert dash.portfolio_state({"configured": False, "positions": []}) == "not_configured"
+
+
+def test_a_working_portfolio_is_ok():
+    assert dash.portfolio_state({"configured": True, "positions": [{"symbol": "AAPL"}]}) == "ok"
+
+
+def test_portfolio_state_never_calls_an_unreachable_service_unconfigured():
+    """The specific inversion: unreachable must not collapse into the state
+    that carries a 'go set this up' instruction."""
+    assert dash.portfolio_state({}) != "not_configured"
+
+
+def test_portfolio_and_firefly_agree_on_their_state_vocabulary():
+    """Two cards drawing the same distinction should use the same words, or the
+    UI ends up with two dialects for one concept."""
+    for payload in ({}, {"connected": False}, {"connected": True}):
+        assert dash.firefly_state(payload) in ("ok", "unreachable", "not_configured")
+    for payload in ({}, {"configured": False}, {"configured": True}):
+        assert dash.portfolio_state(payload) in ("ok", "unreachable", "not_configured")

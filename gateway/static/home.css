@@ -329,3 +329,13 @@ body.cc[data-mode="evening"] {
 /* ---- Firefly figures on the money card ---------------------------------- */
 .mny-ff { margin-top: 10px; }
 .mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }
+
+/* An untracked score component is not a failed one (PRODUCT_IDEAS #16).
+   A zero-width bar reads as "you scored 0"; these read as "no data yet". */
+.score-bar.untracked .track { opacity: .35; }
+.score-bar.untracked em { font-style: normal; opacity: .6; }
+.score-bar em { font-size: .72rem; margin-left: .4rem; opacity: .75; }
+.score-of { display: block; margin-top: .35rem; font-size: .72rem; opacity: .6; }
+.score-ring.untracked { opacity: .5; }
+.cc-score-pill.untracked .n { opacity: .55; }
+.cc-sys-list { margin-left: .6rem; font-size: .72rem; opacity: .7; }
