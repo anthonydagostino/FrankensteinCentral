@@ -237,6 +237,15 @@ configured `cadence_days` otherwise.
   One quantity does survive. Observed spending really did happen, so `spent`
   is reported with `spent_is_lower_bound`, and every surface that renders it
   says *at least* rather than presenting it as the total.
+
+  **Two services answer "spent this month", and they do not share a window.**
+  The pay-cycle engine's figure is used when a paycheck is configured and
+  found; `/spending`'s calendar month otherwise. Whichever is quoted, its own
+  completeness is the one that applies — `month_spend_claim` picks both the
+  number and its qualification together, so the caveat cannot be attached to
+  one source while the headline quotes the other. That mismatch is not
+  hypothetical: a truncated window with no matching paycheck takes the
+  fallback branch, and is precisely the case that most needs saying.
 - **An `already_withheld` allocation is not a claim on the ledger.** The
   employer removed that money before the deposit landed, so a transfer sitting
   in the ledger after payday is by definition not it. Such a rule contributes

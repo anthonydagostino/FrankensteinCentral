@@ -9,7 +9,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
-from .dashboard import firefly_state, parse_event_dt, upcoming_events
+from .dashboard import (firefly_state, month_spend_claim, parse_event_dt,
+                        upcoming_events)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -590,9 +591,9 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     ingest_days = sp.get("ingest_days")
     days_stale = ingest_days if ingest_days is not None else sp.get("days_stale")
     stale = days_stale is not None and days_stale >= 2
-    # A brand-new month with nothing imported yet is unknown, not $0.
-    month_ingested = sp.get("month_ingested")
-    month_spend = None if month_ingested is False else sp.get("month")
+    # A brand-new month with nothing imported yet is unknown, not $0 — handled
+    # inside month_spend_claim below, along with which service's completeness
+    # applies to the figure it returns.
     # The pay-cycle engine computes the same month with savings transfers
     # taken back out (moving $1,100 to Fidelity is not $1,100 spent), so its
     # number is the more accurate answer to "what did I spend". Fall back to
@@ -600,8 +601,12 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     pay = (budget or {}).get("paycheck") or {}
     pay_month = pay.get("month") or {}
     month_label = pay_month.get("label")
-    if pay.get("configured") and pay_month.get("spent") is not None:
-        month_spend = pay_month.get("spent")
+    # Which source the headline number came from decides whose completeness
+    # applies to it. Read straight off the budget payload rather than the
+    # paycheck brief: a truncated window with no matching paycheck takes the
+    # brief's `available: False` path, and routing this through there would
+    # drop the caveat in exactly the case that most needs it.
+    month_spend, month_is_lower_bound = month_spend_claim(sp, pay)
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
     # Homepage headline: a trailing 30-day window, NOT the calendar month the
@@ -648,8 +653,12 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
         "month_label": month_label,
+        # "$312 spent" and "at least $312 spent" are different claims. The
+        # headline is rendered from this, not from the paycheck panel's flag,
+        # because the two can disagree about which window they describe.
+        "month_is_lower_bound": month_is_lower_bound,
         "month_savings": pay_month.get("savings"),
-        "month_ingested": month_ingested,
+        "month_ingested": sp.get("month_ingested"),
         # What's left of the current paycheck after the savings that come out
         # of it — the homepage's "left to spend". Never a bank balance.
         "paycheck": _paycheck_brief(pay),

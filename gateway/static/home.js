@@ -416,7 +416,7 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.month != null ? money(m.month) : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
+        <div class="mny-stat"><div class="v">${m.month != null ? `${m.month_is_lower_bound ? "≥ " : ""}${money(m.month)}` : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">${m.month_is_lower_bound ? "at least — part of the ledger couldn't be read" : "month to date"}${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>

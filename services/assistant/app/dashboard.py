@@ -76,3 +76,40 @@ def firefly_state(firefly):
     if firefly.get("connected") is False:
         return "not_configured"
     return "ok"
+
+
+def month_spend_claim(spending, paycheck):
+    """`(value, is_lower_bound)` for the homepage's "spent this month" headline.
+
+    Two different services can answer this, and they do not share a window, so
+    whose completeness applies depends on which number was used:
+
+      * the pay-cycle engine, when a paycheck is configured AND found — its
+        figure has savings transfers taken back out, which is the more truthful
+        answer to "what did I spend";
+      * `/spending`'s calendar month otherwise.
+
+    Both can be truncated by the ledger page cap. Whichever one is quoted, its
+    own `window_complete` decides whether this is a total or a floor, and
+    absent means unknown — which is a lower bound, not a clean total.
+
+    This lives here rather than in `main.py` for the reason the module exists:
+    `main.py` needs psycopg to import, so anything decided there cannot be
+    tested. The bug being guarded against — a truncated month rendered as an
+    exact total — is invisible to a test that cannot run.
+    """
+    spending = spending or {}
+    paycheck = paycheck or {}
+    pay_month = paycheck.get("month") or {}
+
+    if paycheck.get("configured") and pay_month.get("spent") is not None:
+        return pay_month.get("spent"), bool(pay_month.get("spent_is_lower_bound"))
+
+    if not spending:
+        # Nothing to quote, so nothing to qualify.
+        return None, False
+    if spending.get("month_ingested") is False:
+        # A brand-new month with nothing imported is unknown, not $0 and not
+        # "at least $0".
+        return None, False
+    return spending.get("month"), spending.get("window_complete") is not True

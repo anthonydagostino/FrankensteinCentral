@@ -155,3 +155,89 @@ def test_a_working_firefly_is_ok():
     assert dash.firefly_state({"connected": True, "net_worth": {}}) == "ok"
     # A payload with no explicit flag is not evidence of a missing credential.
     assert dash.firefly_state({"net_worth": {}}) == "ok"
+
+
+# ---- the month headline says which of its two sources it is quoting ------
+#
+# Codex's finding against the first correction: the paycheck panel learned to
+# say "at least", and the headline above it went on printing an exact
+# month-to-date total from a window that had been truncated. They are fed by
+# different services, so a caveat on one is not a caveat on the other — and
+# the case that most needs it, a truncated window with NO matching paycheck,
+# is exactly the one that takes the other branch.
+
+PAY_FOUND = {"configured": True, "available": True,
+             "month": {"spent": 312.0, "spent_is_lower_bound": False}}
+PAY_FOUND_PARTIAL = {"configured": True, "available": True,
+                     "month": {"spent": 312.0, "spent_is_lower_bound": True}}
+# A configured paycheck the ledger could not find: `available` is False and
+# the brief drops everything, which is how the caveat used to get lost.
+PAY_MISSING = {"configured": True, "available": False, "month": None}
+
+SPENDING_WHOLE = {"connected": True, "month": 480.0, "month_ingested": True,
+                  "window_complete": True}
+SPENDING_PARTIAL = {**SPENDING_WHOLE, "window_complete": False}
+SPENDING_SILENT = {"connected": True, "month": 480.0, "month_ingested": True}
+
+
+def test_a_complete_month_is_quoted_as_a_total():
+    assert dash.month_spend_claim(SPENDING_WHOLE, PAY_FOUND) == (312.0, False)
+
+
+def test_a_truncated_pay_cycle_month_is_a_lower_bound():
+    assert dash.month_spend_claim(SPENDING_WHOLE, PAY_FOUND_PARTIAL) == (312.0, True)
+
+
+def test_a_truncated_month_with_no_matching_paycheck_is_still_a_lower_bound():
+    """The case the first fix missed entirely.
+
+    No paycheck was found, so the pay-cycle figure is unavailable and the
+    headline falls back to /spending. That window was truncated too, and the
+    caveat has to survive the fallback.
+    """
+    value, lower = dash.month_spend_claim(SPENDING_PARTIAL, PAY_MISSING)
+    assert value == 480.0
+    assert lower is True
+
+
+def test_no_paycheck_configured_and_a_truncated_month_is_a_lower_bound():
+    value, lower = dash.month_spend_claim(SPENDING_PARTIAL, {"configured": False})
+    assert value == 480.0
+    assert lower is True
+
+
+def test_a_spending_payload_that_does_not_say_is_treated_as_unknown():
+    """Same rule as the engine: silence is not proof of a whole window."""
+    assert dash.month_spend_claim(SPENDING_SILENT, PAY_MISSING) == (480.0, True)
+
+
+def test_a_whole_month_without_a_paycheck_is_still_an_exact_total():
+    """The guard against over-suppression — the ordinary no-paycheck setup
+    must not start hedging every figure."""
+    assert dash.month_spend_claim(SPENDING_WHOLE, PAY_MISSING) == (480.0, False)
+
+
+def test_an_unimported_month_is_unknown_not_a_lower_bound_of_zero():
+    """`month_ingested: False` means nothing is in the ledger yet. "At least
+    $0" would be a claim; None is the honest answer."""
+    assert dash.month_spend_claim(
+        {**SPENDING_WHOLE, "month_ingested": False}, PAY_MISSING) == (None, False)
+
+
+def test_unreachable_spending_claims_nothing():
+    assert dash.month_spend_claim({}, {}) == (None, False)
+
+
+def test_the_home_renderer_actually_consumes_the_lower_bound_flag():
+    """Pins the payload field to the surface that has to show it.
+
+    The whole finding was a flag that existed and was never rendered, so a
+    test that only checks the payload would have passed against the bug.
+    """
+    from pathlib import Path
+    home = Path(__file__).resolve().parents[3] / "gateway" / "static" / "home.js"
+    src = home.read_text()
+    assert "month_is_lower_bound" in src
+    # And on the headline, not merely somewhere in the file.
+    headline = src[src.index("Spent in ") - 800:src.index("Spent in ") + 400]
+    assert "month_is_lower_bound" in headline

@@ -294,9 +294,14 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
     return out, complete
 
 
-async def _fetch_withdrawals(client, start: str, end: str) -> list[dict]:
-    rows, _ = await _fetch_txns(client, "withdrawal", start, end)
-    return rows
+async def _fetch_withdrawals(client, start: str, end: str) -> tuple[list[dict], bool]:
+    """`(rows, complete)`, same contract as `_fetch_txns`.
+
+    It used to drop the completeness half on the floor, which meant /spending
+    — the source of the homepage's month headline whenever the pay cycle is
+    not configured — could be truncated and say nothing about it.
+    """
+    return await _fetch_txns(client, "withdrawal", start, end)
 
 
 async def _ingest_latest(client, txns: list[dict]) -> date | None:
@@ -372,7 +377,8 @@ async def _spending() -> dict:
     prev30_end = today - timedelta(days=30)
     fetch_start = min(last_month_start, prev30_start)
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_withdrawals(client, fetch_start.isoformat(), today.isoformat())
+        wd, wd_all = await _fetch_withdrawals(client, fetch_start.isoformat(),
+                                              today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd)
 
@@ -457,6 +463,10 @@ async def _spending() -> dict:
         "currency": "USD",
         "tz": str(LOCAL_TZ),
         "txn_count": len(wd),
+        # The page cap can truncate this window too, and /spending feeds the
+        # homepage month headline whenever the pay cycle is not configured.
+        # Every total below is then a lower bound rather than a total.
+        "window_complete": wd_all,
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "baseline": baseline, "pace_note": pace_note,
