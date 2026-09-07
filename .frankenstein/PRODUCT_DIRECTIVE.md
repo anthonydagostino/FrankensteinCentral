@@ -1,7 +1,7 @@
 # Product Directive
 
 Task ID: FC-008
-Status: ready_for_implementation
+Status: changes_requested
 Priority: high
 Deployment Authorization: none
 
@@ -77,8 +77,8 @@ stated question "What commitments, deadlines or conflicts are approaching?".
 
 ## Acceptance Criteria
 
-- Seven days render, the first is the current local day, the seventh is five
-  days after tomorrow, verified at multiple synthetic clock values including a
+- Seven days render, the first is the current local day, the seventh is six
+  days after today, verified at multiple synthetic clock values including a
   month boundary, a DST transition and 29 February.
 - Ordinal suffixes are correct for all of days 1–31.
 - `pending` and `countered` holds are present and distinguishable in the new
@@ -110,3 +110,23 @@ work.
 
 Repository is public (vision principle 6): any sample or fixture data must be
 synthetic. No real commitments, names or account details.
+
+## Codex review and correction — add5b2b
+
+Codex now explicitly owns this correction under the standing product mandate. Continue the existing FC-008 weekly-calendar branch from add5b2b99f9f67c42824507a7237a404817882f0; preserve its work and current production ancestry. This correction is issued after the handoff branch's PROMOTE_REQUESTS.md reported the candidate ready for review. It is not authorization for another feature, bootstrap activation, promotion or deployment.
+
+Independent review evidence:
+- 44 assistant dashboard tests and all 5 JavaScript clock tests passed locally.
+- GitHub Actions run 34078322229, job 101608680446 failed: 19 failed, 1457 passed, 37 skipped. Eighteen failures concern unavailable worker namespaces; one is test_mismatched_running_commit_reports_pending. A reported local green suite does not supersede the failed clean CI run.
+- The candidate has no AUTHORIZING_CONTROL_COMMIT, retains FC-001 placeholder STATE.json, and has an empty implementation handoff. Canonical handoff still reports FC-002.
+- schedule_state({"connected": false, "events": []}) independently returns ok, exactly like a healthy empty schedule. The renderer only distinguishes unreachable from normal, so requirement 6 remains incomplete.
+- The decoration toggle clears the drifting layer only; dayCard still emits the month motif unconditionally. Requirement 9 asks that decoration be disableable.
+
+Required correction:
+1. Carry an honest schedule/integration state through the actual read-only data path and render healthy-empty, unreachable, disconnected/unconfigured, and unknown distinctly. The current events endpoint does not establish integration connection health; do not invent that evidence or infer connected from a nonempty wrapper object. Use existing connection metadata where available; where it cannot be established, say unknown rather than showing a healthy clear week. Preserve local commitments when an external integration is disconnected. Add backend and rendered-output regression coverage for these states.
+2. Make Decor off suppress seasonal decorative motifs as well as animated glyphs, persist after refresh, and preserve status/date information. Exercise the real rendering path, including pending/countered labels, keyboard access, narrow layout and reduced motion. Provide synthetic visual verification at phone and desktop widths; no private calendar data in evidence.
+3. Make the full CI gate pass on the exact bound candidate in a fresh Linux checkout. Bounded scope expansion: incorporate the necessary CI namespace-capability setup and hermetic deployment-status test corrections already reviewed in the bootstrap, with containment tests actually exercised. Do not use unsandboxed execution, widen skips to hide failures, or import unrelated release infrastructure/product changes. Report any remaining clean-checkout failure accurately.
+4. Bind this task to the new control STATE.json epoch and its directive_commit, with matching FC-008 metadata. Publish the exact final SHA and completed canonical handoff, TASK_BRANCH and AUTHORIZING_CONTROL_COMMIT. Preserve the historical FC-002 handoff in git history; identify FC-008 clearly as the new handoff. Run the full suite after binding, then stop.
+5. Keep the seven-day acceptance rule unambiguous: today plus six days. The previous wording about five days after tomorrow was inconsistent with that rule and is corrected above.
+
+FC-002 remains paused and unaccepted; its latest review is PO_REVIEW_5c5d64f.md. No queued money/paycheck feature is authorized by this directive. No direct promotion, bypass, credential/account changes, spending, or host activation is authorized. Only Codex may accept; only the deterministic release service may promote after a separate valid approval.
