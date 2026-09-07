@@ -49,7 +49,16 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
     # month-to-date total computes to $0 purely because the month is empty —
     # that is arithmetic, not evidence, and must render as unknown.
     month_ingested = fr.get("month_ingested")
-    if ingest_days is not None:
+    # A truncated fetch window is not evidence of what a month cost: it
+    # understates spend, so every budget reads healthier than it is. Same
+    # class of error as a stale ledger, so it pauses guidance the same way.
+    window_complete = fr.get("window_complete", True) is not False
+    if not window_complete:
+        fresh = False
+        signal = "incomplete_window"
+        paused_reason = ("more transactions exist this month than were read, "
+                         "so these totals are a partial view")
+    elif ingest_days is not None:
         fresh = ingest_days < INGEST_MAX_DAYS
         signal = "ingest"
         paused_reason = (None if fresh else
@@ -164,6 +173,7 @@ def budget_status(budgets_cfg: list, month: dict, categories: dict,
                   "days_elapsed": d, "days_left": r},
         "freshness": {"ingest_days": ingest_days, "activity_days": activity_days,
                       "signal": signal, "current_ok": fresh,
+                      "window_complete": window_complete,
                       "month_ingested": month_ingested,
                       "paused_reason": paused_reason},
         "budgets": budgets_out,
