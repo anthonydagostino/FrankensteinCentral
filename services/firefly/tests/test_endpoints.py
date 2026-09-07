@@ -52,6 +52,7 @@ class StubFirefly:
             _group(2, "Shell", "38.00", "withdrawal", "Transportation", "2026-08-24"),
             _group(3, "Paycheck", "1500.00", "deposit", None, "2026-08-28"),
         ]
+        self.bills = []            # Firefly's declared bills, if any
         self.calls = []
         outer = self
 
@@ -103,7 +104,9 @@ class StubFirefly:
                                   reverse=True)
                     return self._j({"data": rows})
                 if u.path == "/api/v1/bills":
-                    return self._j({"data": []})
+                    return self._j({"data": [
+                        {"id": str(i), "attributes": b}
+                        for i, b in enumerate(outer.bills, 1)]})
                 if u.path == "/api/v1/insight/expense/category":
                     return self._j([])
                 return self._j({"data": []})
@@ -357,3 +360,150 @@ def test_cycle_payload_matches_what_the_budget_service_reads(firefly, client, mo
     for row in d["deposits"] + d["withdrawals"] + d["transfers"]:
         assert {"date", "desc", "amount", "category", "source",
                 "destination"} <= set(row)
+
+
+def test_cycle_reports_a_truncated_window_as_incomplete(firefly, client, monkeypatch):
+    """PO review P2: the page cap is a resource limit, not a statement about
+    the ledger. A capped walk must be published as incomplete so consumers
+    suppress totals rather than understating spending confidently."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
+    d = client.get("/cycle").json()
+    assert d["window"]["complete"] is False
+
+
+def test_cycle_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert d["window"]["complete"] is True
+
+
+def _always_capped(real):
+    """Wrap the real fetch so it reports having stopped at the page cap."""
+    async def wrapper(*a, **kw):
+        rows = await real(*a, **kw)
+        rows.complete = False
+        return rows
+    return wrapper
+
+
+# ---- /history: the raw material for recurrence detection ----------------
+
+def test_history_returns_withdrawals_with_the_window_it_actually_read(firefly, client, monkeypatch):
+    """`window.start` is not decoration downstream: it is the only thing that
+    separates "this charge is new" from "this is the oldest charge I can
+    see" (services/budget/app/recurring.py)."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/history").json()
+    assert d["connected"] is True
+    assert d["today"] == "2026-09-04"
+    assert d["window"]["start"] == "2025-07-31"
+    assert d["window"]["lookback_days"] == ff.HISTORY_LOOKBACK_DAYS
+    assert [t["desc"] for t in d["withdrawals"]] == ["Groceries"]
+
+
+def test_history_carries_destination_names(firefly, client, monkeypatch):
+    """The destination account is what groups a subscription; statement text
+    alone splits one merchant into many singletons."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    row = client.get("/history").json()["withdrawals"][0]
+    assert {"date", "desc", "amount", "destination", "category"} <= set(row)
+
+
+def test_history_excludes_transfers_and_deposits(firefly, client, monkeypatch):
+    """Moving $1,100 to Fidelity every payday is a perfect monthly pattern and
+    is not a subscription. Only withdrawals are read."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/history").json()
+    descs = {t["desc"] for t in d["withdrawals"]}
+    assert "ACME PAYROLL" not in descs
+    assert not descs & {"Savings", "Savings 2"}
+
+
+def test_history_drops_future_dated_transactions(firefly, client, monkeypatch):
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    firefly.groups.append(_group(15, "Tomorrow", "99.00", "withdrawal",
+                                 "Groceries", "2026-09-05"))
+    d = client.get("/history").json()
+    assert [t["date"] for t in d["withdrawals"]] == ["2026-09-01"]
+
+
+def test_history_reports_a_truncated_read_as_incomplete(firefly, client, monkeypatch):
+    """Thirteen months is where the page cap is most likely to bite, and it is
+    exactly where a silent truncation would invent 'new subscription'."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
+    assert client.get("/history").json()["window"]["complete"] is False
+
+
+def test_history_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    assert client.get("/history").json()["window"]["complete"] is True
+
+
+def test_history_carries_fireflys_declared_bills(firefly, client, monkeypatch):
+    """A bill the user already told Firefly about is never announced as a
+    discovery, so the list has to make the trip — by name, since the name is
+    what the engine matches on."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    firefly.bills = [{"name": "Verizon", "active": True, "amount_min": "80",
+                      "amount_max": "90", "next_expected_match": "2026-09-15",
+                      "paid_dates": []}]
+    d = client.get("/history").json()
+    assert [b["name"] for b in d["bills"]] == ["Verizon"]
+    assert d["bills"][0]["amount"] == 85.0
+
+
+def test_bills_endpoint_still_answers_from_the_shared_reader(firefly, client, monkeypatch):
+    """/bills and /history read the same normalizer; a change to one must not
+    silently reshape the other."""
+    pin(monkeypatch, date(2026, 9, 4))
+    firefly.bills = [{"name": "Verizon", "active": True, "amount_min": "80",
+                      "amount_max": "90", "next_expected_match": "2026-09-15",
+                      "paid_dates": [{"date": "2026-09-02T00:00:00-04:00"}]},
+                     {"name": "Old Gym", "active": False, "amount_min": "10",
+                      "amount_max": "10", "next_expected_match": "",
+                      "paid_dates": []}]
+    d = client.get("/bills").json()
+    assert d["supported"] is True
+    assert [b["name"] for b in d["items"]] == ["Verizon"]   # inactive dropped
+    assert d["items"][0]["paid_this_month"] is True
+    assert client.get("/history").json()["bills"] == d["items"]
+
+
+def test_history_survives_firefly_having_no_bills_endpoint(firefly, client, monkeypatch):
+    """Bills only ever suppress announcements. Losing them degrades the
+    feature; it must not fail the read."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    firefly.fail.add("bills")
+    d = client.get("/history").json()
+    assert d["connected"] is True
+    assert d["bills"] == []
+    assert d["withdrawals"]
+
+
+def test_history_is_honest_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(ff, "FIREFLY_TOKEN", "")
+    assert client.get("/history").json() == {"connected": False}
+
+
+def test_history_payload_matches_what_the_budget_service_reads(firefly, client, monkeypatch):
+    """Cross-service contract, same reason as /cycle: a renamed key here
+    produces no error at all, just a card that permanently finds nothing
+    (services/budget/app/main.py::_recurring)."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/history").json()
+    assert {"today", "window", "withdrawals", "bills",
+            "ingest_latest", "ingest_days"} <= set(d)
+    assert {"start", "end", "lookback_days", "complete"} <= set(d["window"])

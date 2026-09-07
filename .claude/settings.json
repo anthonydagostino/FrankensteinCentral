@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash scripts/promote.sh *)",
+      "Bash(bash scripts/promote.sh)",
+      "Bash(bash scripts/test.sh)",
+      "Bash(bash scripts/frankenstein-status.sh)",
+      "Bash(bash scripts/verify.sh)"
+    ]
+  }
+}

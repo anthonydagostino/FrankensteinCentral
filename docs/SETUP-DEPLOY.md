@@ -106,13 +106,13 @@ every push and PR on GitHub's own runners, and deploys nothing.
 # The review/production boundary (current design)
 
 **Pushing code to GitHub does not deploy it.** The poller watches one branch —
-`production` — and nothing else. Task branches can be pushed freely so the
-Product Owner can review a real diff before anything reaches the box.
+`production` — and nothing else. Task branches can be pushed freely, so work
+is shareable and reviewable without anything reaching the box.
 
 ```
 claude/FC-###-<slug>   pushed freely, deploys nothing, reviewable on GitHub
         │
-        │  Product Owner accepts + directive says deploy-approved
+        │  bash scripts/promote.sh <sha>   (no approval needed)
         ▼
 scripts/promote.sh     fast-forward only
         │

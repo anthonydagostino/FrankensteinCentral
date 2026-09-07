@@ -396,7 +396,14 @@ const RENDERERS = {
   },
 
   async budget(app, body) {
-    const d = await api("/budget/status");
+    // The full recurring inventory is its own read: /status carries only the
+    // headline (a few events), because the 13-month history behind the list
+    // is too expensive to put on the homepage's hot path.
+    const [d, rec] = await Promise.all([
+      api("/budget/status"),
+      api("/budget/recurring").catch(() => ({ available: false,
+        reason: "the budget service didn't answer" })),
+    ]);
     setMode(d.available === false ? "disconnected" : (d.freshness && !d.freshness.current_ok ? "paused" : ""));
     $(".modal").classList.add("wide");
 
@@ -543,6 +550,41 @@ const RENDERERS = {
     const unbudgeted = ubCats.length ? `
       <p class="empty" style="margin-top:10px">Not in any budget: ${ubCats.map(([k, v]) => `${esc(k)} ${fmt(v)}`).join(" · ")}</p>` : "";
 
+    // ---- recurring charges ----
+    // The Money card shows only what CHANGED; the full inventory lives here.
+    // Every row states its own evidence — how many charges it was inferred
+    // from, and when it was last seen — because a subscription list you
+    // can't audit is a list you can't act on.
+    let recSection = "";
+    if (rec.available) {
+      const badge = { appeared: ["new", "started charging"],
+                      changed: ["price", "changed price"],
+                      resumed: ["back", "charged again after a break"] };
+      const evs = (rec.events || []).map((e) => {
+        const [tag] = badge[e.event] || ["", ""];
+        const what = e.event === "changed"
+          ? `${fmt(e.from)} → <b>${fmt(e.to)}</b>`
+          : `<b>${fmt(e.amount)}</b> ${esc(e.cadence || "")}`;
+        return `<div class="btxn"><span class="grow"><b>${esc(e.name)}</b>
+          <span class="sub"> ${esc(tag)}${e.confidence === "low" ? " · seen twice only" : ""}</span></span>
+          <span class="mono">${what}</span></div>`;
+      }).join("");
+      const rows = (rec.items || []).map((i) => `
+        <div class="btxn"><span class="grow"><b>${esc(i.name)}</b>
+          <span class="sub"> ${esc(i.cadence)} · ${i.charges} charges · last ${esc((i.last_seen || "").slice(5))}${i.known_bill ? " · a Firefly bill" : ""}${i.confidence === "low" ? " · low confidence" : ""}</span></span>
+          <span class="mono">${fmt(i.amount)}</span></div>`).join("");
+      // A truncated read is stated, never rounded off into a total.
+      const note = rec.complete === false
+        ? `<p class="empty" style="margin:4px 0 8px">Only part of the history could be read, so nothing here is claimed as new or newly resumed, and no monthly total is given — these are the charges that were seen.</p>`
+        : (rec.monthly_equivalent
+            ? `<p class="empty" style="margin:4px 0 8px">About <b>${fmt(rec.monthly_equivalent)}/month</b> committed across ${(rec.items || []).filter((i) => i.confidence === "high").length} recurring charges, over the last ${rec.lookback_days || 400} days. Two-charge patterns are listed but not counted.</p>`
+            : "");
+      if (rows || evs)
+        recSection = `<h4>Recurring charges</h4>${note}${evs}${rows}`;
+    } else if (rec.reason) {
+      recSection = `<h4>Recurring charges</h4><p class="empty">Couldn't read the transaction history — ${esc(rec.reason)}. Not "no subscriptions found".</p>`;
+    }
+
     // ---- bills ----
     const billRows = bills.supported ? bills.items.slice(0, 8).map((b) => `
       <div class="btxn"><span class="grow"><b>${esc(b.name)}</b></span>
@@ -555,6 +597,7 @@ const RENDERERS = {
       <div class="vgrid">${vessels}</div>
       ${uncat}${unbudgeted}
       ${billRows ? `<h4>Fixed bills (from Firefly)</h4><div>${billRows}</div>` : ""}
+      ${recSection}
       <div class="hx-btns" style="margin-top:14px">
         <button class="btn btn-ghost" id="bud-edit">Edit budgets</button>
       </div>`;

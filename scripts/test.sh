@@ -39,6 +39,14 @@ for f in gateway/static/*.js; do
 done
 
 echo
+echo "== javascript: unit tests =="
+# The week grid's midnight rollover is date-dependent code living in the
+# browser, so it gets the same calendar sweep the Python date logic gets
+# rather than only a syntax check. Explicit glob: `node --test <dir>` is not
+# portable across the Node versions this runs on.
+TZ=America/New_York node --test gateway/tests/*.test.js
+
+echo
 echo "== shell: syntax =="
 for f in scripts/*.sh; do
   bash -n "$f" && echo "  ok  $f"

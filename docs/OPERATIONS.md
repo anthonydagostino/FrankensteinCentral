@@ -40,15 +40,14 @@ bash scripts/promote.sh              # promote STATE.json's implementation_commi
 bash scripts/promote.sh <sha>        # promote a specific commit
 ```
 
-`promote.sh` refuses unless **all three** hold:
+`promote.sh` refuses on exactly one condition:
 
-1. `STATE.json` status is `accepted` — the Product Owner accepted the work.
-2. `PRODUCT_DIRECTIVE.md` says `Deployment Authorization: deploy-approved`.
-3. The move is a **fast-forward** — production history is never rewritten.
+1. The move must be a **fast-forward** — production history is never rewritten.
 
-Acceptance and deployment authorization are **separate gates**. `accepted` means
-the work is good; it does not mean ship it now. Authorization does not excuse
-failing acceptance. Both, or no promotion.
+There is no acceptance gate and no deployment-authorization gate. They were
+removed on 2026-09-07 at Anthony's instruction as owner. What still stops a bad
+deploy is not an approval: `deploy.sh` runs the full suite on the box before
+touching any container and aborts if it fails.
 
 `--force` / `--bootstrap` skip gates 1 and 2 but **never** gate 3. They exist
 for the one-time bootstrap migration and explicitly approved overrides.
