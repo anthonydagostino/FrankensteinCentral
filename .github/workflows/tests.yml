@@ -47,10 +47,7 @@ jobs:
                  exit 1; }
 
       - name: Run all tests
-        # Containment coverage must never be silently skipped in CI. On this
-        # branch the guarantee is carried by the verify step above -- the
-        # FRANKENSTEIN_REQUIRE_SANDBOX guard itself lands with FC-002, and this
-        # variable is inert until then rather than wrong.
+        # Containment coverage must never be silently skipped in CI.
         env:
           FRANKENSTEIN_REQUIRE_SANDBOX: "1"
         run: bash scripts/test.sh

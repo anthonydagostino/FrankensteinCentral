@@ -57,8 +57,31 @@ at the month boundary — plus year rollovers and Feb 29.
 | `services/firefly/tests/test_date_windows.py` | 1,923 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag, and the pay-cycle window (which must reach both the month start and a full lookback on every day) |
 | `services/firefly/tests/test_endpoints.py` | 27 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour, `/cycle` (transfers and account names present, future dates dropped) |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
+| `services/assistant/tests/test_dashboard.py` | 47 | "next" is not "oldest", the seven-day week window across an 800-day sweep, ordinals incl. 11th/12th/13th, DST days swept hour by hour, leap day, month/year spans, pending+countered survival, conflict detection incl. across midnight, outage-vs-empty |
+| `gateway/tests/weekclock.test.js` | 5 | the browser's midnight rollover, swept over 800 days × 4 times of day, DST days hour by hour, month/year/leap boundaries |
 | `services/budget/tests/test_paycheck.py` | 32 | pay cycle: savings never counted as spending (or subtracted twice), expected-vs-observed deductions, stale ledger pauses $/day but keeps totals, a missed paycheck reports unknown instead of an overspend, month-to-date across month/leap/year edges |
 | `services/budget/tests/test_service.py` | 8 | the wiring: firefly `/cycle` → paycheck engine → `/status` and `/paycheck`, including the cross-service field contract |
+
+## Browser-side date logic
+
+Almost all date work happens server-side, where the Python sweeps can reach
+it. The one exception is *when an open tab should re-fetch* — that has to run
+in the browser. It lives in `gateway/static/weekclock.js` rather than inline
+in `home.js`, takes `now` as an argument instead of calling `new Date()`
+internally, and is swept by `node --test` under a pinned `TZ`, exactly as the
+Python date logic is swept.
+
+```bash
+TZ=America/New_York node --test gateway/tests/*.test.js
+```
+
+`scripts/test.sh` runs this. Pass the file glob, not the directory: `node
+--test <dir>` is not portable across the Node versions this runs on.
+
+Assert against literals, not against the constant under test. A first draft of
+the rollover test compared the fire time to the same `GRACE_MS` that produced
+it, so setting the margin to zero still passed — a test that cannot fail is
+decoration, the same trap the sweep rule exists to avoid.
 
 ## Adding a service's tests
 

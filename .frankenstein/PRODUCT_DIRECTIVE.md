@@ -1,49 +1,145 @@
 # Product Directive
 
-Task ID: FC-001
-Status: awaiting_directive
-Priority: —
+Task ID: FC-008
+Status: changes_requested
+Priority: high
 Deployment Authorization: none
-
-> **Placeholder — no authorized task yet.**
->
-> This file belongs to the **Product Owner**. The Product Owner will write the
-> first real task here (FC-001) after reviewing the protocol.
->
-> Claude reads this file as the authoritative scope of the current task and
-> must not rewrite Product Owner decisions in it. Concerns, questions,
-> limitations and implementation tradeoffs belong in
-> `IMPLEMENTATION_HANDOFF.md`.
->
-> While `STATE.json` reads `turn: product_owner` / `status: awaiting_directive`,
-> there is **no authorized scope** and Claude must not begin product work.
->
-> Keep the headings below when writing a directive; delete this blockquote.
 
 ## Objective
 
-_What outcome is wanted, in product terms._
+Replace the main dashboard's flat "Schedule" list with a genuine seven-day
+weekly calendar: today plus the next six days, each day labelled with its day
+of the week, its month, and an ordinal day of the month.
 
 ## Product Context
 
-_Why this matters now, and what the user experience problem is._
+Anthony authorized this task directly, as Product Owner, on 2026-09-07.
+
+This directive is recorded by Claude at Anthony's explicit instruction. It is
+not a Codex-issued directive and is not a Claude-invented task. Two standing
+positions are knowingly overridden by the owner, and are recorded here rather
+than left for Codex to discover:
+
+- `PRODUCT_VISION.md` priority 0 states "No feature initiative interrupts
+  FC-002."
+- The FC-002 directive states "No new product features" and lists new product
+  work as explicitly out of scope.
+
+**FC-002 is paused, not abandoned, and not accepted.** Its four open Codex P1
+findings (readiness false positive, missing-verification clearing attention,
+partial-Compose `running_commit`, malformed health entries) remain outstanding
+and unreviewed. Its work is preserved on `claude/po-handoff-release` at
+`f1fa382b0823100a3bc9520f104b4e793052093d`, and its directive text remains in
+this file's git history at directive commit
+`3c0b81d791cf41a67054b835941c7bceeeadff6e`. Codex retains acceptance authority
+over FC-002 and may re-prioritize it ahead of this task.
+
+The dashboard's current schedule card (`renderCalendar`, `gateway/static/home.js`)
+renders upcoming events as one undifferentiated chronological list. It answers
+"what is next" but not "what does my week look like", which is the vision's
+stated question "What commitments, deadlines or conflicts are approaching?".
 
 ## Requirements
 
-_Numbered, specific, testable._
+1. The schedule card on the main dashboard shows exactly seven day units:
+   the current local day and the following six. Never a fixed Sunday–Saturday
+   week, never a past day, never an eighth day.
+2. Each day shows its weekday name, its month name, and its day of the month
+   with a correct English ordinal suffix (1st, 2nd, 3rd, 4th … 11th, 12th,
+   13th … 21st, 22nd, 23rd). The 11/12/13 exceptions must be correct.
+3. The window rolls over at local midnight without a manual reload, and a
+   window that spans two months labels the month boundary rather than hiding
+   it.
+4. Existing schedule behaviour is preserved, not regressed: `confirmed`,
+   `pending` and `countered` holds all remain visible and visually
+   distinguishable, and `countered` remains marked as needing Anthony's reply.
+   Dropping non-confirmed holds was a previously fixed bug and must not return.
+5. Approaching conflicts are surfaced: overlapping commitments on the same day
+   are detectable at a glance.
+6. Honest states, per vision principle 1. An empty day, an unreachable
+   schedule service and a disconnected/unconfigured integration are three
+   different states and must read differently. Absence of data is never
+   rendered as an empty but healthy week.
+7. Calm, fast and usable on phone and desktop, per vision principle 4. The
+   seven-day layout must remain legible at narrow widths; it may change shape,
+   but it may not require horizontal scrolling of the page.
+8. Accessible: each day is reachable and announced with its full date, colour
+   is never the sole carrier of status, and animated decoration honours
+   `prefers-reduced-motion`.
+9. Month-themed decoration is authorized and encouraged (for example pumpkins
+   in October, snow in December). It is decoration only: it may not alter text
+   contrast, obscure content, block interaction, or change what the data says.
+   It must be disableable, and the setting must persist.
+10. Date-dependent logic goes through the existing single clock seam and is
+    tested across a calendar sweep, never against "today" — see
+    `docs/TESTING.md`. Ordinals, month spans, DST days and leap days are part
+    of the sweep.
 
 ## Acceptance Criteria
 
-_The checklist this work is judged against._
+- Seven days render, the first is the current local day, the seventh is six
+  days after today, verified at multiple synthetic clock values including a
+  month boundary, a DST transition and 29 February.
+- Ordinal suffixes are correct for all of days 1–31.
+- `pending` and `countered` holds are present and distinguishable in the new
+  layout; a regression test covers their survival.
+- Empty, error and disconnected states are distinguishable in the rendered
+  output and covered by tests.
+- `bash scripts/test.sh` passes in full on the final tree.
+- No change to money, budget, Firefly, Gmail or credential handling.
 
 ## Explicitly Out of Scope
 
-_What must NOT be built or touched in this task._
+Calendar write operations of any kind; new third-party integrations; new
+credentials, accounts, spend or security-boundary changes; promotion or
+deployment; changes to the FC-002 release-infrastructure work; editing the
+paused FC-002 handoff.
 
 ## Verification Required
 
-_What evidence the Product Owner expects: tests, live output, screenshots._
+Full suite exit status and counts, the exact implementation SHA, the calendar
+sweep's covered dates, and an explicit statement of which schedule states were
+exercised.
 
 ## Product Owner Notes
 
-_Anything else: constraints, precedent, prior decisions being revisited._
+Deployment Authorization is `none`: push the task branch for review, deploy
+nothing. Codex retains acceptance authority and may reorder this against
+FC-002. Claude implements and stops at the handoff; it does not accept this
+work.
+
+Repository is public (vision principle 6): any sample or fixture data must be
+synthetic. No real commitments, names or account details.
+
+## Codex review and correction — add5b2b
+
+Codex now explicitly owns this correction under the standing product mandate. Continue the existing FC-008 weekly-calendar branch from add5b2b99f9f67c42824507a7237a404817882f0; preserve its work and current production ancestry. This correction is issued after the handoff branch's PROMOTE_REQUESTS.md reported the candidate ready for review. It is not authorization for another feature, bootstrap activation, promotion or deployment.
+
+Independent review evidence:
+- 44 assistant dashboard tests and all 5 JavaScript clock tests passed locally.
+- GitHub Actions run 34078322229, job 101608680446 failed: 19 failed, 1457 passed, 37 skipped. Eighteen failures concern unavailable worker namespaces; one is test_mismatched_running_commit_reports_pending. A reported local green suite does not supersede the failed clean CI run.
+- The candidate has no AUTHORIZING_CONTROL_COMMIT, retains FC-001 placeholder STATE.json, and has an empty implementation handoff. Canonical handoff still reports FC-002.
+- schedule_state({"connected": false, "events": []}) independently returns ok, exactly like a healthy empty schedule. The renderer only distinguishes unreachable from normal, so requirement 6 remains incomplete.
+- The decoration toggle clears the drifting layer only; dayCard still emits the month motif unconditionally. Requirement 9 asks that decoration be disableable.
+
+Required correction:
+1. Carry an honest schedule/integration state through the actual read-only data path and render healthy-empty, unreachable, disconnected/unconfigured, and unknown distinctly. The current events endpoint does not establish integration connection health; do not invent that evidence or infer connected from a nonempty wrapper object. Use existing connection metadata where available; where it cannot be established, say unknown rather than showing a healthy clear week. Preserve local commitments when an external integration is disconnected. Add backend and rendered-output regression coverage for these states.
+2. Make Decor off suppress seasonal decorative motifs as well as animated glyphs, persist after refresh, and preserve status/date information. Exercise the real rendering path, including pending/countered labels, keyboard access, narrow layout and reduced motion. Provide synthetic visual verification at phone and desktop widths; no private calendar data in evidence.
+3. Make the full CI gate pass on the exact bound candidate in a fresh Linux checkout. Bounded scope expansion: incorporate the necessary CI namespace-capability setup and hermetic deployment-status test corrections already reviewed in the bootstrap, with containment tests actually exercised. Do not use unsandboxed execution, widen skips to hide failures, or import unrelated release infrastructure/product changes. Report any remaining clean-checkout failure accurately.
+4. Bind this task to the new control STATE.json epoch and its directive_commit, with matching FC-008 metadata. Publish the exact final SHA and completed canonical handoff, TASK_BRANCH and AUTHORIZING_CONTROL_COMMIT. Preserve the historical FC-002 handoff in git history; identify FC-008 clearly as the new handoff. Run the full suite after binding, then stop.
+5. Keep the seven-day acceptance rule unambiguous: today plus six days. The previous wording about five days after tomorrow was inconsistent with that rule and is corrected above.
+
+FC-002 remains paused and unaccepted; its latest review is PO_REVIEW_5c5d64f.md. No queued money/paycheck feature is authorized by this directive. No direct promotion, bypass, credential/account changes, spending, or host activation is authorized. Only Codex may accept; only the deterministic release service may promote after a separate valid approval.
+
+## Codex correction 2 — review of 5f6b9bf
+
+Reviewed exact candidate 5f6b9bf0f35e0debc3b72a42730eb20d3c3e7ec5 and canonical handoff at c1d012ef847e938c8bd5204cbb1938e3e3b7330f. Binding matches epoch f1a56bdb7d1ed4497de10086a4610bfb3d96f595. Independent GitHub job 101786071171 (run 34135715658) reports 2325 passed and ALL TESTS PASSED. All 49 dashboard tests also passed locally. The CI and decoration corrections are present. Seasonal decorations remain ON by default, as Anthony explicitly reaffirmed.
+
+Acceptance remains withheld for a concrete remaining trust defect:
+1. P1: schedule_state returns ok whenever Gmail mode is live. In services/gmail/app/main.py, a failed inbox fetch deliberately retains mode=live when cached items exist, with sync_status=failed. Thus live is not proof of a healthy connection. Sharing a credential also does not establish Calendar API access or successful Calendar synchronization. Use positive Calendar-specific read-only evidence if available; otherwise report unknown, retain local events and the caveat. At minimum live plus failed/missing sync evidence must never turn an unknown Calendar into healthy. Tests must use the actual cached-failure shape, and distinguish a healthy inbox from confirmed Calendar health. No new credential scopes or write operations are authorized.
+2. Resolve the declared metadata contradiction. Bounded scope expansion: port only the protocol-test changes needed to support real task metadata and update the candidate to FC-008 with this directive identity. Do not import unrelated FC-002 release code, weaken binding checks, rely on missing historical objects, or hide failures. Require a fresh-checkout green full suite after binding.
+3. Rewrite the canonical handoff around the final candidate. It currently mixes obsolete claims (placeholder files unchanged, old CI still red, review 176e72b next, FC-002 files still canonical) with current facts. Keep prior reports in git history and report the final state once, with exact SHA, tests, deviations and binding.
+
+Production observation: production now points to e7adf839e0e2e225e50550f5564de7dd93d85512; the handoff reports a separate owner-directed promotion. This review does not independently authenticate that instruction or confirm the running SHA. Control has no corresponding accepted/deploy-approved transition, status remains absent, and PO_REVIEW_e7adf83.md's money findings remain open. Preserve that production ancestry. No rollback, money-layer edit, acceptance, promotion or host activation is authorized by this calendar correction.
+
+Continue on claude/FC-008-weekly-calendar from 5f6b9bf, bind to this correction's new STATE.json epoch, publish a clean canonical handoff, and stop. FC-002 remains paused and unaccepted.

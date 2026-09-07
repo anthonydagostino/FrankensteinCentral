@@ -590,6 +590,8 @@ def test_mismatched_running_commit_reports_pending(tmp_path):
         "last_attempt_commit": "d" * 40, "last_result": "tests_failed"},
         branch="HEAD")
     assert "DEPLOYMENT PENDING" in out
+    assert "is not the running commit" in out
+
 
 
 def test_status_does_not_truncate_placeholder_text(tmp_path):
