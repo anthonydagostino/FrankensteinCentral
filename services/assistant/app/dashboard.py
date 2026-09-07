@@ -112,4 +112,8 @@ def month_spend_claim(spending, paycheck):
         # A brand-new month with nothing imported is unknown, not $0 and not
         # "at least $0".
         return None, False
-    return spending.get("month"), spending.get("window_complete") is not True
+    value = spending.get("month")
+    # A lower bound is a claim ABOUT a number. With no number there is nothing
+    # to bound, and pairing them renders as "—" captioned "at least", which
+    # reads as though something is known when nothing is.
+    return value, value is not None and spending.get("window_complete") is not True

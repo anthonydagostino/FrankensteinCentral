@@ -241,3 +241,24 @@ def test_the_home_renderer_actually_consumes_the_lower_bound_flag():
     # And on the headline, not merely somewhere in the file.
     headline = src[src.index("Spent in ") - 800:src.index("Spent in ") + 400]
     assert "month_is_lower_bound" in headline
+
+
+def test_a_lower_bound_is_never_claimed_on_a_number_we_do_not_have():
+    """Found reviewing my own diff, not by a reviewer.
+
+    A truncated window with no month figure returned `(None, True)`, which the
+    card renders as "—" captioned "at least — part of the ledger couldn't be
+    read". That reads as though something is known when nothing is. A lower
+    bound is a claim ABOUT a number; with no number there is nothing to bound.
+    """
+    assert dash.month_spend_claim(
+        {"connected": True, "month": None, "month_ingested": True,
+         "window_complete": False}, {}) == (None, False)
+
+
+def test_a_genuine_zero_month_can_still_be_a_lower_bound():
+    """The guard against fixing that too broadly. $0 spent so far IS a number,
+    and a truncated window means it might really be more."""
+    assert dash.month_spend_claim(
+        {"connected": True, "month": 0.0, "month_ingested": True,
+         "window_complete": False}, {}) == (0.0, True)
