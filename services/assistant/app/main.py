@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import notify
+from .dashboard import firefly_state, parse_event_dt, upcoming_events
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -302,7 +303,8 @@ async def build_overview() -> dict:
     tp = fitness.get("today_plan") or {}
     # Only a *confirmed* event counts as "next up" — a still-pending proposal
     # you sent isn't a real commitment yet, so it shouldn't read as one.
-    events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
+    events = _upcoming_events(cal.get("events", []), datetime.now(LOCAL_TZ),
+                              limit=None, statuses=("confirmed",))
     return {
         "emails_to_reply": len(emails.get("emails", [])),
         "expected_profit": pb.get("expected_profit", 0),
@@ -361,20 +363,27 @@ def _home_time(settings: dict) -> dict:
     }
 
 
+def _parse_event_dt(raw):
+    return parse_event_dt(raw, LOCAL_TZ)
+
+
+def _upcoming_events(events, now, limit=6, statuses=None):
+    return upcoming_events(events, now, LOCAL_TZ, limit=limit, statuses=statuses)
+
+
 def _event_minutes_until(events, now) -> tuple | None:
-    """(minutes_until, event) for the next confirmed event, if parseable."""
+    """(minutes_until, event) for the next confirmed event, if parseable.
+
+    Callers pass an already-bounded, soonest-first list, so the first parseable
+    entry is the next one. It used to be handed every event ever recorded, and
+    the first of those is the oldest — which made the minutes-until figure
+    hugely negative and meant the "starts in 30 min" rules could never fire.
+    """
     for e in events:
-        raw = e.get("starts_at") or e.get("start")
-        if not raw:
+        dt = _parse_event_dt(e.get("starts_at") or e.get("start"))
+        if dt is None:
             continue
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=LOCAL_TZ)
-        mins = (dt - now).total_seconds() / 60
-        return (mins, e)
+        return ((dt - now).total_seconds() / 60, e)
     return None
 
 
@@ -559,7 +568,13 @@ def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) ->
 
 
 def _money(firefly, spending, finance, budget, networth, settings) -> dict:
-    connected = bool(firefly) and firefly.get("connected") is not False
+    # Three states, not two. `_get` swallows a timeout and returns {}, so an
+    # empty payload means the service could not be reached — which is NOT the
+    # same as Firefly answering "I have no credentials". Rendering both as
+    # "not connected — set FIREFLY_URL" sends you to fix configuration that is
+    # already correct, every time a container blinks.
+    state = firefly_state(firefly)
+    connected = state == "ok"
     sp = spending if (spending and spending.get("connected")) else {}
     thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
 
@@ -578,6 +593,15 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     # A brand-new month with nothing imported yet is unknown, not $0.
     month_ingested = sp.get("month_ingested")
     month_spend = None if month_ingested is False else sp.get("month")
+    # The pay-cycle engine computes the same month with savings transfers
+    # taken back out (moving $1,100 to Fidelity is not $1,100 spent), so its
+    # number is the more accurate answer to "what did I spend". Fall back to
+    # the raw withdrawal total when the pay cycle isn't configured.
+    pay = (budget or {}).get("paycheck") or {}
+    pay_month = pay.get("month") or {}
+    month_label = pay_month.get("label")
+    if pay.get("configured") and pay_month.get("spent") is not None:
+        month_spend = pay_month.get("spent")
     today_spend = None if stale else sp.get("today")
     week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
     # Homepage headline: a trailing 30-day window, NOT the calendar month the
@@ -593,6 +617,9 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     if stale:
         obs.append(f"Financial data hasn't been imported for {days_stale} days — "
                    "today's spending is unknown, not zero.")
+    cyc = pay.get("cycle") or {}
+    if pay.get("available") and cyc.get("text"):
+        obs.append(cyc["text"])
     pace = sp.get("pace_pct")
     baseline = sp.get("baseline")
     if pace is not None:
@@ -620,7 +647,12 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     return {
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
+        "month_label": month_label,
+        "month_savings": pay_month.get("savings"),
         "month_ingested": month_ingested,
+        # What's left of the current paycheck after the savings that come out
+        # of it — the homepage's "left to spend". Never a bank balance.
+        "paycheck": _paycheck_brief(pay),
         "last_30": last_30,
         "last_30_trend_pct": last_30_trend,
         "last_30_note": sp.get("last_30_note"),
@@ -632,11 +664,45 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
             f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
         "left_to_spend": _m("left_to_spend").get("display"),
         "income_month": _m("earned").get("value"),
+        "state": state,
+        # Everything the Firefly sub-app puts on screen except its recent
+        # transactions, so the headline figures need no second click.
+        "earned": _m("earned").get("display"),
+        "spent": _m("spent").get("display"),
+        "accounts": [
+            {"name": a.get("name"), "balance": a.get("balance")}
+            for a in ((firefly or {}).get("accounts") or [])
+            if a.get("name")
+        ],
+        "categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True),
         "top_categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True)[:4],
         "recent": (sp.get("recent") or (firefly or {}).get("recent", []))[:6],
         "upcoming_bills": soon[:4],
         "unusual": unusual,
         "observations": obs[:3],
+    }
+
+
+def _paycheck_brief(pay: dict) -> dict:
+    """The homepage's slice of the pay cycle — the numbers behind "left to
+    spend", not the whole cycle payload. Unavailable states keep their reason
+    so the card can say why rather than showing a blank."""
+    pay = pay or {}
+    if not pay.get("available"):
+        return {"available": False, "configured": bool(pay.get("configured")),
+                "reason": pay.get("reason")}
+    c = pay.get("cycle") or {}
+    return {
+        "available": True, "configured": True,
+        "fresh": pay.get("fresh"), "stale_reason": pay.get("stale_reason"),
+        "as_of": pay.get("as_of"),
+        "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
+        "savings_total": c.get("savings_total"),
+        "allocations": c.get("allocations", []),
+        "spendable": c.get("spendable"), "spent": c.get("spent"),
+        "left": c.get("left"), "per_day": c.get("per_day"),
+        "next_payday": c.get("next_payday"), "days_to_next": c.get("days_to_next"),
+        "overdue": c.get("overdue"), "state": c.get("state"), "text": c.get("text"),
     }
 
 
@@ -693,8 +759,16 @@ async def build_home(fresh: bool = False) -> dict:
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
     gmail_emails = emails_r.get("emails", []) if emails_r else []
     gmail_mode = (emails_r or {}).get("mode", "disconnected")
-    events = [e for e in (schedule.get("events", []) if schedule else [])
-              if e.get("status", "confirmed") == "confirmed"]
+    # The calendar card shows what is actually coming, including the pending
+    # and countered holds Bones writes from your sent mail — an interview slot
+    # awaiting a reply is exactly the thing you need to see. Rules that act on
+    # a real commitment still take confirmed events only.
+    all_events = [e for e in (schedule.get("events", []) if schedule else [])
+                  if e.get("status", "confirmed") != "declined"]
+    now_local = datetime.now(LOCAL_TZ)
+    calendar = _upcoming_events(all_events, now_local, limit=6)
+    events = _upcoming_events(all_events, now_local, limit=None,
+                              statuses=("confirmed",))
     settings = settings or {}
 
     t = _home_time(settings)
@@ -720,6 +794,7 @@ async def build_home(fresh: bool = False) -> dict:
         "score": (core or {}).get("score", {"score": 0, "parts": {}}),
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
+        "calendar": calendar,
         "systems": {"healthy": not down, "down": down},
         "last_updated": t["now"],
     }

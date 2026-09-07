@@ -8,6 +8,18 @@ interview email → your calendar).
 Every sub-app is its own independent service (its own container, its own API),
 so they can be developed, deployed, and swapped out separately.
 
+## Documentation
+
+Full reference lives in [`docs/`](docs/README.md):
+
+- [Architecture](docs/ARCHITECTURE.md) — how the pieces fit and where the trust boundaries are
+- [Deployment baseline](docs/DEPLOYMENT-BASELINE.md) — what is actually running on the box right now
+- [Operations runbook](docs/OPERATIONS.md) — deploy, roll back, diagnose
+- [API reference](docs/API-REFERENCE.md) · [Data model](docs/DATA-MODEL.md) · [Configuration](docs/CONFIGURATION.md)
+
+**Pushing is not deploying.** Only the `production` branch is deployed, and only
+`scripts/promote.sh` moves it. See [`.frankenstein/PROTOCOL.md`](.frankenstein/PROTOCOL.md).
+
 ## Architecture
 
 ```
@@ -38,20 +50,35 @@ docker compose up --build
 
 Then open **http://localhost:8080**. Hit **Sync now** to run the assistant.
 
-Each service is also directly reachable (8081–8085) and self-documents its
-endpoints at `/` and `/health`.
+Each service is also directly reachable (8081–8099) and self-documents its
+endpoints at `/` and `/health`. Full port map in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Sub-apps
 
-| App        | Port | What it does                                              | Status |
-|------------|------|-----------------------------------------------------------|--------|
-| Assistant  | 8085 | Reads all sub-apps, briefing, agent lounge (Assistant HQ) | live (mock inputs) |
-| PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring | live via login, mock fallback |
-| Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition            | visits persisted (Postgres) |
-| Gmail      | 8083 | Whole-inbox triage + sent-mail availability detection. Own Google OAuth | OAuth wired, token persisted |
-| Schedule   | 8084 | Your calendar. Idempotent, pending/confirmed color-coded, pushes to real Google Calendar | persisted (Postgres) |
-| Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon    | persisted (Postgres) |
-| Tasks      | 8087 | Your to-do list — quick capture, check things off         | persisted (Postgres) |
+| App        | Port | What it does                                              |
+|------------|------|-----------------------------------------------------------|
+| Assistant  | 8085 | The orchestrator. Reads every sub-app, briefing, agent lounge |
+| Core       | 8098 | Personal state & daily score — study, water, nutrition, Big 3, captures |
+| Gmail      | 8083 | Whole-inbox triage + sent-mail availability detection. Own Google OAuth |
+| Schedule   | 8084 | Your calendar. Idempotent, color-coded, pushes to real Google Calendar |
+| Firefly    | 8097 | Read-only view of your Firefly III — net worth, spend, accounts |
+| Budget     | 8088 | Time-aware budgets over Firefly. Definitions live in core settings |
+| Net Worth  | 8090 | Balances from Firefly, with manual accounts as fallback     |
+| Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon      |
+| Tasks      | 8087 | Your to-do list — quick capture, check things off           |
+| Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition              |
+| Stocks     | 8099 | Portfolio & watchlist. Keyless quotes via Stooq             |
+| Deals      | 8089 | Real discounts spotted in your inbox                        |
+| PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring |
+| Vault      | 8091 | Password health from Vaultwarden. Metadata only, no secrets |
+| Plex       | 8092 | A Plex server shared with you — continue watching, libraries |
+
+Every sub-app persists to the shared Postgres or is stateless over an upstream;
+which is which, and what each one holds, is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+[docs/DATA-MODEL.md](docs/DATA-MODEL.md). Endpoints:
+[docs/API-REFERENCE.md](docs/API-REFERENCE.md).
 
 ## Wiring in the real integrations
 

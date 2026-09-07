@@ -589,3 +589,214 @@ def test_status_does_not_truncate_placeholder_text(tmp_path):
     assert "— (none confirmed)" in out, "running placeholder was truncated"
     assert "(last SUCCESSFUL deploy)" in out, "label was truncated"
     assert "still on no confirmed commit" in out, "fallback text was truncated"
+
+
+# ══ rollback: untracked files must not veto it; collisions must ════════════
+#
+# WHY: the gate was `git status --porcelain`, which counts untracked files. A
+# single stray file in the deployment checkout therefore made rollback refuse —
+# the tool was unavailable in precisely the situation it exists for. But
+# `read-tree -u --reset` silently overwrites untracked files (checkout would
+# error; read-tree does not), so the gate cannot simply be dropped either. It
+# has to separate two questions: is there tracked work to lose, and would the
+# restored tree land on something untracked.
+#
+# These tests run the real scripts/rollback.sh against throwaway repos and
+# assert what it actually does, not what its help text claims.
+
+@pytest.fixture
+def rollback_world(tmp_path):
+    """A repo whose production tip (BAD) deleted paths the known-good commit
+    (GOOD) still carries, leaving those paths free for a test to occupy with
+    untracked files:
+
+        GOOD  app.txt  legacy.txt  conf/site.ini  data  runtime.log
+        BAD   app.txt (changed), the rest deleted
+    """
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    sh("git", "init", "--bare", "-b", "production", str(remote))
+    sh("git", "init", "-b", "production", str(work))
+    sh("git", "config", "user.email", "t@t", cwd=work)
+    sh("git", "config", "user.name", "t", cwd=work)
+
+    (work / "scripts").mkdir()
+    shutil.copy(ROLLBACK, work / "scripts" / "rollback.sh")
+    (work / ".gitignore").write_text("*.log\n")
+    (work / "app.txt").write_text("v1\n")
+    (work / "legacy.txt").write_text("still needed\n")
+    (work / "conf").mkdir()
+    (work / "conf" / "site.ini").write_text("a=1\n")
+    (work / "data").write_text("payload\n")
+    # tracked despite matching .gitignore — ignore rules only govern untracked
+    # paths, so this is how an ignored path can also be a restored path.
+    (work / "runtime.log").write_text("kept\n")
+    sh("git", "add", "-A", cwd=work)
+    sh("git", "add", "-f", "runtime.log", cwd=work)  # -A skips ignored paths
+    sh("git", "commit", "-qm", "good", cwd=work)
+    good = git("rev-parse", "HEAD", cwd=work)
+
+    (work / "app.txt").write_text("v2-broken\n")
+    (work / "legacy.txt").unlink()
+    (work / "data").unlink()
+    (work / "runtime.log").unlink()
+    shutil.rmtree(work / "conf")
+    sh("git", "add", "-A", cwd=work)
+    sh("git", "commit", "-qm", "bad", cwd=work)
+    bad = git("rev-parse", "HEAD", cwd=work)
+
+    sh("git", "remote", "add", "origin", str(remote), cwd=work)
+    sh("git", "push", "-q", "origin", "production", cwd=work)
+    return {"work": work, "remote": remote, "good": good, "bad": bad}
+
+
+def roll(world, *args):
+    return sh("bash", "scripts/rollback.sh", *args,
+              cwd=world["work"], check=False)
+
+
+def prod_tip(world):
+    return git("rev-parse", "production", cwd=world["remote"])
+
+
+def test_rollback_still_refuses_a_tracked_modification(rollback_world):
+    """The original safety gate: uncommitted tracked work is destroyed by
+    read-tree, so it must hard-stop."""
+    (rollback_world["work"] / "app.txt").write_text("uncommitted edit\n")
+    r = roll(rollback_world, rollback_world["good"])
+    assert r.returncode != 0
+    assert "working tree is dirty" in r.stdout + r.stderr
+    assert prod_tip(rollback_world) == rollback_world["bad"], "production moved"
+
+
+def test_an_unrelated_untracked_file_does_not_block_rollback(rollback_world):
+    """The defect: this used to refuse. Nothing in the restored tree touches
+    scratch.txt, so it is not the rollback's business."""
+    scratch = rollback_world["work"] / "scratch.txt"
+    scratch.write_text("notes\n")
+    r = roll(rollback_world, rollback_world["good"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert prod_tip(rollback_world) != rollback_world["bad"], "rollback did not push"
+    assert scratch.read_text() == "notes\n", "an unrelated file was destroyed"
+
+
+def test_rollback_restores_the_good_tree_and_stays_append_only(rollback_world):
+    (rollback_world["work"] / "scratch.txt").write_text("notes\n")
+    assert roll(rollback_world, rollback_world["good"]).returncode == 0
+    new = prod_tip(rollback_world)
+    w = rollback_world["work"]
+    assert git("rev-parse", new + "^{tree}", cwd=w) == \
+        git("rev-parse", rollback_world["good"] + "^{tree}", cwd=w), \
+        "the restored tree is not the good tree"
+    assert git("rev-parse", new + "^", cwd=w) == rollback_world["bad"], \
+        "the rollback commit must sit ON TOP of the bad one"
+    # the bad deploy stays in the audit trail rather than being erased
+    assert sh("git", "merge-base", "--is-ancestor", rollback_world["bad"], new,
+              cwd=w, check=False).returncode == 0
+
+
+def test_untracked_file_on_a_restored_path_is_refused(rollback_world):
+    """legacy.txt exists in the good tree; read-tree would overwrite the
+    untracked copy without a word."""
+    (rollback_world["work"] / "legacy.txt").write_text("unsaved work\n")
+    r = roll(rollback_world, rollback_world["good"])
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "legacy.txt" in out
+    assert prod_tip(rollback_world) == rollback_world["bad"]
+    assert (rollback_world["work"] / "legacy.txt").read_text() == "unsaved work\n"
+
+
+def test_untracked_file_blocking_a_restored_directory_is_refused(rollback_world):
+    """Untracked FILE `conf`, good tree carries `conf/site.ini`: git cannot
+    create the directory, so exact-path equality would have missed this."""
+    (rollback_world["work"] / "conf").write_text("i am a file\n")
+    r = roll(rollback_world, rollback_world["good"])
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "conf" in out
+    assert prod_tip(rollback_world) == rollback_world["bad"]
+
+
+def test_untracked_directory_blocking_a_restored_file_is_refused(rollback_world):
+    """The mirror image: untracked `data/keep.txt` makes `data` a directory,
+    while the good tree carries `data` as a file."""
+    d = rollback_world["work"] / "data"
+    d.mkdir()
+    (d / "keep.txt").write_text("mine\n")
+    r = roll(rollback_world, rollback_world["good"])
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "data" in out
+    assert prod_tip(rollback_world) == rollback_world["bad"]
+    assert (d / "keep.txt").read_text() == "mine\n"
+
+
+def test_an_ignored_file_that_collides_with_nothing_permits_rollback(rollback_world):
+    """Ignored files are not dirt. stray.log is matched by .gitignore and sits
+    on no restored path, so it neither blocks the rollback nor is disturbed."""
+    stray = rollback_world["work"] / "stray.log"
+    stray.write_text("logs\n")
+    r = roll(rollback_world, rollback_world["good"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert stray.read_text() == "logs\n"
+
+
+def test_an_ignored_file_on_a_restored_path_is_refused(rollback_world):
+    """.env is ignored and irreplaceable. Being ignored must not mean being
+    silently overwritten when the restored tree carries that same path."""
+    (rollback_world["work"] / "runtime.log").write_text("live state\n")
+    r = roll(rollback_world, rollback_world["good"])
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "runtime.log" in out
+    assert prod_tip(rollback_world) == rollback_world["bad"]
+    assert (rollback_world["work"] / "runtime.log").read_text() == "live state\n"
+
+
+def test_the_collision_gate_applies_to_the_dry_run_too(rollback_world):
+    """The operator must learn about the collision before committing to it."""
+    (rollback_world["work"] / "legacy.txt").write_text("unsaved\n")
+    r = roll(rollback_world, "--dry-run", rollback_world["good"])
+    assert r.returncode != 0
+    assert "legacy.txt" in r.stdout + r.stderr
+
+
+# ══ there is exactly ONE deployer ══════════════════════════════════════════
+#
+# WHY: .github/workflows/deploy.yml deployed on every push to the task branch
+# and to main, handing GITHUB_REF_NAME straight to deploy.sh — the boundary
+# reopened, in a second mechanism nobody was watching. It was inert only
+# because no self-hosted runner happened to be registered, which is a fact
+# about the host, not a safety property. An autonomous worker pushes task
+# branches on its own, so a dormant deployer is a live risk.
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def test_no_github_workflow_can_deploy():
+    """Any workflow that invokes deploy.sh, or registers a self-hosted runner,
+    is a second deployment path. There must not be one."""
+    for wf in WORKFLOWS.glob("*.yml"):
+        text = wf.read_text()
+        assert "deploy.sh" not in text, f"{wf.name} invokes the deployer"
+        assert "self-hosted" not in text, f"{wf.name} targets a self-hosted runner"
+
+
+def test_the_actions_deploy_workflow_is_gone_and_tests_remain():
+    assert not (WORKFLOWS / "deploy.yml").exists(), \
+        "the GitHub Actions deploy path must not come back"
+    assert (WORKFLOWS / "tests.yml").exists(), \
+        "the test workflow is not a deployer and must stay"
+
+
+def test_setup_doc_names_the_poller_as_the_only_deploy_path():
+    text = DEPLOY_DOC.read_text().replace("*", "")   # ignore markdown emphasis
+    assert "only supported deployment mechanism" in text
+    assert "git checkout production" in text, \
+        "the deployment checkout must be pointed at production, not a task branch"
+    # the removed option must not read as an available choice
+    assert "Option A" not in text and "Option B" not in text, \
+        "the two-deployer choice is gone; do not present it"
+    assert "sudo ./svc.sh install" not in text, \
+        "self-hosted runner install must not be an instruction any more"

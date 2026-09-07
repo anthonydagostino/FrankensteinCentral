@@ -168,6 +168,18 @@ body.cc[data-mode="evening"] {
 .mny-hero { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 12px; }
 .mny-stat .v { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .mny-stat .l { font-size: 12px; color: var(--muted); }
+/* Pay-cycle line: the arithmetic behind "left to spend", spelled out so the
+   headline number can always be retraced. */
+.mny-pay { font-size: 13.5px; line-height: 1.5; margin: 2px 0 0; padding: 8px 11px;
+  border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent-2); }
+.mny-pay .sub { color: var(--muted); font-size: 12px; }
+.mny-pay .warn, .mny-stat .warn { color: #ffcc66; }
+/* Secondary context (rolling 30 days, budget room) — deliberately quieter
+   than the month and pay-cycle numbers above it. */
+.mny-sub { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+.mny-sub b { color: var(--text); font-variant-numeric: tabular-nums; }
+.mny-trend.up { color: var(--up); } .mny-trend.down { color: var(--down); }
 .mny-obs { display: grid; gap: 6px; margin-top: 4px; }
 .mny-obs li { font-size: 13px; color: var(--text); list-style: none; padding-left: 16px; position: relative; }
 .mny-obs li::before { content: "›"; position: absolute; left: 2px; color: var(--accent-2); }
@@ -286,3 +298,34 @@ body.cc[data-mode="evening"] {
    messages (a 72h-old message can sit in an inbox checked 4 minutes ago). */
 .inbox-sync { font-size: 11.5px; color: var(--muted); margin: -2px 0 8px; }
 .inbox-sync.failed { color: #ffcc66; }
+
+/* ---- Schedule card (top of grid) ----------------------------------------
+   Pending and countered holds render distinctly from confirmed ones: the
+   whole point of the Gmail→Cal pipeline is the slot that is still waiting on
+   someone, and a card that showed only confirmed events would hide it. */
+.cc-cal { grid-column: 1 / -1; }
+.cal-rows { display: flex; flex-direction: column; gap: 2px; }
+.cal-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 8px; border-radius: 8px;
+  border-left: 2px solid transparent;
+}
+.cal-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+.cal-row.needs-you { border-left-color: var(--imp); }
+.cal-dot { flex: none; font-size: 11px; line-height: 1; }
+.cal-t { flex: none; min-width: 132px; color: var(--muted); font-size: 12px; }
+.cal-title { flex: 1 1 auto; color: var(--text); font-weight: 600; }
+.cal-tag {
+  flex: none; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+  border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px;
+}
+.cal-row.needs-you .cal-tag { color: var(--imp); }
+@media (max-width: 560px) {
+  .cal-row { flex-wrap: wrap; }
+  .cal-t { min-width: 0; width: 100%; }
+}
+
+/* ---- Firefly figures on the money card ---------------------------------- */
+.mny-ff { margin-top: 10px; }
+.mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }

@@ -32,12 +32,13 @@ EDIT = "2026-09-01T09:00:00-04:00"     # a later edit — must NOT count as inge
 
 
 def _group(gid, desc, amount, ttype, category, txn_date,
-           created=ING, updated=ING):
+           created=ING, updated=ING, source="", destination=""):
     return {"id": str(gid), "attributes": {
         "created_at": created, "updated_at": updated,
         "transactions": [{"description": desc, "amount": amount,
                           "date": txn_date + "T12:00:00-04:00", "type": ttype,
-                          "category_name": category, "currency_code": "USD"}]}}
+                          "category_name": category, "currency_code": "USD",
+                          "source_name": source, "destination_name": destination}]}}
 
 
 class StubFirefly:
@@ -96,6 +97,10 @@ class StubFirefly:
                     if start and end:
                         rows = [g for g in rows if start <=
                                 g["attributes"]["transactions"][0]["date"][:10] <= end]
+                    # Firefly returns transactions newest-first, and
+                    # _ledger_latest() relies on that ordering.
+                    rows = sorted(rows, key=lambda g: g["attributes"]["transactions"][0]["date"],
+                                  reverse=True)
                     return self._j({"data": rows})
                 if u.path == "/api/v1/bills":
                     return self._j({"data": []})
@@ -253,3 +258,102 @@ def test_cache_serves_repeat_reads_without_requerying(firefly, client, monkeypat
 
 def test_health_never_depends_on_the_ledger(firefly, client):
     assert client.get("/health").json()["connected"] is True
+
+
+# ---- the pay cycle ------------------------------------------------------
+
+def _pay_ledger(stub):
+    """A realistic cycle: paid on the 28th, savings moved out the next day,
+    ordinary spending after."""
+    stub.groups = [
+        _group(10, "ACME PAYROLL", "2400.00", "deposit", None, "2026-08-28",
+               source="ACME Corp", destination="Checking"),
+        _group(11, "Savings", "1100.00", "transfer", None, "2026-08-29",
+               source="Checking", destination="Fidelity Brokerage"),
+        _group(12, "Savings", "500.00", "transfer", None, "2026-08-29",
+               source="Checking", destination="Marcus Savings"),
+        _group(13, "Groceries", "212.00", "withdrawal", "Groceries", "2026-09-01",
+               created="2026-09-02T06:00:00-04:00"),
+    ]
+
+
+def test_cycle_returns_deposits_withdrawals_and_transfers(firefly, client, monkeypatch):
+    """Transfers are fetched ONLY here, and only so savings can be told apart
+    from spending. Without them the $1,100 to Fidelity is invisible."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert d["connected"] is True
+    assert [t["desc"] for t in d["deposits"]] == ["ACME PAYROLL"]
+    assert [t["amount"] for t in d["withdrawals"]] == [212.0]
+    assert {t["destination"] for t in d["transfers"]} == {"Fidelity Brokerage",
+                                                          "Marcus Savings"}
+
+
+def test_cycle_carries_account_names(firefly, client, monkeypatch):
+    """A Firefly transfer is usually described "Savings"; only the account
+    name says Fidelity. Dropping it would make the deduction unmatchable."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert d["deposits"][0]["source"] == "ACME Corp"
+    assert d["transfers"][0]["destination"] in ("Fidelity Brokerage", "Marcus Savings")
+
+
+@pytest.mark.parametrize("day", [date(2026, 9, 1), date(2026, 10, 1),
+                                 date(2027, 1, 1), date(2028, 2, 29)])
+def test_cycle_window_spans_the_month_start_on_any_day(firefly, client, monkeypatch, day):
+    """Month-to-date is computed from this one window, so it must reach back
+    to the 1st — including on the 1st itself, where a naive range is
+    zero-length and Firefly answers 422."""
+    pin(monkeypatch, day)
+    _pay_ledger(firefly)
+    r = client.get("/cycle")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["window"]["start"] <= day.replace(day=1).isoformat()
+    assert d["month"]["start"] == day.replace(day=1).isoformat()
+
+
+def test_cycle_drops_future_dated_transactions(firefly, client, monkeypatch):
+    """Firefly allows future dates, and the window deliberately asks for one
+    day past today. Nothing may be counted before it happens."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    firefly.groups.append(_group(14, "Tomorrow", "99.00", "withdrawal",
+                                 "Groceries", "2026-09-05"))
+    d = client.get("/cycle").json()
+    assert [t["date"] for t in d["withdrawals"]] == ["2026-09-01"]
+
+
+def test_cycle_reports_import_recency_not_spending_recency(firefly, client, monkeypatch):
+    """Same distinction the budget layer runs on: when data last ENTERED the
+    ledger, not when money last moved."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert d["ingest_latest"] == "2026-09-02"      # created_at of the import
+    assert d["ingest_days"] == 2
+    assert d["ledger_latest_txn"] == "2026-09-01"  # newest transaction date
+    assert d["month_ingested"] is True
+
+
+def test_cycle_is_honest_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(ff, "FIREFLY_TOKEN", "")
+    assert client.get("/cycle").json() == {"connected": False}
+
+
+def test_cycle_payload_matches_what_the_budget_service_reads(firefly, client, monkeypatch):
+    """Cross-service contract. Nothing errors when a key here is renamed —
+    the budget service just silently computes a pay cycle out of nothing —
+    so the field names it reads are pinned on this side too
+    (services/budget/app/main.py::_paycheck)."""
+    pin(monkeypatch, date(2026, 9, 4))
+    _pay_ledger(firefly)
+    d = client.get("/cycle").json()
+    assert {"today", "month", "deposits", "withdrawals", "transfers",
+            "ingest_days", "days_stale", "month_ingested",
+            "ledger_latest_txn", "importer_url"} <= set(d)
+    for row in d["deposits"] + d["withdrawals"] + d["transfers"]:
+        assert {"date", "desc", "amount", "category", "source",
+                "destination"} <= set(row)

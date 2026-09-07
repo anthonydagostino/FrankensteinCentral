@@ -54,9 +54,11 @@ at the month boundary — plus year rollovers and Feb 29.
 
 | suite | cases | what it protects |
 |---|---|---|
-| `services/firefly/tests/test_date_windows.py` | 1,166 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag |
-| `services/firefly/tests/test_endpoints.py` | 17 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour |
+| `services/firefly/tests/test_date_windows.py` | 1,923 | month boundaries, leap day, year rollover, UTC-vs-local, the clock seam, `$0`-vs-unknown flag, and the pay-cycle window (which must reach both the month start and a full lookback on every day) |
+| `services/firefly/tests/test_endpoints.py` | 27 | real app + stub Firefly: 1st-of-month works, one bad endpoint degrades alone, total failure reports honestly, ingestion provenance (edits and account metadata are not imports), cache behaviour, `/cycle` (transfers and account names present, future dates dropped) |
 | `services/budget/tests/test_engine.py` | 28 | budget states, refunds, Budget Room, freshness signals, empty-month unknown |
+| `services/budget/tests/test_paycheck.py` | 32 | pay cycle: savings never counted as spending (or subtracted twice), expected-vs-observed deductions, stale ledger pauses $/day but keeps totals, a missed paycheck reports unknown instead of an overspend, month-to-date across month/leap/year edges |
+| `services/budget/tests/test_service.py` | 8 | the wiring: firefly `/cycle` → paycheck engine → `/status` and `/paycheck`, including the cross-service field contract |
 
 ## Adding a service's tests
 
