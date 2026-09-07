@@ -79,7 +79,10 @@ async def _build(fresh: bool = False) -> dict:
         txns=month.get("transactions", []),
         freshness={"ingest_days": month.get("ingest_days"),
                    "activity_days": month.get("days_stale"),
-                   "month_ingested": month.get("month_ingested")},
+                   "month_ingested": month.get("month_ingested"),
+                   # A truncated month read understates spend, so budgets
+                   # would look healthier than they are.
+                   "window_complete": month.get("window_complete", True)},
     )
     status.update({
         "paycheck": _paycheck(paycheck_cfg, cycle),

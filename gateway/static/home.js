@@ -321,7 +321,11 @@
     // user can't retrace. "Expected" allocations are labelled as such: they
     // are the configured amount, not something seen in the ledger.
     let payLine = "";
-    if (pay.available && !pay.overdue) {
+    if (pay.available && pay.window_complete === false) {
+      // Every money figure is unknown here, so the arithmetic line would read
+      // "— paycheck − — to savings = —". State the reason instead.
+      payLine = `<p class="mny-pay">💵 ${esch(pay.text || "Only part of this window could be read, so this paycheck's figures can't be stated.")}</p>`;
+    } else if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
           : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
@@ -338,6 +342,10 @@
       // A transfer whose description says "savings" but whose accounts don't.
       // Direction can't be read from a description, so it is named here rather
       // than guessed — silently ignoring it would push "left to spend" up.
+      // A real transfer whose only matching rule is withheld-before-deposit:
+      // deducted by nothing, so the configuration needs fixing.
+      const withheldConflict = (pay.withheld_rule_conflicts || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
       const unmatched = (pay.unmatched_savings || []).length
         ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
       const overlap = (pay.allocation_overlaps || []).length
@@ -345,7 +353,7 @@
       payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
         − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}${withheldConflict}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;

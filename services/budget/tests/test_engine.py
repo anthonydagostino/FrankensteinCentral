@@ -248,3 +248,41 @@ def test_month_with_ingestion_reports_real_zero():
 def test_month_ingested_absent_keeps_totals():
     s = run(cats=_cats(Dining=(100, 0, 3)))
     assert s["totals"]["spent_month"] == 100
+
+
+def test_a_truncated_month_read_pauses_monthly_guidance():
+    """FC-009 finding 3: /month goes through the same paged fetch helper but
+    never consumed its completeness signal, so a truncated month read — which
+    UNDERSTATES spend and makes every budget look healthier than it is —
+    produced confident budget states. Same class as a stale ledger."""
+    s = budget_status(
+        budgets_cfg=[{"id": "d", "name": "Dining", "limit": 300,
+                      "categories": ["Restaurants"]}],
+        month={"label": "September 2026", "days_total": 30,
+               "days_elapsed": 7, "days_left": 23},
+        categories={"Restaurants": {"spent": 50.0, "refunds": 0.0,
+                                    "net": 50.0, "count": 1}},
+        txns=[],
+        freshness={"ingest_days": 0, "activity_days": 0,
+                   "month_ingested": True, "window_complete": False})
+    assert s["freshness"]["current_ok"] is False
+    assert s["freshness"]["window_complete"] is False
+    assert s["freshness"]["signal"] == "incomplete_window"
+    assert "partial view" in s["freshness"]["paused_reason"]
+    assert s["budgets"][0]["state"] == "paused"
+    assert s["budget_room"] is None
+
+
+def test_a_complete_month_read_is_unaffected():
+    s = budget_status(
+        budgets_cfg=[{"id": "d", "name": "Dining", "limit": 300,
+                      "categories": ["Restaurants"]}],
+        month={"label": "September 2026", "days_total": 30,
+               "days_elapsed": 7, "days_left": 23},
+        categories={"Restaurants": {"spent": 50.0, "refunds": 0.0,
+                                    "net": 50.0, "count": 1}},
+        txns=[],
+        freshness={"ingest_days": 0, "activity_days": 0,
+                   "month_ingested": True})
+    assert s["freshness"]["current_ok"] is True
+    assert s["budgets"][0]["state"] != "paused"

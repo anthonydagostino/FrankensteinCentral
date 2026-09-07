@@ -703,6 +703,8 @@ def _paycheck_brief(pay: dict) -> dict:
         "from_savings": c.get("from_savings"),
         "allocation_overlaps": c.get("allocation_overlaps", []),
         "unmatched_savings": c.get("unmatched_savings", []),
+        "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
+        "figures_complete": c.get("figures_complete", True),
         "window_complete": pay.get("window_complete", True),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),

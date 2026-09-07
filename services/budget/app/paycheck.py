@@ -278,6 +278,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     reverse_total = 0.0
     overlaps: list[str] = []
     unmatched_savings: list[dict] = []
+    withheld_only: list[dict] = []
     for j, t in enumerate(cycle_out_txns):
         claims = [i for i, a in enumerate(allocs_cfg)
                   if _savings_role(t, _alloc_terms(a)) == "contribution"]
@@ -298,11 +299,27 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
                         "source": t.get("source") or "",
                         "destination": t.get("destination") or ""})
                     break
-        if claims:
-            claimed[j] = claims[0]
-            if len(claims) > 1:
-                names = ", ".join(str(allocs_cfg[i].get("name") or "?") for i in claims)
+        # A withheld rule describes money the employer took BEFORE the deposit
+        # landed, so it deducts nothing by design. Letting it claim a real
+        # post-deposit movement means that movement is assigned to a rule
+        # which cannot account for it, while the rule that could is told it is
+        # already taken: the contribution silently vanishes and `left` reads
+        # HIGH. Post-deposit rules therefore get first refusal.
+        post = [i for i in claims if not allocs_cfg[i].get("already_withheld")]
+        if post:
+            claimed[j] = post[0]
+            if len(post) > 1:
+                names = ", ".join(str(allocs_cfg[i].get("name") or "?") for i in post)
                 overlaps.append(f"{t.get('desc') or 'a transfer'} matches {names}")
+        elif claims:
+            # ONLY a withheld rule matched a real post-deposit movement. A
+            # pre-deposit rule cannot be what this is, so the configuration is
+            # wrong. Say so rather than deducting zero in silence.
+            claimed[j] = claims[0]
+            withheld_only.append({
+                "desc": t.get("desc") or "", "amount": _amount(t),
+                "date": t.get("date"),
+                "rule": allocs_cfg[claims[0]].get("name") or "Savings"})
         elif any(_savings_role(t, _alloc_terms(a)) == "reverse" for a in allocs_cfg):
             # Money came back OUT of savings. Reported, never added as a
             # contribution, and never silently folded into spendable.
@@ -346,8 +363,18 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     # overstatement of what is safe to spend, from a window already recorded
     # as partial. The month block suppressed its totals for exactly this
     # reason; the headline number has to obey the same rule.
+    # Codex, FC-009 finding 2: a truncated read is unknown in BOTH directions.
+    # Missing withdrawals make `left` an OVERestimate; a missing deposit makes
+    # the paycheck itself wrong, which makes it an UNDERestimate. So no money
+    # figure from this window may be presented as exact, and none is a floor
+    # either — absent completeness evidence reads as unknown, never as proof
+    # that what was read is all there is.
     if not window_complete:
         spent = None
+        paycheck_amount = None
+        spendable = None
+        savings_total = None
+        reverse_total = None
     left = None if (overdue or not window_complete) else round(spendable - spent, 2)
 
     # ---- guidance (only when the ledger can support it) ------------------
@@ -399,14 +426,16 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "start": last_date.isoformat(),
             "days_elapsed": (today - last_date).days + 1,
             "paycheck": paycheck_amount,
+            # False => every money figure in this block is unknown, not exact.
+            "figures_complete": window_complete,
             "paycheck_desc": pays[0].get("desc") or "",
             "paycheck_parts": len(same_day),
             "allocations": allocations,
-            "savings_total": round(savings_total, 2),
+            "savings_total": None if savings_total is None else round(savings_total, 2),
             # Money that came back OUT of savings during the cycle. Shown, not
             # added to spendable: it is available, but claiming it as budget
             # would overstate what this paycheck left you.
-            "from_savings": reverse_total or 0.0,
+            "from_savings": None if reverse_total is None else (reverse_total or 0.0),
             # Configuration that lets two allocations claim one movement. The
             # first rule wins so nothing is double-counted, but the ambiguity
             # is surfaced rather than hidden.
@@ -415,6 +444,9 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             # accounts do not. Direction is unknowable from a description, so
             # these are reported for review rather than guessed at either way.
             "unmatched_savings": unmatched_savings,
+            # Real post-deposit movements whose ONLY matching rule is marked
+            # withheld-before-deposit: deducted by nothing, so named here.
+            "withheld_rule_conflicts": withheld_only,
             "spendable": spendable,
             "spent": spent,
             "left": left,

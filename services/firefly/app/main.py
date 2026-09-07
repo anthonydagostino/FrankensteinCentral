@@ -499,6 +499,10 @@ async def _month_payload() -> dict:
         dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep)
+    # Same page cap as /cycle. A truncated month read understates spending,
+    # which makes every budget look healthier than it is — the dangerous
+    # direction — so the signal is published here too rather than only there.
+    month_complete = wd.complete and dep.complete
     days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
     ingest_days = max(0, (today - ingest_latest).days) if ingest_latest else None
 
@@ -532,6 +536,7 @@ async def _month_payload() -> dict:
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
+        "window_complete": month_complete,
         "days_stale": days_stale,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,

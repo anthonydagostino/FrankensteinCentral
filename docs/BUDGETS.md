@@ -234,15 +234,34 @@ twice, quietly halving what the card said was left. Overlapping configuration
 is now surfaced as `allocation_overlaps` rather than silently producing a
 smaller number.
 
+### Withheld rules never claim a real movement
+
+An allocation marked `already_withheld` describes money the employer took
+**before** the deposit landed, so it deducts nothing by design. Single
+assignment (above) originally took the first matching rule regardless, so a
+pre-deposit rule could claim a genuine post-payday transfer and then deduct
+zero — the contribution vanished and "left to spend" read high. Post-deposit
+rules now get first refusal. If a real movement matches **only** a withheld
+rule, the configuration is wrong: it is reported as
+`withheld_rule_conflicts` and named on the card, never silently zeroed.
+
 ### A truncated window is not a total
 
 `/cycle` pages Firefly under a cap. Hitting that cap means the window is a
 **partial view**, not a small ledger, so `window.complete` is published and the
-engine treats it exactly like a stale ledger: month totals go `null`, and
-`spent`, `left`, per-day guidance and the calm `state` are all suppressed with
-the reason stated. `left` is `paycheck − savings − spent`, so a truncated
-withdrawal read biases it **upward** — publishing it from a window already
-recorded as partial is the one number that must not survive. Undercounting spending
+engine treats it exactly like a stale ledger.
+
+**Every** money figure in the cycle goes `null`, not just the derived ones.
+The error runs in both directions: missing withdrawals make `left` an
+*overestimate*, while a missing deposit makes the paycheck itself wrong and
+`left` an *underestimate*. So none of these numbers is a floor, and absent
+completeness evidence reads as unknown rather than as proof that what was read
+is all there is. `figures_complete: false` marks the whole block.
+
+`/month` publishes the same signal, and the **monthly budget engine** consumes
+it: a truncated month read understates spend, which would make every budget
+look healthier than it is, so it pauses guidance with
+`signal: "incomplete_window"`. Undercounting spending
 confidently is the failure mode this prevents.
 
 ### What it refuses to claim

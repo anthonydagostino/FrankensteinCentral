@@ -556,3 +556,64 @@ def test_account_matched_savings_is_not_flagged_as_unmatched():
                            source="Checking", destination="Fidelity")])["cycle"]
     assert c["savings_total"] == 150.0
     assert c["unmatched_savings"] == []
+
+
+# ---- Codex FC-009 review -------------------------------------------------
+
+def test_a_withheld_rule_never_consumes_a_real_movement():
+    """FC-009 finding 1. Single-assignment took first-match-wins without
+    consulting already_withheld, so a pre-deposit rule claimed a real $100
+    post-deposit transfer and then deducted zero by design — the contribution
+    vanished and `left` read $100 high. Confirmed present in both candidates."""
+    cfg = {**CFG, "allocations": [
+        {"name": "401k", "match": ["savings"], "already_withheld": True},
+        {"name": "Savings", "match": ["savings"]}]}
+    c = run(date(2026, 9, 7), cfg=cfg,
+            deposits=[txn(date(2026, 9, 4), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 9, 5), "x", 100.0,
+                           source="Checking", destination="Savings")])["cycle"]
+    assert c["savings_total"] == 100.0
+    assert c["left"] == 1900.0
+    allocs = {a["name"]: a for a in c["allocations"]}
+    assert allocs["Savings"]["amount"] == 100.0      # the rule that can account for it
+    assert allocs["401k"]["amount"] == 0.0           # still deducts nothing, correctly
+    assert c["withheld_rule_conflicts"] == []
+
+
+def test_a_movement_matching_only_a_withheld_rule_is_flagged():
+    """The control: when the ONLY matching rule is pre-deposit, the movement
+    still cannot be deducted — but that means the configuration is wrong, so
+    it is named rather than silently zeroed."""
+    cfg = {**CFG, "allocations": [
+        {"name": "401k", "match": ["savings"], "already_withheld": True}]}
+    c = run(date(2026, 9, 7), cfg=cfg,
+            deposits=[txn(date(2026, 9, 4), "PAYROLL", 2000.0)],
+            transfers=[txn(date(2026, 9, 5), "x", 100.0,
+                           source="Checking", destination="Savings")])["cycle"]
+    assert c["savings_total"] == 0.0
+    assert len(c["withheld_rule_conflicts"]) == 1
+    assert c["withheld_rule_conflicts"][0]["amount"] == 100.0
+    assert c["withheld_rule_conflicts"][0]["rule"] == "401k"
+
+
+def test_a_truncated_window_makes_every_money_figure_unknown():
+    """FC-009 finding 2, second half. Suppressing `left` alone was not enough:
+    a truncated DEPOSIT read makes the paycheck itself wrong, so `paycheck`
+    and `spendable` were exact-looking numbers from an unknown window. The
+    error runs both ways — missing withdrawals overstate `left`, a missing
+    deposit understates it — so none of these is a floor."""
+    cfg = {**CFG, "allocations": [{"name": "Savings", "amount": 0,
+                                   "match": ["savings"]}]}
+    c = paycheck_cycle(
+        cfg=cfg, today=date(2026, 9, 7), month=month_of(date(2026, 9, 7)),
+        deposits=[txn(date(2026, 9, 4), "PAYROLL", 2000.0)],
+        withdrawals=[txn(date(2026, 9, 5), "Groceries", 250.0,
+                         source="Checking", destination="Store")],
+        transfers=[],
+        freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
+                   "ledger_latest_txn": "2026-09-07", "window_complete": False})["cycle"]
+    assert c["figures_complete"] is False
+    for key in ("paycheck", "spendable", "spent", "left",
+                "savings_total", "from_savings", "per_day"):
+        assert c[key] is None, f"{key} survived a truncated window"
+    assert c["state"] == "unknown"
