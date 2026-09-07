@@ -298,3 +298,40 @@ body.cc[data-mode="evening"] {
    messages (a 72h-old message can sit in an inbox checked 4 minutes ago). */
 .inbox-sync { font-size: 11.5px; color: var(--muted); margin: -2px 0 8px; }
 .inbox-sync.failed { color: #ffcc66; }
+
+/* ---- Schedule card (top of grid) ----------------------------------------
+   Pending and countered holds render distinctly from confirmed ones: the
+   whole point of the Gmail→Cal pipeline is the slot that is still waiting on
+   someone, and a card that showed only confirmed events would hide it. */
+.cc-cal { grid-column: 1 / -1; }
+.cal-rows { display: flex; flex-direction: column; gap: 2px; }
+.cal-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 8px; border-radius: 8px;
+  border-left: 2px solid transparent;
+}
+.cal-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+.cal-row.needs-you { border-left-color: var(--imp); }
+.cal-dot { flex: none; font-size: 11px; line-height: 1; }
+.cal-t { flex: none; min-width: 132px; color: var(--muted); font-size: 12px; }
+.cal-title { flex: 1 1 auto; color: var(--text); font-weight: 600; }
+.cal-tag {
+  flex: none; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+  border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px;
+}
+.cal-row.needs-you .cal-tag { color: var(--imp); }
+@media (max-width: 560px) {
+  .cal-row { flex-wrap: wrap; }
+  .cal-t { min-width: 0; width: 100%; }
+}
+
+/* ---- Firefly figures on the money card ---------------------------------- */
+.mny-ff { margin-top: 10px; }
+.mny-sub { color: var(--muted); font-weight: 400; font-size: 11px; }
+.cat-rows { display: flex; flex-direction: column; gap: 4px; }
+.cat-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.cat-n { flex: 0 0 34%; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-bar { flex: 1 1 auto; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.cat-bar > i { display: block; height: 100%; background: var(--accent-2); border-radius: 999px; }
+.cat-v { flex: none; color: var(--muted); }
