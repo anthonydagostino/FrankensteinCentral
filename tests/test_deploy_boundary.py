@@ -199,12 +199,44 @@ def test_promote_does_not_gate_on_acceptance_or_authorization():
             "deliberately and must not return")
 
 
-def test_promote_accepts_a_plain_commit_and_reports_a_fast_forward():
-    """The whole happy path: name a commit, get a promotion plan, no approval."""
-    r = sh("bash", str(PROMOTE), "--dry-run", "HEAD", cwd=ROOT, check=False)
+def test_promote_accepts_a_plain_commit_and_reports_a_fast_forward(box):
+    """The whole happy path: name a commit, get a promotion plan, no approval.
+
+    Hermetic on purpose. Run against the ambient checkout this asserted "dry
+    run" while HEAD happened to be AHEAD of production -- true on a developer
+    machine, false on the box, where the deploy checkout sits exactly ON
+    production and promote.sh correctly answers "Already promoted. Nothing to
+    do." The suite is the deploy gate, so a test that fails wherever it is
+    actually run blocks every deploy while passing for whoever wrote it.
+    """
+    seed = box["seed"]
+    sha = push_commit(box, "feature", "v2")
+    sh("git", "checkout", "-q", "production", cwd=seed)
+    (seed / "scripts").mkdir(exist_ok=True)
+    shutil.copy(PROMOTE, seed / "scripts" / "promote.sh")
+    r = sh("bash", str(seed / "scripts" / "promote.sh"), "--dry-run", sha,
+           cwd=seed, check=False)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "REFUSED" not in r.stdout
     assert "dry run" in r.stdout
+
+
+def test_promote_says_nothing_to_do_when_the_commit_is_already_production(box):
+    """The other half of the pair, and the state the box is always in.
+
+    Pinning it so the case above cannot be "fixed" back into asserting a dry
+    run for a commit that is already live.
+    """
+    seed = box["seed"]
+    sh("git", "checkout", "-q", "production", cwd=seed)
+    head = git("rev-parse", "HEAD", cwd=seed)
+    (seed / "scripts").mkdir(exist_ok=True)
+    shutil.copy(PROMOTE, seed / "scripts" / "promote.sh")
+    r = sh("bash", str(seed / "scripts" / "promote.sh"), "--dry-run", head,
+           cwd=seed, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSED" not in r.stdout
+    assert "Already promoted" in r.stdout
 
 
 def test_the_protocol_files_that_carried_the_gate_are_gone():
