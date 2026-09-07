@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTOPULL = ROOT / "scripts" / "autopull.sh"
 PROMOTE = ROOT / "scripts" / "promote.sh"
 PROTOCOL = ROOT / ".frankenstein" / "PROTOCOL.md"
-DIRECTIVE = ROOT / ".frankenstein" / "PRODUCT_DIRECTIVE.md"
 
 
 def sh(*args, cwd=None, env=None, check=True):
@@ -181,40 +180,50 @@ def test_poller_never_falls_back_to_the_checked_out_branch():
     assert 'FRANKENSTEIN_BRANCH:-production' in src
 
 
-# ---- deployment authorization semantics --------------------------------
+# ---- there is no approval gate, and that is deliberate -----------------
+#
+# The Product Owner protocol (acceptance status + Deployment Authorization)
+# was removed on 2026-09-07 at Anthony's explicit instruction as owner. These
+# tests exist so it cannot creep back in unnoticed, and so the two things that
+# ARE still load-bearing — the test gate and fast-forward-only — cannot be
+# quietly dropped alongside it.
 
-def test_protocol_documents_push_is_allowed_under_every_auth_level():
+def test_promote_does_not_gate_on_acceptance_or_authorization():
+    """A promotion must not require anyone's approval."""
+    src = PROMOTE.read_text()
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    for gone in ("deploy-approved", "STATE.json", "PRODUCT_DIRECTIVE",
+                 'status" = "accepted', "Deployment Authorization"):
+        assert gone not in code, (
+            f"promote.sh still consults {gone!r} — the approval gate was removed "
+            "deliberately and must not return")
+
+
+def test_promote_accepts_a_plain_commit_and_reports_a_fast_forward():
+    """The whole happy path: name a commit, get a promotion plan, no approval."""
+    r = sh("bash", str(PROMOTE), "--dry-run", "HEAD", cwd=ROOT, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSED" not in r.stdout
+    assert "dry run" in r.stdout
+
+
+def test_the_protocol_files_that_carried_the_gate_are_gone():
+    for gone in ("STATE.json", "PRODUCT_DIRECTIVE.md", "IMPLEMENTATION_HANDOFF.md"):
+        assert not (ROOT / ".frankenstein" / gone).exists(), (
+            f".frankenstein/{gone} is back — the approval protocol was removed")
+
+
+def test_the_removal_is_documented_where_someone_would_look():
+    """A gate that vanishes without explanation gets reinstated by the next
+    person who notices it missing."""
     text = PROTOCOL.read_text().lower()
-    for phrase in ("none", "test-only", "deploy-approved"):
-        assert phrase in text
-    assert "push" in text and "task branch" in text
-    # the crucial sentence: pushing is not deploying
-    assert ("pushing a task branch" in text or "task-branch push" in text)
+    assert "removed" in text
+    assert "no approval gate" in text or "no external reviewer" in text
+    claude_md = (ROOT / "CLAUDE.md").read_text().lower()
+    assert "no product-acceptance gate" in claude_md
 
 
-def test_acceptance_and_deployment_are_documented_as_separate_gates():
-    text = PROTOCOL.read_text().lower()
-    assert "accept" in text and "deployment authorization" in text
-    assert "does not" in text  # e.g. "accepted does not mean deploy now"
-
-
-def test_state_does_not_imply_deployment(tmp_path):
-    """An implementation_commit existing means code was pushed for REVIEW.
-    It must never be read as 'this is running in production'."""
-    state = json.loads((ROOT / ".frankenstein" / "STATE.json").read_text())
-    assert "implementation_commit" in state
-    assert "deployed_commit" not in state, (
-        "deployment state must not live in STATE.json — it is recorded by "
-        "deploy.sh on the box, since only the box knows what actually ran")
-
-
-# ---- promotion guards ---------------------------------------------------
-
-def test_promote_refuses_without_acceptance_and_authorization():
-    r = sh("bash", str(PROMOTE), "--dry-run", cwd=ROOT, check=False)
-    assert r.returncode != 0
-    assert "REFUSED" in r.stdout
-
+# ---- what still protects production, approval or not --------------------
 
 def test_promote_is_fast_forward_only():
     src = PROMOTE.read_text()
@@ -222,13 +231,34 @@ def test_promote_is_fast_forward_only():
     assert "not a fast-forward" in src
 
 
-def test_promote_treats_missing_authorization_as_none():
+def test_the_fast_forward_guard_is_unconditional():
+    """It used to sit outside the gate-skipping branch. Now there is no branch
+    to sit outside of, so assert it is not inside any conditional at all."""
     src = PROMOTE.read_text()
-    assert 'auth="none"' in src
+    code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+    idx = next(i for i, l in enumerate(code) if "merge-base --is-ancestor" in l)
+    # the only enclosing conditional is the one testing the ancestor itself
+    enclosing = [l for l in code[:idx] if l.startswith("if ") or l.startswith("  if ")]
+    assert not any("FORCE" in l or "accepted" in l or "auth" in l for l in enclosing), \
+        "the fast-forward check became conditional on something"
 
 
-def test_directive_carries_the_authorization_field():
-    assert "Deployment Authorization:" in DIRECTIVE.read_text()
+def test_legacy_override_flags_are_inert_not_errors():
+    """--force and --bootstrap used to skip the gates. Scripts and habits still
+    pass them; they must be accepted and do nothing, never crash a deploy."""
+    src = PROMOTE.read_text()
+    assert "--force|--bootstrap" in src
+    r = sh("bash", str(PROMOTE), "--dry-run", "--force", "HEAD", cwd=ROOT, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSED" not in r.stdout
+
+
+def test_the_test_gate_is_not_an_approval_layer_and_survives():
+    """Removing the review layer must not remove the suite that gates deploys."""
+    src = (ROOT / "scripts" / "deploy.sh").read_text()   # DEPLOY is defined below
+    assert "test.sh" in src
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert "tests_failed" in code, "deploy.sh no longer records a failed test gate"
 
 
 # ---- rollback policy: production is append-only -------------------------
@@ -253,7 +283,7 @@ def test_rollback_refuses_on_a_dirty_tree():
 
 def test_force_with_lease_is_documented_as_emergency_only():
     """It may be documented, but never as the normal path."""
-    for doc in (DEPLOY_DOC, PROTOCOL):
+    for doc in (DEPLOY_DOC,):
         text = doc.read_text().lower()
         if "force-with-lease" not in text:
             continue
@@ -264,9 +294,10 @@ def test_force_with_lease_is_documented_as_emergency_only():
             f"{doc.name}: force-with-lease not marked as requiring approval"
 
 
-def test_protocol_lists_branch_rewriting_as_high_risk():
+def test_protocol_says_production_moves_forward():
     text = PROTOCOL.read_text().lower()
-    assert "rewriting the production branch" in text
+    assert "production moves forward" in text
+    assert "never force-push production backwards" in text
 
 
 def test_normal_rollback_is_documented_before_the_emergency_one():
@@ -274,17 +305,6 @@ def test_normal_rollback_is_documented_before_the_emergency_one():
     assert "production moves forward" in text
     assert text.index("rollback.sh") < text.index("force-with-lease"), \
         "the emergency path must not be presented first"
-
-
-def test_promote_bootstrap_flag_keeps_fast_forward_safety():
-    src = PROMOTE.read_text()
-    assert "--bootstrap" in src
-    assert "PROTOCOL GATES SKIPPED" in src
-    # the fast-forward guard must sit OUTSIDE the gate-skipping branch
-    ff = src.index("merge-base --is-ancestor")
-    gate = src.index('if [ "$FORCE" != "1" ]; then')
-    gate_end = src.index("git fetch --prune origin")
-    assert not (gate < ff < gate_end), "fast-forward check must apply even with --bootstrap"
 
 
 # ══ deployment STATE MODEL: desired vs running, not local HEAD ══════════

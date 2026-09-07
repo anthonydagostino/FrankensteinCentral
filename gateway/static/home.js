@@ -600,7 +600,11 @@
     // user can't retrace. "Expected" allocations are labelled as such: they
     // are the configured amount, not something seen in the ledger.
     let payLine = "";
-    if (pay.available && !pay.overdue) {
+    if (pay.available && pay.window_complete === false) {
+      // Every money figure is unknown here, so the arithmetic line would read
+      // "— paycheck − — to savings = —". State the reason instead.
+      payLine = `<p class="mny-pay">💵 ${esch(pay.text || "Only part of this window could be read, so this paycheck's figures can't be stated.")}</p>`;
+    } else if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
           : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
@@ -608,10 +612,27 @@
       }).join(" · ");
       const perDay = pay.per_day != null
         ? ` · about ${money(pay.per_day, 2)}/day keeps you to payday` : "";
+      // Money that came back out of savings is available but is NOT part of
+      // what this paycheck left you, so it is stated separately, never added.
+      const fromSav = pay.from_savings
+        ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
+      // An ambiguous allocation config would otherwise just look like a
+      // smaller number.
+      // A transfer whose description says "savings" but whose accounts don't.
+      // Direction can't be read from a description, so it is named here rather
+      // than guessed — silently ignoring it would push "left to spend" up.
+      // A real transfer whose only matching rule is withheld-before-deposit:
+      // deducted by nothing, so the configuration needs fixing.
+      const withheldConflict = (pay.withheld_rule_conflicts || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
+      const unmatched = (pay.unmatched_savings || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
+      const overlap = (pay.allocation_overlaps || []).length
+        ? `<br><span class="sub warn">⚠ ${esch(pay.allocation_overlaps[0])} — counted once, under the first rule. Fix the match terms in Settings.</span>` : "";
       payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
         − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}${withheldConflict}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
@@ -685,7 +706,7 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.month != null ? money(m.month) : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
+        <div class="mny-stat"><div class="v">${m.month == null ? "—" : (m.month_complete === false ? "at least " : "") + money(m.month)}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">${m.month_complete === false ? "more transactions than could be read — a floor, not the total" : `month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}`}</span></div></div>
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>

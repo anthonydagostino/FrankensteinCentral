@@ -196,6 +196,89 @@ The next payday is `last paycheck + cadence`, where cadence is the **observed**
 gap between the last two paychecks when it is plausible (5–40 days) and the
 configured `cadence_days` otherwise.
 
+### Direction, not just names (PO review of `e7adf83`)
+
+Firefly records both legs of every movement, so **which account the money left
+and which it entered** is the only reliable signal of direction. Two P1 defects
+shipped because matching searched every field indiscriminately:
+
+- a $300 transfer **out of** savings was counted as a $300 contribution **to**
+  it, and
+- a grocery run **paid from** the savings account disappeared from spending
+  entirely.
+
+The rule now:
+
+| what matched | meaning |
+|---|---|
+| destination only | **contribution** — money went into savings |
+| source only | **reverse** — money came out; reported as `from_savings`, never added to spendable |
+| both ends | same account; no net movement |
+| neither (no account data at all) | fall back to description/category — the only case where a description may decide |
+
+A description reading "Savings" says nothing about direction — the same word
+appears on the way in and on the way out — so it is consulted **only** when
+neither account is named.
+
+**This means allocations should match on the account name, not the
+description.** If a movement's description matches a rule but neither of its
+accounts does, direction is unknowable: it is counted neither way and reported
+as `unmatched_savings`, shown on the card. Ignoring it silently would
+understate savings and push "left to spend" **up**, which is the dangerous
+direction — the same class of error as the defect this section fixes, pointed
+the other way.
+
+**Each movement is claimed by at most one allocation**, in configuration
+order. Two rules that both matched "savings" used to deduct the same transfer
+twice, quietly halving what the card said was left. Overlapping configuration
+is now surfaced as `allocation_overlaps` rather than silently producing a
+smaller number.
+
+### Withheld rules never claim a real movement
+
+An allocation marked `already_withheld` describes money the employer took
+**before** the deposit landed, so it deducts nothing by design. Single
+assignment (above) originally took the first matching rule regardless, so a
+pre-deposit rule could claim a genuine post-payday transfer and then deduct
+zero — the contribution vanished and "left to spend" read high. Post-deposit
+rules now get first refusal. If a real movement matches **only** a withheld
+rule, the configuration is wrong: it is reported as
+`withheld_rule_conflicts` and named on the card, never silently zeroed.
+
+### A truncated window is not a total
+
+`/cycle` pages Firefly under a cap. Hitting that cap means the window is a
+**partial view**, not a small ledger, so `window.complete` is published and the
+engine treats it exactly like a stale ledger.
+
+**Every** money figure in the cycle goes `null`, not just the derived ones.
+The error runs in both directions: missing withdrawals make `left` an
+*overestimate*, while a missing deposit makes the paycheck itself wrong and
+`left` an *underestimate*. So none of these numbers is a floor, and absent
+completeness evidence reads as unknown rather than as proof that what was read
+is all there is. `figures_complete: false` marks the whole block.
+
+**A lower bound is not the same as unknown, and the difference is per-figure.**
+Month-to-date spend from a truncated read can only grow — unread withdrawals
+add to it — so the headline renders "**at least** $X" rather than throwing the
+number away. `left` has no such property (missing withdrawals overstate it, a
+missing deposit understates it), so it goes `null`. Month completeness is
+carried **independently of the pay cycle**: a truncated window with no matching
+paycheck takes the unavailable path and loses every cycle field, so a headline
+relying on those would silently print a partial read as an exact total.
+
+**The boundary case:** at exactly `cap × 50` rows every page read was full and
+the cap is spent, so the next page might hold one more row or none. There is
+no evidence either way, and no evidence must not read as complete — so that
+case is reported incomplete. A short final page is the only proof the ledger
+ended inside the window.
+
+`/month` publishes the same signal, and the **monthly budget engine** consumes
+it: a truncated month read understates spend, which would make every budget
+look healthier than it is, so it pauses guidance with
+`signal: "incomplete_window"`. Undercounting spending
+confidently is the failure mode this prevents.
+
 ### What it refuses to claim
 
 - **Expected ≠ observed.** An allocation the ledger hasn't seen yet still

@@ -226,12 +226,27 @@ async def dashboard():
             "connected": _connected()}
 
 
+class _Rows(list):
+    """A transaction list that remembers whether paging reached the end.
+
+    A plain list to every existing caller; `_cycle_payload` reads `.complete`
+    so it can refuse to publish totals built on a truncated window.
+    """
+    complete = True
+
+
 async def _fetch_txns(client, txn_type: str, start: str, end: str,
                       max_pages: int = 6) -> list[dict]:
     """All splits of one type in [start, end], paging through Firefly.
     Transfers are never fetched here — moving money between your own accounts
-    is not spending or income."""
-    out, page = [], 1
+    is not spending or income.
+
+    The page cap is a resource limit, not a statement about the ledger. When
+    it is hit the list is INCOMPLETE, and callers that publish totals must say
+    so: silently returning a truncated window understates spending and can
+    miss the paycheck itself while still producing confident-looking figures.
+    `_fetch_complete` reports it."""
+    out, page = _Rows(), 1
     while page <= max_pages:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
                              params={"type": txn_type, "start": start, "end": end,
@@ -268,6 +283,9 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
         if len(data) < 50:
             break
         page += 1
+    else:
+        # Ran to the cap without a short page: more may remain upstream.
+        out.complete = False
     return out
 
 
@@ -351,6 +369,10 @@ async def _spending() -> dict:
         wd = await _fetch_withdrawals(client, fetch_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd)
+    # Same page cap as /cycle and /month. The homepage month headline is fed
+    # from here, so without this it renders a truncated read as an exact
+    # month-to-date total.
+    spending_complete = wd.complete
 
     def d(s):
         try:
@@ -434,6 +456,10 @@ async def _spending() -> dict:
         "tz": str(LOCAL_TZ),
         "txn_count": len(wd),
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
+        # False => `month` is a LOWER BOUND, not the total. Unread withdrawals
+        # can only add to it, so "at least" is honest where "unknown" would
+        # throw away real information.
+        "window_complete": spending_complete,
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "baseline": baseline, "pace_note": pace_note,
         "earliest_txn": earliest.isoformat() if earliest else None,
@@ -481,6 +507,10 @@ async def _month_payload() -> dict:
         dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep)
+    # Same page cap as /cycle. A truncated month read understates spending,
+    # which makes every budget look healthier than it is — the dangerous
+    # direction — so the signal is published here too rather than only there.
+    month_complete = wd.complete and dep.complete
     days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
     ingest_days = max(0, (today - ingest_latest).days) if ingest_latest else None
 
@@ -514,6 +544,7 @@ async def _month_payload() -> dict:
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
+        "window_complete": month_complete,
         "days_stale": days_stale,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
@@ -583,6 +614,9 @@ async def _cycle_payload() -> dict:
     # Firefly is asked for one day past today so the range is never
     # zero-length; drop anything future-dated so no claim covers days that
     # haven't happened.
+    # A capped page walk is not a complete window. Record it BEFORE the
+    # future-date filter rebuilds the lists as plain lists.
+    complete = wd.complete and dep.complete and tr.complete
     keep = lambda rows: [t for t in rows if t["date"] and t["date"] <= today.isoformat()]  # noqa: E731
     wd, dep, tr = keep(wd), keep(dep), keep(tr)
     return {
@@ -591,7 +625,10 @@ async def _cycle_payload() -> dict:
         "tz": str(LOCAL_TZ),
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+                   "lookback_days": CYCLE_LOOKBACK_DAYS,
+                   # False => Firefly had more than the page cap in this
+                   # window, so these lists are a truncated view of it.
+                   "complete": complete},
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},

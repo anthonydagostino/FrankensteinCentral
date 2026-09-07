@@ -602,6 +602,14 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     pay = (budget or {}).get("paycheck") or {}
     pay_month = pay.get("month") or {}
     month_label = pay_month.get("label")
+    # Month completeness is carried INDEPENDENTLY of the paycheck. A truncated
+    # window with no matching paycheck takes the unavailable brief path, which
+    # drops every pay-cycle field — so if the headline relied on those, it
+    # would quietly print a partial read as an exact month-to-date total.
+    # Either source saying "truncated" makes it truncated; they read one ledger.
+    month_complete = sp.get("window_complete", True) is not False
+    if pay_month.get("complete") is False:
+        month_complete = False
     if pay.get("configured") and pay_month.get("spent") is not None:
         month_spend = pay_month.get("spent")
     today_spend = None if stale else sp.get("today")
@@ -650,6 +658,8 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "connected": connected,
         "today": today_spend, "week": week_spend, "month": month_spend,
         "month_label": month_label,
+        # False => `month` is at least this much, not exactly this much.
+        "month_complete": month_complete,
         "month_savings": pay_month.get("savings"),
         "month_ingested": month_ingested,
         # What's left of the current paycheck after the savings that come out
@@ -700,6 +710,14 @@ def _paycheck_brief(pay: dict) -> dict:
         "as_of": pay.get("as_of"),
         "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
         "savings_total": c.get("savings_total"),
+        # Money that came back OUT of savings, and any ambiguous allocation
+        # config — both surfaced rather than folded silently into a total.
+        "from_savings": c.get("from_savings"),
+        "allocation_overlaps": c.get("allocation_overlaps", []),
+        "unmatched_savings": c.get("unmatched_savings", []),
+        "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
+        "figures_complete": c.get("figures_complete", True),
+        "window_complete": pay.get("window_complete", True),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),
         "left": c.get("left"), "per_day": c.get("per_day"),
