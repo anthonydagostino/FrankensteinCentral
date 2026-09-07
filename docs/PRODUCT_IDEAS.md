@@ -1031,6 +1031,140 @@ dashboard.
 
 ---
 
+# Wave 4 — the charts don't answer the question you have while looking at them
+
+Prompted by the PO: *"when I hover over certain aspects of the pie chart it shows
+more information."* Right instinct, and the code makes the case better than the
+suggestion does — because the pattern being asked for **already exists one card
+over**, and because the donut has two defects underneath the missing hover that
+are worth more than the hover itself.
+
+## 38. The spending donut has no interaction layer, and the pattern is already in the repo
+
+**Problem.** `spendingDonut()` (`gateway/static/app.js:122`) renders each
+category as a bare path:
+
+```js
+return `<path d="${path}" fill="${DONUT_COLORS[i % DONUT_COLORS.length]}" fill-rule="evenodd"></path>`;
+```
+
+(`app.js:145`.) No `<title>`, no `data-*`, no hover state, no focus handler, no
+cursor change.
+The slices are decoration. The legend beside them gives name, percentage and
+dollar amount — so hovering could never tell you *less*, but it also can't tell
+you the thing you actually want, which is **what's inside the slice**.
+
+An HTML chart is interactive by default; the hover layer is part of the
+deliverable, not an upgrade. The only form that legitimately skips it is a bare
+stat tile with no plot — which correctly describes the score ring
+(`home.css:132`, a `conic-gradient` meter) and the `.hx-track` habit bars. Those
+are fine as they are. The donut is not.
+
+**And the answer is already written.** The budget card does exactly what's being
+asked for:
+
+```html
+<div class="vcard st-${b.state}" data-bid="${b.id}" title="Click for transactions">
+  …
+  <div class="bdetail" hidden> … per-budget transactions … </div>
+```
+
+Budget "vessels" carry a hover hint, a stable id, and a hidden drill-down
+holding the real transactions. The donut needs the same treatment, and `firefly`
+already holds the transactions to fill it.
+
+**Proposal.**
+
+1. **Hover and focus on every slice** — category, amount, share of total, and
+   the same detail on keyboard focus, not hover alone. The mark is the hit
+   target; the hovered slice lifts (a slight lighten or a surface ring) so it's
+   visibly responding. Value leads, category name follows.
+2. **Click drills down** to that category's transactions for the window, the way
+   `.bdetail` already does for budgets.
+This got more important on 2026-09-07: production `e7adf83` ("Money card: the
+real pie chart, not bars") promoted this same donut onto the **home screen's
+Money card** (`home.js:399`), so it is no longer tucked inside a modal — it is
+one of the first things on the page, and still inert.
+
+3. **Open up "Other".** Everything past the top 8 rolls into one slice with no
+   way to expand it — and that is precisely where unexamined spending hides.
+   Make it clickable into the full list.
+4. **Insert category names with `textContent`, not string concatenation.**
+   Category names come from Firefly, i.e. from your own transaction
+   descriptions — untrusted input into DOM.
+5. **Fewer segments.** Part-to-whole at a glance holds to about six; past
+   roughly seven colour classes adjacent categories blur regardless of palette.
+   Consider top-5-plus-Other in the donut and the full breakdown in the
+   drill-down table.
+6. **A table view.** Nothing a tooltip shows should be reachable only by
+   hovering — the legend covers this partly today; a table makes it complete
+   and gives the chart an accessible fallback (the `<svg>` currently has no
+   `role` or `aria-label`).
+
+**Why it matters here.** "$412 on Groceries" is a number you can't act on. "$412
+on Groceries, and $180 of it was one Costco run on the 14th" is. The dashboard
+already has both halves and doesn't join them.
+
+**Effort:** S · **Depends on:** `firefly` transactions (exists), the `.bdetail`
+pattern (exists)
+
+**Acceptance signal:** hover any slice and see what it is; click it and see what
+made it up; open "Other" and find nothing hidden.
+
+## 39. The donut's colours fail a colour-blindness check, and change meaning between visits
+
+Two separate defects in one line of code. Both are computable rather than
+matters of taste, so I computed them.
+
+**39a — colour is assigned by rank, not by category.**
+
+```js
+const sorted = [...items].sort((a, b) => b.amount - a.amount);
+…
+fill="${DONUT_COLORS[i % DONUT_COLORS.length]}"
+```
+
+The index is the category's **position in this render**, so if Groceries
+overtakes Rent between two visits, the two swap colours. The rule this breaks is
+a hard one: colour follows the entity, never its rank — a change in the data
+must not repaint the survivors. Today the chart quietly tells you something
+untrue about identity every time your spending order shifts, which is the whole
+point of a categorical palette.
+
+Fix: hash or map the category name to a fixed slot, so a category keeps its
+colour for as long as it exists.
+
+**39b — the palette fails validation on the dark surface.**
+
+I ran the ten `DONUT_COLORS` through a palette validator against the panel
+background (`#161a23`):
+
+```
+[FAIL] Lightness band     9 of 10 outside the band
+[FAIL] Chroma floor       #f2b8d0 → 0.073 (reads gray)
+[FAIL] CVD separation     worst adjacent #c58cff ↔ #4aa3ff  ΔE 1.9 (protan)
+[PASS] Normal-vision floor  worst adjacent ΔE 15.3
+[PASS] Contrast vs surface  all 10 ≥ 3:1
+```
+
+The one that matters: **`#c58cff` (purple) and `#4aa3ff` (blue) are ΔE 1.9 apart
+under protanopia** — effectively the same colour — and they sit at adjacent
+indices, so they are *always* neighbouring slices once you have five or more
+categories. Normal-vision separation is 15.3, barely over the floor of 15, so
+this is marginal even with full colour vision.
+
+Fix: re-step the palette against the dark surface and re-run the validator until
+the checks pass, rather than eyeballing replacements. Secondary encoding —
+direct labels and the 2px surface gap between slices — is what makes a
+borderline pair legal, and the donut currently has neither.
+
+**Effort:** XS (colour stability) + S (palette re-step and validation)
+
+**Acceptance signal:** the validator passes on the dark surface, and a category
+keeps its colour across a month where its rank changes.
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
