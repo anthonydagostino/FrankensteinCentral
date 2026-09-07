@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FrankensteinCentral</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/home.css" />
+  </head>
+  <body class="cc" data-mode="day">
+    <header class="cc-top">
+      <div class="cc-hello">
+        <div class="cc-time" id="cc-clock">—</div>
+        <h1 id="cc-greeting">Good day</h1>
+        <p class="cc-date" id="cc-date"></p>
+      </div>
+      <div class="cc-top-actions">
+        <button class="cc-k" id="cc-open-palette" title="Command palette (Ctrl/⌘ K)">
+          <span>⌘K</span> Quick actions
+        </button>
+        <button class="cc-icon-btn" id="cc-apps" title="Apps & services">▦</button>
+        <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
+        <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
+          <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="cc-since" id="cc-since" hidden></div>
+    <div class="cc-briefing" id="cc-briefing"></div>
+
+    <main class="cc-main" id="cc-grid">
+      <section class="cc-card cc-cal" id="cc-calendar"></section>
+      <section class="cc-card hero" id="cc-donext"><div class="cc-loading">Loading your day…</div></section>
+      <div class="cc-cols">
+        <div class="cc-col">
+          <section class="cc-card" id="cc-inbox"></section>
+          <section class="cc-card" id="cc-health"></section>
+        </div>
+        <div class="cc-col">
+          <section class="cc-card" id="cc-money"></section>
+          <section class="cc-card" id="cc-portfolio"></section>
+          <section class="cc-card" id="cc-today"></section>
+          <section class="cc-card" id="cc-capture"></section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="cc-foot">
+      <span id="cc-updated">—</span>
+      <span id="cc-systems"></span>
+    </footer>
+
+    <!-- Command palette -->
+    <div class="palette-overlay" id="palette" hidden>
+      <div class="palette" role="dialog" aria-modal="true">
+        <input id="palette-input" placeholder="Type a command…  (study 45, water 16, gym, email, firefly, add task…)" autocomplete="off" />
+        <ul class="palette-list" id="palette-list"></ul>
+      </div>
+    </div>
+
+    <!-- Focus timer -->
+    <div class="focus-overlay" id="focus" hidden>
+      <div class="focus-box">
+        <div class="focus-label" id="focus-label">Focus</div>
+        <div class="focus-clock" id="focus-clock">45:00</div>
+        <div class="focus-actions">
+          <button class="btn" id="focus-toggle">Pause</button>
+          <button class="btn btn-ghost" id="focus-done">Log &amp; finish</button>
+          <button class="btn btn-ghost" id="focus-cancel">Cancel</button>
+        </div>
+        <p class="focus-hint">Time is logged to your study total when you finish.</p>
+      </div>
+    </div>
+
+    <!-- Apps & services launcher -->
+    <div class="launcher-overlay" id="launcher" hidden>
+      <div class="launcher" role="dialog" aria-modal="true">
+        <div class="launcher-head">
+          <h2>Apps &amp; services</h2>
+          <button class="close" id="launcher-close" aria-label="Close">×</button>
+        </div>
+        <p class="launcher-hint">Click a tile for its dashboard view · <b>↗</b> opens the full app</p>
+        <div class="launcher-grid" id="launcher-grid"><p class="att-empty">Loading…</p></div>
+        <div class="launcher-foot">
+          <a href="/lounge.html" class="legacy-link" title="The old canvas dashboard, kept around for nostalgia">🦴 Legacy lounge view</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="settings-overlay" id="settings" hidden>
+      <div class="settings-box">
+        <div class="settings-head">
+          <h2>Settings</h2>
+          <button class="close" id="settings-close" aria-label="Close">×</button>
+        </div>
+        <div class="settings-body" id="settings-body"></div>
+        <div class="settings-foot">
+          <button class="btn" id="settings-save">Save</button>
+          <span id="settings-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- App detail modal (reused by app.js) -->
+    <div class="overlay" id="overlay">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="card-icon" id="modal-icon"></span>
+          <div>
+            <h2 id="modal-title"></h2>
+            <span class="mode" id="modal-mode"></span>
+          </div>
+          <button class="close" id="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+    <script src="/home.js"></script>
+  </body>
+</html>

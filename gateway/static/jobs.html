@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Job Hunt Tracker — FrankensteinCentral</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #161a23; --panel-2: #1d2230; --line: #262c3a;
+    --text: #e7ecf3; --muted: #8a93a6; --accent: #6ee7b7; --accent-2: #7c9cff;
+    --down: #ff6b6b; --up: #6ee7b7; --warn: #ffcc66;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 28px 20px 80px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  header { margin-bottom: 22px; }
+  header .top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { color: var(--muted); margin: 0; font-size: 14px; }
+  .badge-temp {
+    background: rgba(255,204,102,0.14); color: var(--warn); border: 1px solid rgba(255,204,102,0.35);
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  a.back { color: var(--accent-2); text-decoration: none; font-size: 13px; }
+  a.back:hover { text-decoration: underline; }
+
+  .factor-table {
+    width: 100%; border-collapse: collapse; margin: 18px 0 30px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    font-size: 13px;
+  }
+  .factor-table th, .factor-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  .factor-table th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .factor-table tr:last-child td { border-bottom: none; }
+  .factor-table td.company { font-weight: 700; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .tag.good { background: rgba(110,231,183,0.16); color: var(--up); }
+  .tag.mid { background: rgba(255,204,102,0.16); color: var(--warn); }
+  .tag.bad { background: rgba(255,107,107,0.16); color: var(--down); }
+  .tag.unknown { background: rgba(138,147,166,0.16); color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card h2 { margin: 0; font-size: 19px; display: flex; align-items: center; gap: 8px; }
+  .card .role { color: var(--accent-2); font-size: 13px; font-weight: 600; }
+  .card .blurb { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 0; }
+  .fact-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 6px; }
+  .col h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .col.pros h4 { color: var(--up); }
+  .col.cons h4 { color: var(--down); }
+  ul.edit-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+  ul.edit-list li { margin-bottom: 4px; outline: none; }
+  ul.edit-list li:focus { background: rgba(124,156,255,0.08); border-radius: 4px; }
+  .add-row { font-size: 12px; color: var(--muted); cursor: pointer; margin-top: 2px; }
+  .add-row:hover { color: var(--accent-2); }
+  .notes {
+    margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px;
+  }
+  .notes h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .notes textarea {
+    width: 100%; min-height: 54px; resize: vertical; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .saved-note { font-size: 11px; color: var(--muted); }
+  .reset-btn {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 8px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+  }
+  .reset-btn:hover { color: var(--down); border-color: var(--down); }
+  .sources { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .sources a { color: var(--muted); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
+
+  .remote-value {
+    background: rgba(124,156,255,0.08); border: 1px solid rgba(124,156,255,0.25);
+    border-radius: 12px; padding: 12px 16px; font-size: 13px; line-height: 1.55;
+    color: var(--text); margin: 0 0 18px;
+  }
+  .remote-value b { color: var(--accent-2); }
+
+  .floor-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    background: rgba(255,204,102,0.07); border: 1px solid rgba(255,204,102,0.25);
+    border-radius: 8px; padding: 8px 10px; margin-top: 2px;
+  }
+  .floor-row label { color: var(--warn); font-weight: 600; white-space: nowrap; }
+  .floor-row input {
+    width: 90px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+  }
+  .floor-row .floor-hint { color: var(--muted); font-size: 11px; }
+
+  .expect-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    background: rgba(124,156,255,0.07); border: 1px solid rgba(124,156,255,0.22);
+    border-radius: 8px; padding: 8px 10px; margin-top: 6px;
+  }
+  .expect-row label { color: var(--accent-2); font-weight: 600; white-space: nowrap; }
+  .expect-row input[type="text"] {
+    width: 110px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+  }
+  .expect-row .expect-hint { color: var(--muted); font-size: 11px; }
+
+  .rank-section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 20px; margin: 0 0 26px;
+  }
+  .rank-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .rank-section h3 { margin: 0; font-size: 17px; }
+  .rank-table-wrap { overflow-x: auto; margin-top: 10px; }
+  table.rank-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  table.rank-table th, table.rank-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: center; }
+  table.rank-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+  table.rank-table td.factor-label { text-align: left; font-weight: 600; white-space: nowrap; }
+  table.rank-table input[type="number"] {
+    width: 48px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 2px; font-size: 13px; text-align: center; font-family: inherit;
+  }
+  table.rank-table input.weight-input { width: 42px; color: var(--accent-2); font-weight: 700; }
+  table.rank-table tr.total-row td { border-bottom: none; border-top: 2px solid var(--line); font-weight: 700; padding-top: 10px; }
+  .rank-result { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .rank-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .rank-row .medal { width: 22px; text-align: center; font-size: 15px; }
+  .rank-row .rname { width: 130px; font-weight: 700; flex-shrink: 0; }
+  .rank-row .bar-track { flex: 1; background: rgba(255,255,255,0.05); border-radius: 6px; height: 16px; overflow: hidden; position: relative; }
+  .rank-row .bar-fill { height: 100%; border-radius: 6px; }
+  .rank-row .rscore { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="top-row">
+        <div>
+          <h1>🧭 Job Hunt Tracker</h1>
+          <p class="sub">Ongoing pros/cons — 233 Analytics · DeepL · AIRIA · EliseAI. Click into any list to edit; it saves in this browser as you go.</p>
+        </div>
+        <span class="badge-temp">TEMPORARY — delete this file once you've decided</span>
+      </div>
+      <p class="sub"><a class="back" href="/">← Back to the hub</a> &nbsp;·&nbsp; Weighting: <b>more remote = better</b>, <b>onsite food = plus</b>, <b>pay = plus</b>. Everything here is a snapshot from public research as of when it was written — verify anything decision-critical directly with the recruiter.</p>
+    </header>
+
+    <table class="factor-table">
+      <thead>
+        <tr><th>Company</th><th>Remote policy</th><th>Pay</th><th>Onsite perks/food</th><th>Career growth</th><th>Work-life balance</th><th>Process stage</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="company">233 Analytics</td><td><span class="tag good">Fully remote (some travel to major cities)</span></td><td><span class="tag bad">$85k base (offer in hand — $40k under floor)</span> + 20% bonus + 10–15% profit share</td><td><span class="tag good">401k, UHC health+dental, 15 PTO</span></td><td><span class="tag bad">Bad — no AI/dev exposure</span></td><td><span class="tag good">Good overall</span></td><td><span class="tag good">✅ Offer in hand</span></td></tr>
+        <tr><td class="company">DeepL</td><td><span class="tag mid">2 days/wk in-person, flexible — location vs. NYC unconfirmed ⚠️</span></td><td><span class="tag good">$150k base (highest)</span></td><td><span class="tag unknown">Unconfirmed</span></td><td><span class="tag mid">Good IF switching jobs later</span></td><td><span class="tag mid">Mixed signals</span></td><td><span class="tag bad">4 more rounds left</span></td></tr>
+        <tr><td class="company">AIRIA (airia20.com)</td><td><span class="tag mid">4–5 days/wk in Brooklyn (= your planned NYC move)</span></td><td><span class="tag good">$120k–$170k range (Feb) + equity</span></td><td><span class="tag unknown">None known</span></td><td><span class="tag good">Great — could become important there</span></td><td><span class="tag bad">Bad — 40+ hr weeks, grind culture</span></td><td><span class="tag unknown">Unclear</span></td></tr>
+        <tr><td class="company">EliseAI</td><td><span class="tag mid">5 days/wk in NYC (= your planned NYC move)</span></td><td><span class="tag mid">$100k–$135k base</span> + equity</td><td><span class="tag good">Meals, fitness + home stipend, relocation</span></td><td><span class="tag mid">Alright — not horrible, not insane</span></td><td><span class="tag mid">Weak-ish (per Glassdoor)</span></td><td><span class="tag good">Furthest along</span></td></tr>
+      </tbody>
+    </table>
+
+    <div class="remote-value">
+      <b>💵 What's remote worth in $?</b> WFH research (Bloom/Barrero/Davis SWAA
+      surveys) puts the <i>average</i> worker's value on remote flexibility at
+      ~7–8% of salary — but that's a population average, not someone who's
+      told me remote is a top-tier priority. Personalized, honest number:
+      <b>~$25k–$30k/yr</b> for fully remote vs. 5-days-onsite somewhere you
+      wouldn't otherwise choose to live.<br/><br/>
+      <b>Caveat that matters more than the number:</b> you've said you want to
+      move to NYC anyway. AIRIA (Brooklyn) and EliseAI (NYC HQ) are both
+      already in that city — so their in-office days aren't "forced
+      relocation," they're just a normal commute in a place you're choosing
+      to live regardless. The remote-tax barely applies to those two. It's
+      DeepL's "2 days/week in-person" location that's the real open
+      question — if that office isn't in or near NYC, that's worth asking
+      about directly before you assume it fits your relocation plan.
+    </div>
+
+    <section class="rank-section">
+      <div class="rank-head">
+        <h3>⚖️ Weighted ranking — ongoing</h3>
+        <button class="reset-btn" id="rank-reset">Reset weights/scores to defaults</button>
+      </div>
+      <p class="sub">Score each company -2 (bad) to +2 (great) per factor, and set how much each factor matters to you (weight). The ranking below re-sorts live and saves in this browser. Update the scores as you get more info — new offers, comp details, whatever changes.</p>
+      <div class="rank-table-wrap">
+        <table class="rank-table" id="rank-table"></table>
+      </div>
+      <div class="rank-result" id="rank-result"></div>
+    </section>
+
+    <div class="grid" id="cards"></div>
+
+    <footer>Research compiled from public sources (company sites, Ashby/BuiltIn/Glassdoor listings, Crunchbase/PitchBook, press coverage) — see each card's sources. Not a substitute for asking your recruiter directly.</footer>
+  </div>
+
+<script>
+const COMPANIES = [
+  {
+    id: "233analytics",
+    name: "233 Analytics",
+    role: "Junior Software Analyst — ✅ WRITTEN OFFER IN HAND ($85k base)",
+    floor: 125000,
+    floorNote: "⚠️ The offer landed at $85k base — a full $40k UNDER this floor, and below even the $100k–$120k you were told to expect. That's the headline: it's a real, confirmed, fully-remote offer, but the base is the lowest of all four companies. Your call whether the remote + benefits + certainty outweigh a base this far under your line (or whether it's worth a counter — the recruiter, Chris Thompson, is waiting on your mailing address, so there's room to reply with a number first).",
+    expected: "$85k (CONFIRMED)",
+    expectedNote: "No longer a guess — the written offer is $85k base + $17k (20%) bonus + typically 10–15% profit sharing. Total cash lands around ~$102k + profit share, but the base itself is below the earlier $100k–$120k estimate and your $125k floor. If you counter, anchor on the specialty of the work (source-code/HDL forensics + expert testimony) and the $100k–$120k comps, not the $85k they opened with.",
+    blurb: "Small technical-litigation consulting boutique — patent/trade-secret/privacy litigation support: source-code & HDL analysis, expert reports, expert testimony, data forensics. HQ Nolensville, TN. ~9 employees, bootstrapped (no VC funding found). CONFIRMED: fully remote, with some travel to major cities. OFFER (via Chris Thompson): Junior Software Analyst — $85k base + $17k (20%) bonus + typically 10–15% profit sharing; subsidized UnitedHealthcare health + dental, 401k access, full remote, opportunity to travel, 15 days PTO, 7 paid holidays. They asked for your mailing address to send the formal offer letter.",
+    pros: [
+      "Actual written offer in hand — the ONLY confirmed offer of the four, so max process certainty (nothing left to \"win,\" just decide)",
+      "Fully remote, confirmed — matches your top stated priority better than any of the other three",
+      "Benefits confirmed: subsidized UnitedHealthcare health + dental, 401k, 15 days PTO, 7 paid holidays",
+      "Good overall work-life balance, especially combined with being fully remote",
+      "20% yearly performance bonus (~$17k) on top of base, plus 10–15% profit share",
+      "Very small team — likely more responsibility, visibility, and faster ramp than a big org",
+    ],
+    cons: [
+      "$85k base is $40k under your $125k floor and below the $100k–$120k you expected — the single biggest strike; on base alone it's the lowest of all four",
+      "Bad for career growth — you won't be working with AI/development, so it doesn't build the skills/resume you likely want long-term",
+      "Profit share (now confirmed as ~10–15%, lower than the 18–20% first floated) is likely discretionary — treat it as maybe-money, so real dependable comp is closer to $85k + the 20% bonus",
+      "Tiny (~9 people), bootstrapped — no funding cushion, higher volatility, fewer resources for benefits",
+      "Thinnest public documentation of the four — hardest to de-risk anything beyond what you've been told directly",
+    ],
+    sources: [
+      ["233analytics.com", "https://233analytics.com/"],
+      ["RocketReach profile", "https://rocketreach.co/233-analytics-llc-profile_b770313fc5336f2a"],
+    ],
+  },
+  {
+    id: "deepl",
+    name: "DeepL",
+    role: "Likely Senior Data Scientist / Research Data Engineer / Software Engineer (API) — exact match unconfirmed",
+    floor: 150000,
+    floorNote: "Already the number on the table — this IS your floor, don't concede after 4 rounds of mutual investment. If somehow countered down, I wouldn't go below $140k. OPEN QUESTION: verify whether the \"2 days/week in-person\" office is actually in NYC — if it's not, that's a real logistics problem for your NYC relocation plan, not a minor detail.",
+    expected: "$150k",
+    expectedNote: "Already confirmed, not a guess — the only one of the four with a firm number in hand.",
+    blurb: "Language-AI company (Cologne HQ, founded 2017) — machine translation, writing assistant, real-time voice translation. 200,000+ business customers. 1,000+ employees, raised $300M at a $2B valuation (May 2024). CONFIRMED: $150k base, 2 days/week in-person but flexible, 4 more interview rounds remaining.",
+    pros: [
+      "$150k confirmed base — highest of the four by a real margin",
+      "Only 2 days/week in-person, and described as flexible — close to remote-friendly, not a hard hybrid mandate",
+      "Good for career growth IF you'd want to switch jobs down the road — strong resume/brand value even if it's less about growing within DeepL itself",
+    ],
+    cons: [
+      "4 more interview rounds remaining (confirmed) — the longest, lowest near-term-probability path of the four; a lot can still go wrong or drag out",
+      "The career-growth upside is conditional on leaving eventually — less relevant if you're looking to grow in place",
+      "Below-average Glassdoor (2.8/5, only 39% would recommend) — recurring management/culture complaints (\"explosive growth invited toxicity\")",
+      "HQ is in Cologne, Germany — verify time zone expectations for a US-based hire",
+    ],
+    sources: [
+      ["DeepL careers", "https://www.deepl.com/en/careers"],
+      ["Ashby job board", "https://jobs.ashbyhq.com/DeepL"],
+      ["CNBC — $2B valuation", "https://www.cnbc.com/2024/05/22/deepl-ai-rival-google-translate-2-billion-valuation.html"],
+      ["Glassdoor reviews", "https://www.glassdoor.com/Reviews/DeepL-Reviews-E2426949.htm"],
+    ],
+  },
+  {
+    id: "airia",
+    name: "AIRIA (airia20.com)",
+    role: "No open role confirmed publicly — you're talking to them directly. Range given Feb: $120k–$170k",
+    floor: 150000,
+    floorNote: "Revised way up from an earlier blind guess: their own stated range tops out at $170k, and the CEO flagging your ML + DoD experience + active clearance as unique is real leverage, not flattery — that combo is genuinely scarce. Floor $150k, target ask $165k-$170k. Grind/WLB cost is real and unrelated to pay, so don't let leverage talk you out of asking near the top.",
+    expected: "$145k–$160k",
+    expectedNote: "A real range in hand ($120k-$170k) plus genuine leverage (rare clearance+ML+DoD combo, softened C# requirement) — I'd expect them to land in the upper-middle of their own range, not the top automatically. Push for the top end given the leverage; don't assume it arrives there without asking.",
+    blurb: "Operational/spatial-intelligence AI for campuses & enterprise (occupancy analytics via existing WiFi, no new hardware) with a Federal/DoD angle. Founded 2020 (hence \"20\" in the domain). Office in Brooklyn. ~8 employees, seed stage ($3.1M raised). NOTE: distinct from airia.com (an unrelated AI security/governance company) — confirm which one you're actually interviewing with.",
+    pros: [
+      "Real range given in Feb: $120k–$170k — the top end matches or beats DeepL's confirmed $150k",
+      "CEO explicitly called out your ML + DoD experience + active security clearance as unique — genuine negotiating leverage, not just flattery, especially given their federal/DoD angle",
+      "Original Feb posting wanted C# — a current team member told you directly he didn't have it either when he started, so treat that requirement as soft, not a blocker",
+      "Great career-growth potential — you could become genuinely important there given how early-stage it is",
+      "Office is in Brooklyn — if you move to NYC as planned, this stops being \"forced relocation\" and is just a normal commute in your own city",
+      "Equity included; small nimble team, direct access to founders",
+    ],
+    cons: [
+      "40+ hour weeks expected — they clearly want a grind; work-life balance here is the weakest of the four, and that's unrelated to location or pay",
+      "4-5 days/week in-person is still a lot even within a city you've chosen to live in",
+      "Seed-stage only ($3.1M raised) — real runway/stability risk, unproven business, though the federal/DoD contract angle may add some durability",
+      "Easy to confuse with a similarly-named, unrelated company (airia.com) — verify you're talking to the right \"Airia\" before going further",
+    ],
+    sources: [
+      ["airia20.com", "https://airia20.com/"],
+      ["PitchBook", "https://pitchbook.com/profiles/company/467764-30"],
+      ["BusinessWire — seed funding", "https://www.businesswire.com/news/home/20250730110388/en/AIRIA-Secures-Seed-Funding-to-Expand-Commercial-and-Federal-Operations"],
+    ],
+  },
+  {
+    id: "eliseai",
+    name: "EliseAI",
+    role: "Multiple roles found in your range — Software Engineer, Sales Ops Manager ($95k-$125k), Solutions Engineer Implementation & Delivery ($135k-$185k). Your posted range: $100k–$135k",
+    floor: 122000,
+    floorNote: "Roughly unchanged net: HQ being in NYC — where you plan to move anyway — means the 5-day-onsite requirement is much less of a sacrifice than it looks on paper, but NYC's cost of living cuts the other way and still argues for a floor well above the bottom of their $100k-$135k range.",
+    expected: "$110k–$125k",
+    expectedNote: "They gave you a real range already ($100k-$135k) — I'd expect a mid-range landing rather than either extreme, absent unusual leverage on your side here (unlike AIRIA, no scarce-skill call-out has been mentioned for this one).",
+    blurb: "Conversational AI automating operations for housing/property management and healthcare (scheduling, leasing, maintenance, patient intake). Claims 1 in 6 US apartments use EliseAI. HQ New York, NY + SF/Boston/Chicago offices. Series E ($250M, Aug 2025, led by a16z), $2.2B valuation, $100M+ ARR. CONFIRMED: $100k-$135k base + equity, 5 days/week fully in-person, relocation provided.",
+    pros: [
+      "HQ is in New York — since you're planning to move there anyway, \"5 days in office\" stops being a real sacrifice and is basically just a normal job in the city you've already chosen",
+      "$100k–$135k base confirmed, plus equity",
+      "All meals provided in office, plus a fitness + home stipend",
+      "Relocation provided",
+      "Career growth is alright — not horrible, not insane, a reasonable middle option",
+      "Well-funded and growing fast (Series E, doubling valuation to $2.2B, headcount doubled in 2025) — real momentum",
+      "Furthest along in your process, per your own context",
+    ],
+    cons: [
+      "Lowest salary ceiling of the group compared to DeepL's $150k and AIRIA's stated $170k top end",
+      "Weakest work-life-balance score sourced across all four companies (2.6/5 on Glassdoor) — this is a culture/workload issue, unrelated to the in-office schedule",
+      "Some Glassdoor complaints about leadership and understaffing (\"spend money on almost anything except hiring enough people\")",
+    ],
+    sources: [
+      ["EliseAI careers", "https://www.eliseai.com/careers"],
+      ["Glassdoor", "https://www.glassdoor.com/Reviews/EliseAI-Reviews-E3133208.htm"],
+      ["TechStartups — Series E", "https://techstartups.com/2025/08/21/eliseai-raises-250m-in-series-e-funding-led-by-andreessen-horowitz-doubling-valuation-to-2-2b/"],
+      ["BuiltIn NYC — office/perks", "https://www.builtinnyc.com/company/eliseai"],
+    ],
+  },
+];
+
+// Weighted ranking calculator — factor scores are -2 (bad) to +2 (great),
+// weights say how much each factor matters to you. Total = sum(score x
+// weight) per company; the list below always re-sorts by that total.
+// Defaults below are my best read of what you've told me so far — every
+// number is just a prefilled starting point, meant to be edited as you
+// learn more (an offer, a comp detail, a changed mind).
+const FACTORS = [
+  { key: "remote", label: "Remote / flexibility", weight: 3 },
+  { key: "pay", label: "Pay", weight: 3 },
+  { key: "growth", label: "Career growth", weight: 2 },
+  { key: "wlb", label: "Work-life balance", weight: 2 },
+  { key: "perks", label: "Perks & benefits", weight: 1 },
+  { key: "certainty", label: "Process certainty", weight: 1 },
+  { key: "totalcomp", label: "Total comp (equity/bonus)", weight: 2 },
+  { key: "stability", label: "Runway / stability risk", weight: 2 },
+];
+const DEFAULT_SCORES = {
+  // totalcomp: upside BEYOND base (equity quality/stage, bonus, relocation) —
+  // base pay itself is already captured by the "pay" factor above.
+  // stability: how likely the company can keep operating/paying you (higher
+  // = lower risk) — separate from "certainty" (how far along YOUR process is).
+  // NOTE on "remote" for airia/eliseai: both offices are in NYC, which you
+  // want to move to regardless — so their in-office requirement costs you
+  // much less than it would a candidate who'd otherwise be forced to
+  // relocate somewhere they didn't choose. Scored accordingly, not as a
+  // flat "days in office" count.
+  // Offer in hand: certainty maxes (+2); pay drops to -2 now that the base is a
+  // confirmed $85k — the lowest of the four and $40k under the floor. perks up
+  // to +2 (401k + UHC health/dental + 15 PTO + 7 holidays confirmed).
+  "233analytics": { remote: 2, pay: -2, growth: -2, wlb: 2, perks: 2, certainty: 2, totalcomp: 0, stability: -2 },
+  "deepl":        { remote: 1, pay: 2, growth: 1, wlb: 0, perks: 0, certainty: -2, totalcomp: -1, stability: 2 },
+  "airia":        { remote: -1, pay: 1, growth: 2, wlb: -2, perks: 1, certainty: 0, totalcomp: 0, stability: -1 },
+  "eliseai":      { remote: 0, pay: -1, growth: 0, wlb: -1, perks: 2, certainty: 1, totalcomp: 1, stability: 2 },
+};
+const RANK_COLORS = { "233analytics": "#6ee7b7", "deepl": "#7c9cff", "airia": "#ff8a5b", "eliseai": "#c58cff" };
+
+function rankWeightKey(factor) { return `jobhunt_rank_weight_${factor}`; }
+function rankScoreKey(id, factor) { return `jobhunt_rank_score_${id}_${factor}`; }
+
+function getWeight(factor, fallback) {
+  const raw = localStorage.getItem(rankWeightKey(factor));
+  return raw !== null ? Number(raw) : fallback;
+}
+function getScore(id, factor, fallback) {
+  const raw = localStorage.getItem(rankScoreKey(id, factor));
+  return raw !== null ? Number(raw) : fallback;
+}
+
+function computeTotals() {
+  const totals = {};
+  for (const c of COMPANIES) {
+    let total = 0;
+    for (const f of FACTORS) {
+      const w = getWeight(f.key, f.weight);
+      const s = getScore(c.id, f.key, DEFAULT_SCORES[c.id][f.key]);
+      total += w * s;
+    }
+    totals[c.id] = total;
+  }
+  return totals;
+}
+
+function renderRanking() {
+  const table = document.getElementById("rank-table");
+  const head = `<tr><th class="factor-label">Factor</th><th>Weight</th>${COMPANIES.map((c) => `<th>${c.name.split(" (")[0]}</th>`).join("")}</tr>`;
+  const rows = FACTORS.map((f) => `
+    <tr data-factor="${f.key}">
+      <td class="factor-label">${f.label}</td>
+      <td><input type="number" class="weight-input" data-weight="${f.key}" min="0" max="5" step="1" value="${getWeight(f.key, f.weight)}" /></td>
+      ${COMPANIES.map((c) => `<td><input type="number" data-score="${c.id}|${f.key}" min="-2" max="2" step="1" value="${getScore(c.id, f.key, DEFAULT_SCORES[c.id][f.key])}" /></td>`).join("")}
+    </tr>`).join("");
+  const totals = computeTotals();
+  const totalsRow = `<tr class="total-row"><td class="factor-label">Weighted total</td><td></td>${COMPANIES.map((c) => `<td>${totals[c.id]}</td>`).join("")}</tr>`;
+  table.innerHTML = head + rows + totalsRow;
+
+  table.querySelectorAll("[data-weight]").forEach((input) => {
+    input.addEventListener("input", () => {
+      localStorage.setItem(rankWeightKey(input.dataset.weight), input.value);
+      renderRanking();
+    });
+  });
+  table.querySelectorAll("[data-score]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const [id, factor] = input.dataset.score.split("|");
+      localStorage.setItem(rankScoreKey(id, factor), input.value);
+      renderRanking();
+    });
+  });
+
+  const ranked = [...COMPANIES].sort((a, b) => totals[b.id] - totals[a.id]);
+  const max = Math.max(...ranked.map((c) => Math.abs(totals[c.id])), 1);
+  const medals = ["🥇", "🥈", "🥉", "4️⃣"];
+  document.getElementById("rank-result").innerHTML = ranked.map((c, i) => {
+    const t = totals[c.id];
+    const pct = Math.max(6, Math.round((Math.abs(t) / max) * 100));
+    const side = t >= 0 ? "left" : "right";
+    return `<div class="rank-row">
+      <span class="medal">${medals[i]}</span>
+      <span class="rname">${c.name.split(" (")[0]}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%;margin-${side}:auto;background:${RANK_COLORS[c.id]}"></div></div>
+      <span class="rscore">${t}</span>
+    </div>`;
+  }).join("");
+}
+
+document.getElementById("rank-reset").addEventListener("click", () => {
+  if (!confirm("Reset all ranking weights and scores back to defaults?")) return;
+  for (const f of FACTORS) localStorage.removeItem(rankWeightKey(f.key));
+  for (const c of COMPANIES) for (const f of FACTORS) localStorage.removeItem(rankScoreKey(c.id, f.key));
+  renderRanking();
+});
+
+const LS_KEY = (id, field) => `jobhunt_${id}_${field}`;
+
+function loadList(id, field, fallback) {
+  try {
+    const raw = localStorage.getItem(LS_KEY(id, field));
+    return raw ? JSON.parse(raw) : fallback;
+  } catch { return fallback; }
+}
+function saveList(id, field, items) {
+  localStorage.setItem(LS_KEY(id, field), JSON.stringify(items));
+  stampSaved(id);
+}
+function loadNotes(id) { return localStorage.getItem(LS_KEY(id, "notes")) || ""; }
+function saveNotes(id, text) { localStorage.setItem(LS_KEY(id, "notes"), text); stampSaved(id); }
+function loadFloor(id, fallback) {
+  const raw = localStorage.getItem(LS_KEY(id, "floor"));
+  return raw !== null ? Number(raw) : fallback;
+}
+function saveFloor(id, value) { localStorage.setItem(LS_KEY(id, "floor"), value); stampSaved(id); }
+function loadExpected(id, fallback) { return localStorage.getItem(LS_KEY(id, "expected")) ?? fallback; }
+function saveExpected(id, value) { localStorage.setItem(LS_KEY(id, "expected"), value); stampSaved(id); }
+function stampSaved(id) {
+  const el = document.getElementById(`saved-${id}`);
+  if (el) el.textContent = "Saved just now (this browser)";
+}
+
+function editableList(items) {
+  return items.map((t) => `<li contenteditable="true" spellcheck="false">${t}</li>`).join("");
+}
+
+function render() {
+  const grid = document.getElementById("cards");
+  grid.innerHTML = COMPANIES.map((c) => `
+    <div class="card" data-id="${c.id}">
+      <h2>${c.name}</h2>
+      <div class="role">${c.role}</div>
+      <p class="blurb">${c.blurb}</p>
+      <div class="floor-row">
+        <label for="floor-${c.id}">Lowest base to take:</label>
+        <input type="number" id="floor-${c.id}" data-floor="${c.id}" step="1000" value="${loadFloor(c.id, c.floor)}" />
+        <span class="floor-hint">${c.floorNote}</span>
+      </div>
+      <div class="expect-row">
+        <label for="expect-${c.id}">Expected actual offer:</label>
+        <input type="text" id="expect-${c.id}" data-expect="${c.id}" value="${loadExpected(c.id, c.expected)}" />
+        <span class="expect-hint">${c.expectedNote}</span>
+      </div>
+      <div class="cols">
+        <div class="col pros">
+          <h4>Pros</h4>
+          <ul class="edit-list" data-field="pros">${editableList(loadList(c.id, "pros", c.pros))}</ul>
+          <div class="add-row" data-add="pros">+ add a pro</div>
+        </div>
+        <div class="col cons">
+          <h4>Cons</h4>
+          <ul class="edit-list" data-field="cons">${editableList(loadList(c.id, "cons", c.cons))}</ul>
+          <div class="add-row" data-add="cons">+ add a con</div>
+        </div>
+      </div>
+      <div class="notes">
+        <h4>Your running notes</h4>
+        <textarea data-field="notes" placeholder="e.g. recruiter said next round is Thursday...">${loadNotes(c.id)}</textarea>
+      </div>
+      <div class="sources">Sources: ${c.sources.map(([label, url]) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`).join(" · ")}</div>
+      <div class="card-foot">
+        <span class="saved-note" id="saved-${c.id}">Not edited yet</span>
+        <button class="reset-btn" data-reset="${c.id}">Reset to research defaults</button>
+      </div>
+    </div>
+  `).join("");
+
+  grid.querySelectorAll(".edit-list").forEach((ul) => {
+    ul.addEventListener("input", () => {
+      const id = ul.closest(".card").dataset.id;
+      const field = ul.dataset.field;
+      const items = Array.from(ul.children).map((li) => li.textContent.trim()).filter(Boolean);
+      saveList(id, field, items);
+    });
+  });
+  grid.querySelectorAll("[data-add]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest(".card");
+      const field = btn.dataset.add;
+      const ul = card.querySelector(`ul[data-field="${field}"]`);
+      const li = document.createElement("li");
+      li.contentEditable = "true";
+      li.textContent = "New point — click to edit";
+      ul.appendChild(li);
+      li.focus();
+      document.execCommand("selectAll", false, null);
+      const id = card.dataset.id;
+      const items = Array.from(ul.children).map((n) => n.textContent.trim()).filter(Boolean);
+      saveList(id, field, items);
+    });
+  });
+  grid.querySelectorAll("textarea[data-field='notes']").forEach((ta) => {
+    ta.addEventListener("input", () => {
+      const id = ta.closest(".card").dataset.id;
+      saveNotes(id, ta.value);
+    });
+  });
+  grid.querySelectorAll("[data-floor]").forEach((input) => {
+    input.addEventListener("input", () => saveFloor(input.dataset.floor, input.value));
+  });
+  grid.querySelectorAll("[data-expect]").forEach((input) => {
+    input.addEventListener("input", () => saveExpected(input.dataset.expect, input.value));
+  });
+  grid.querySelectorAll("[data-reset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.reset;
+      if (!confirm("Reset this card's pros/cons/notes/floor/expected back to the original research? This clears anything you've added.")) return;
+      localStorage.removeItem(LS_KEY(id, "pros"));
+      localStorage.removeItem(LS_KEY(id, "cons"));
+      localStorage.removeItem(LS_KEY(id, "notes"));
+      localStorage.removeItem(LS_KEY(id, "floor"));
+      localStorage.removeItem(LS_KEY(id, "expected"));
+      render();
+    });
+  });
+}
+render();
+renderRanking();
+</script>
+</body>
+</html>
