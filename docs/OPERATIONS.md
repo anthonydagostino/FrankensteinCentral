@@ -155,6 +155,15 @@ git -C ~/FrankensteinCentral rev-parse origin/production
 
 If `running_commit` equals `origin/production`, the deploy already happened.
 
+You should not have to SSH in to learn this. The dashboard footer reads the
+same record and says what is running — and when the last attempt failed, it
+says so and names the older build you are actually looking at. That case used
+to be completely silent from the UI: `deploy.sh` only advances
+`running_commit` on success, so a failed deploy leaves the previous build
+serving every request perfectly. On 2026-09-07 that ran for five poll cycles
+unnoticed. The footer is read-only — `promote.sh` is still the only way to
+move production.
+
 ### A deploy keeps retrying
 
 A commit that fails the test gate is retried on **every** poll, once a minute.
