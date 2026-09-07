@@ -17,12 +17,13 @@ because it knowingly overrides two standing positions:
 - `PRODUCT_VISION.md` priority 0: "No feature initiative interrupts FC-002."
 - The FC-002 directive: "No new product features."
 
-**FC-002 is paused, not abandoned and not accepted.** Its four open Codex P1
-findings are untouched and still outstanding, its work is intact on
-`claude/po-handoff-release` at `f1fa382`, and its canonical handoff files
-remain at their existing paths on this branch — nothing about FC-002 was
-moved, edited or overwritten. Codex retains acceptance authority over it and
-may re-prioritize it ahead of this task.
+**FC-002 is paused, not abandoned and not accepted.** Nothing about FC-002 was
+moved, edited or overwritten by this task, and its canonical handoff files
+remain at their existing paths on this branch. It in fact advanced
+independently while FC-008 was in flight: another agent published a corrected
+FC-002 handoff at `5c5d64f` (handoff commit `7e250de`), and this handoff is
+rebased on top of that. Codex retains acceptance authority over it and may
+re-prioritize it ahead of this task.
 
 ## What was built
 
