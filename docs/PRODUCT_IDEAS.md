@@ -1165,6 +1165,221 @@ keeps its colour across a month where its rank changes.
 
 ---
 
+# Wave 5 — auditing the code that shipped this week
+
+Most of waves 1–3 landed while this document was being written: the unreachable
+/ not-configured split, the systems footer, the clock seam, the score, the
+as-of label, the nudges feed, the deadlines table, the weekly review, sleep,
+snooze, deploy state, recurring detection, and a `tests/test_no_orphans.py`
+guard for the unwired-feature pattern. The new modules are good work —
+`donut.js`, `evcolor.js`, `weekclock.js` and `health.js` are pure, unit-tested,
+and honest in their docstrings about what they can and can't prove.
+
+So this wave audits **the new code**, which nobody has reviewed yet. Four of the
+six findings are in files that did not exist a week ago.
+
+## 40. Generated event hues have no minimum separation — two events in a week can be the same colour
+
+`evcolor.js` hashes an event title to a hue:
+
+```js
+var HUE_FLOOR = 25, HUE_SPAN = 320;
+return "hsl(" + hueOf(event.title || "untitled") + ", 62%, 68%)";
+```
+
+The reasoning in its docstring is right on every point it addresses — status
+beats identity, red is reserved for overlaps, fixed saturation and lightness so
+"no event shouts over its neighbour purely because of where it landed on the
+wheel". But it is silent on the one property a categorical palette exists to
+provide: that two entries are **telling apart**. A hash over a continuous hue
+range guarantees nothing about the gap between the handful of values you
+actually get.
+
+Ten realistic titles for one of your weeks:
+
+```
+Standup                   hue  61   #dee07b
+Grocery run               hue  78   #c2e07b
+Call with Kieran          hue  80   #bee07b
+Dentist                   hue  89   #afe07b
+Laundry                   hue 117   #80e07b
+Gym                       hue 203   #7bb9e0
+Study block               hue 290   #cf7be0
+Interview — EliseAI       hue 295   #d87be0
+RHCSA practice            hue 312   #e07bcc
+Interview — 233 Analytics hue 323   #e07bb9
+```
+
+Six of the nine adjacent gaps are under 25°. **"Grocery run" and "Call with
+Kieran" are 2° apart.** Through the validator against the dark panel:
+
+```
+[FAIL] Lightness band        all 10 outside the band
+[FAIL] Chroma floor          #7bb9e0 reads gray
+[FAIL] CVD separation        #bee07b ↔ #c2e07b  ΔE 0.1 (protan)
+[FAIL] Normal-vision floor   #bee07b ↔ #c2e07b  ΔE 0.5 — below 15, hard to
+                             tell apart even with full colour vision
+```
+
+ΔE 0.5 on the **normal-vision** check is worse than the donut's problem, which
+was CVD-only. This one is broken for everybody.
+
+And it is worse in a second way: it is **data-dependent**. Whether your calendar
+is legible this week depends on the words you typed into it. It will come and
+go without any code change, and it cannot be reproduced from the source.
+
+**Proposal.** Keep the two good rules — status wins, red reserved — and stop
+generating hues. Hash the title to an **index into a fixed, validated palette**
+instead of to a continuous hue. That preserves everything the file set out to
+do (stable per title, never positional) and adds the guarantee it is missing,
+because the palette's pairs were checked once, in advance.
+
+**Effort:** S · **Acceptance signal:** the validator passes on the set of
+colours the week grid can actually emit — which becomes a finite set you can
+test.
+
+## 41. The donut still has the exact bug the calendar just fixed
+
+`evcolor.js` states the rule explicitly:
+
+> A hue is derived from the title, never from the row's position — so a
+> recurring commitment is the same colour every week, and reordering a day
+> never repaints it.
+
+`donut.js:69`, in the same repo, in the same week:
+
+```js
+var sorted = items.slice().sort(function (a, b) { return b.amount - a.amount; });
+…
+color: COLORS[i % COLORS.length],
+```
+
+`i` is still the index in the amount-sorted array, so categories still swap
+colours when spending order changes. And `COLORS` is byte-identical to the old
+`DONUT_COLORS`, so the CVD failure stands too: `#c58cff` ↔ `#4aa3ff`, ΔE 1.9
+under protanopia, at adjacent indices.
+
+SCRUM-99 (hover) shipped and shipped well. **SCRUM-100 did not ship at all**,
+and it is the half that was mislabelling the data. The fix is now nearly free:
+the stable-hash-to-identity pattern is already written and unit-tested one file
+over.
+
+**Effort:** XS · **Depends on:** #40's fixed palette, which both files should
+share
+
+## 42. Three colour systems, no shared contract, and a guard test that would be cheap
+
+Colour decisions now live in at least three places that don't know about each
+other: `donut.js` (a fixed list, indexed by rank), `evcolor.js` (generated HSL),
+and the CSS tokens (`--accent`, `--imp`, `--up`, `--down`) plus the budget
+vessel states. Nothing reconciles them, and the reserved-red convention that
+`evcolor.js` documents is enforced only inside `evcolor.js`.
+
+The team has already established the right idiom for this. `tests/test_no_orphans.py`
+exists because "who consumes this?" was expensive to answer a year later, and
+its docstring says the point is "to make the question one you answer when it is
+cheap." The same argument applies exactly to colour, and the machinery is
+already in place: `scripts/test.sh` runs `node --test gateway/tests/*.test.js`,
+and there are five such files already.
+
+**Proposal.** One palette module both charts import, and a
+`gateway/tests/palette.test.js` that runs the six checks — lightness band,
+chroma floor, CVD separation, normal-vision floor, contrast — over every
+categorical palette in the repo, and fails the build. Then a bad colour is a red
+suite, not something someone eventually notices.
+
+**Effort:** S · **Acceptance signal:** introducing a failing pair turns the suite
+red.
+
+## 43. A module that fails to load is silent in one place, loud in another, and fatal in four
+
+Seven scripts now load as plain globals in sequence, with no `defer` and no
+integrity check:
+
+```html
+<script src="/weekclock.js"></script>  <script src="/evcolor.js"></script>
+<script src="/health.js"></script>     <script src="/deploy.js"></script>
+<script src="/donut.js"></script>      <script src="/app.js"></script>
+<script src="/home.js"></script>
+```
+
+Three different behaviours if one doesn't arrive:
+
+- **Silent.** `spendingDonut()` returns `""` when `Donut` is undefined, and
+  `DONUT_COLORS` falls back to `[]`. The money card renders with no chart and no
+  explanation — indistinguishable from having no spending data, which is the
+  precise `docs/BUDGETS.md` failure this project has spent weeks eliminating
+  everywhere else.
+- **Loud.** `home.js:1157` checks `typeof openApp !== "function"` and says
+  *"Stale page detected — hard-refresh (Ctrl+Shift+R)"*. Exactly right.
+- **Fatal.** `EventColor`, `WeekClock`, `SystemsHealth` and `Deploy` are used
+  unguarded. A missing one throws a `ReferenceError` mid-render, and since the
+  cards are painted in one pass, everything after the throw simply never
+  appears — a blank dashboard with an error only in the console.
+
+The `Cache-Control: no-cache` middleware exists precisely because browsers were
+serving week-old JS across deploys, so a partially-updated page is a failure
+mode this codebase has already met once.
+
+**Proposal.** A tiny registry: after load, assert every expected global is
+present, and show one honest banner naming what's missing. Wrap each card's
+render in a try/catch so one bad card degrades to "this card failed" instead of
+taking the page with it. The loud message already exists — generalise it.
+
+**Effort:** S · **Acceptance signal:** delete one `<script>` tag and the page
+still renders, with a banner naming the missing module.
+
+## 44. The generated hue carries no decodable meaning, and the cheapest fix may be to delete it
+
+Worth asking before anyone fixes #40: **what is the event colour for?**
+
+Status colours earn their place — amber for pending, orange for countered carry
+a fact. But the generated hue encodes a hash of the title, and there is no
+legend anywhere in the week grid. A reader cannot decode it. It does not group
+(two unrelated events can be near-identical, per #40), it does not rank, and it
+does not indicate status. It provides one genuine affordance — the same
+recurring commitment looks the same each week — at the cost of the
+distinguishability problem in #40.
+
+For ≥2 categories a legend is always present, or identity is carried by
+something other than colour alone. Here identity is already carried by the
+title text, which is right there in the block.
+
+**Proposal.** Consider one neutral event fill plus the existing status colours,
+and spend the colour budget where it means something — per-calendar (work vs
+personal vs interviews) with a legend, which would let you see the shape of your
+week at a glance. That is a real encoding. A title hash is not.
+
+**Effort:** XS to remove, S to re-encode · **Note:** this is a product call, not
+a defect. #40 fixes the mechanism; this asks whether the mechanism should exist.
+
+## 45. `id="cc-weekly"` appears twice on production, so one weekly card is dead DOM
+
+Not a design question — a live defect on `e6e773f`:
+
+```
+33:  <section class="cc-card cc-wr" id="cc-weekly" hidden></section>
+47:  <section class="cc-card"       id="cc-weekly" hidden></section>
+```
+
+`home.js:279` reads it with `q("#cc-weekly")`, i.e. `querySelector`, which
+returns **only the first match**. The card at line 47, in the right-hand column,
+can never be written to and will stay `hidden` forever.
+
+This is merge residue — two branches each added a weekly-review card in a
+different position and both survived. Duplicate ids are invalid HTML, so nothing
+warns; it simply picks one.
+
+**Proposal.** Delete whichever placement is wrong (the top `cc-wr` one is the
+one currently working), and add a duplicate-id assertion to the DOM tests — a
+three-line check in the same idiom as `test_no_orphans.py`, catching the next
+one automatically. With this many agents merging into one static page it will
+happen again.
+
+**Effort:** XS
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
