@@ -1,17 +1,14 @@
 import os
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-app = FastAPI(title="Fitness Service")
+from .visitclock import EASTERN, visit_instant  # the clock seam; see visitclock.py
 
-# The box runs in UTC; "today" for a workout plan has to mean the user's
-# actual day, not whatever day it already flipped to in UTC.
-EASTERN = ZoneInfo("America/New_York")
+app = FastAPI(title="Fitness Service")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
@@ -82,7 +79,7 @@ async def get_visits():
 
 @app.post("/visits")
 async def log_visit(visit: Visit):
-    when_at = (visit.when or datetime.utcnow()).isoformat()
+    when_at = visit_instant(visit.when)
     async with pool.connection() as conn:
         cur = await conn.execute(
             "INSERT INTO visits (when_at, note) VALUES (%s, %s) RETURNING id",
