@@ -310,7 +310,7 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
                         for i in items if i["confidence"] == "high"), 2)
     return {
         "available": True,
-        "complete": complete,
+        "window_complete": complete,
         "window_start": window_start.isoformat() if window_start else None,
         "items": items,
         "events": events,

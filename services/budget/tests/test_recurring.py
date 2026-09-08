@@ -277,7 +277,7 @@ def test_next_expected_is_one_cadence_past_the_last_charge(today):
 @pytest.mark.parametrize("today", SWEEP)
 def test_no_charges_at_all_is_answered_without_inventing_one(today):
     out = run([], today)
-    assert out == {"available": True, "complete": True,
+    assert out == {"available": True, "window_complete": True,
                    "window_start": (today - timedelta(days=400)).isoformat(),
                    "items": [], "events": [], "monthly_equivalent": 0.0,
                    "absence_claims_suppressed": False}

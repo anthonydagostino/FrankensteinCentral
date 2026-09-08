@@ -148,7 +148,7 @@ async def _recurring(fresh: bool = False) -> dict:
         known_bills=hist.get("bills") or [],
         # A truncated read cannot support "this is new" or "this came back":
         # both are statements about what ISN'T there.
-        complete=bool(window.get("complete", True)),
+        complete=bool(hist.get("window_complete", True)),
     )
     data["lookback_days"] = window.get("lookback_days")
     _RECUR_CACHE.update(at=now, data=data)
@@ -196,7 +196,7 @@ def _recurring_summary(rec: dict) -> dict:
     events = rec.get("events") or []
     return {
         "available": True,
-        "complete": rec.get("complete", True),
+        "window_complete": rec.get("window_complete", True),
         "absence_claims_suppressed": rec.get("absence_claims_suppressed", False),
         "event_count": len(events),
         "events": [{k: e[k] for k in ("event", "name", "amount", "cadence",
@@ -231,7 +231,7 @@ def _paycheck(cfg: dict, cycle: dict | None) -> dict:
                    "month_ingested": cycle.get("month_ingested"),
                    "ledger_latest_txn": cycle.get("ledger_latest_txn"),
                    # A truncated fetch window cannot support a total.
-                   "window_complete": (cycle.get("window") or {}).get("complete", True)},
+                   "window_complete": cycle.get("window_complete", True)},
     )
 
 
