@@ -572,6 +572,59 @@
     });
   }
 
+  // ---- snooze / dismiss (PRODUCT_IDEAS #34) ---------------------------------
+  // Nothing here could be told "not now" or "not ever", so an email you had
+  // consciously decided not to answer sat at the top of the card for a week
+  // and Do-Next re-suggested what you had just handled. A menu rather than a
+  // bare X: "hidden until when" is the question, and answering it silently
+  // with "forever" would be worse than not offering it.
+  async function dismiss(key, scope, reason) {
+    if (!key) return;
+    await fetch("/api/core/dismiss", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: key, scope: scope, reason: reason || null }),
+    });
+    refresh(true);
+  }
+  async function undismiss(key) {
+    if (!key) return;
+    await fetch("/api/core/dismiss/" + encodeURIComponent(key), { method: "DELETE" });
+    refresh(true);
+  }
+  // The affordance, as markup. `data-key` is read by one delegated handler so
+  // every surface that grows a snooze does not grow its own listener.
+  function snoozeBtn(key, label) {
+    if (!key) return "";
+    return `<span class="snz" data-snz-key="${esch(key)}">
+      <button class="snz-b" type="button" title="${esch(label || "Not now")}"
+        aria-label="${esch(label || "Not now")}">⏳</button>
+      <span class="snz-menu" hidden>
+        <button type="button" data-scope="today">Not today</button>
+        <button type="button" data-scope="forever">Never show this</button>
+      </span></span>`;
+  }
+  // One listener for every snooze on the page, including ones rendered later.
+  document.addEventListener("click", (e) => {
+    const opener = e.target.closest(".snz-b");
+    if (opener) {
+      const menu = opener.parentElement.querySelector(".snz-menu");
+      const wasOpen = !menu.hidden;
+      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+      menu.hidden = wasOpen;
+      e.stopPropagation();
+      return;
+    }
+    const choice = e.target.closest(".snz-menu button");
+    if (choice) {
+      const wrap = choice.closest(".snz");
+      dismiss(wrap.dataset.snzKey, choice.dataset.scope);
+      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+      e.stopPropagation();
+      return;
+    }
+    document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+  });
+
   function renderDoNext(dn, d) {
     dn = dn || { title: "You're on track", reason: "Nothing urgent.", action: null };
     const el = q("#cc-donext");
@@ -579,14 +632,31 @@
     const btn = dn.action ? `<button class="big-btn" id="dn-go">${esch(actionLabel(dn.action))}</button>` : "";
     el.className = "cc-card hero";
     el.innerHTML = `
-      <h3>Do this next</h3>
+      <h3>Do this next${snoozeBtn(dn.key, "Not this — show me the next thing")}</h3>
       <div class="donext ${calm ? "calm" : ""}">
         <div class="title">${esch(dn.title)}</div>
         <div class="reason">${esch(dn.reason || "")}</div>
         <div class="cta">${btn}</div>
-      </div>`;
+      </div>
+      ${renderHidden(d)}`;
     if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
   }
+
+  // Hidden things say so. A snooze you cannot see or undo is indistinguishable
+  // from the system having quietly lost your data, which is exactly the
+  // suspicion that makes people stop trusting a dashboard.
+  function renderHidden(d) {
+    const keys = (d && d.dismissed) || [];
+    if (!keys.length) return "";
+    const chips = keys.map((k) =>
+      `<button class="hid-x" type="button" data-unhide="${esch(k)}"
+        title="Bring this back">${esch(k)} ✕</button>`).join("");
+    return `<div class="hid-row"><span class="hid-l">Hidden</span>${chips}</div>`;
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-unhide]");
+    if (b) undismiss(b.dataset.unhide);
+  });
 
   // ---- Needs attention ------------------------------------------------------
   // AUDIT.md section 3 promised a unified attention feed with Important/FYI
@@ -622,7 +692,7 @@
             ${n.detail ? `<em>${esch(n.detail)}</em>` : ""}
           </span>
           <span class="att-sev" title="${sev === "important" ? "Important" : "FYI"}">${sev === "important" ? "Important" : "FYI"}</span>
-          ${btn}
+          ${btn}${snoozeBtn(n.key, "Not now")}
         </div>`;
     }).join("");
     el.hidden = false;
@@ -697,7 +767,7 @@
         <div class="inbox-main">
           <div class="s">${esch(e.subject || "(no subject)")}</div>
           <div class="f"><span>${esch(e.from)}</span><span class="age">${esch(e.age || "")}</span></div>
-        </div>${catTag(e.category)}</div>`).join("");
+        </div>${catTag(e.category)}${snoozeBtn(e.key, "I'm not answering this")}</div>`).join("");
     const need = inbox.need_reply || 0;
     const header = `<h3>Inbox${need ? ` · ${need} need a reply` : ""}</h3>`;
     // Sync age, not message age — these are different facts. A 72h-old

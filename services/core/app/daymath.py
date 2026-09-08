@@ -110,3 +110,95 @@ def compute_score(components: dict, weights: dict) -> dict:
         "tracked": tracked_n,
         "of": len(active),
     }
+
+
+# --- snooze and dismiss (PRODUCT_IDEAS #34) ----------------------------------
+#
+# Nothing in this product could be told "not now" or "not ever". An email you
+# had consciously decided not to answer sat at the top of the card for seven
+# days; Do-Next recomputed from scratch on every load and cheerfully
+# re-suggested the thing you had just handled. An attention system that cannot
+# be told "handled" trains you to stop reading it, which is how a dashboard
+# dies quietly while still technically working.
+
+DISMISS_SCOPES = ("today", "until", "forever")
+
+
+def dismissal_expiry(scope, now=None, until=None):
+    """When a dismissal stops applying. None means never.
+
+    `today` ends at the next LOCAL midnight, built from the calendar date
+    rather than by adding 86400 seconds. On the day the clock springs forward
+    those differ by an hour, and "not today" quietly becoming "not until 1am
+    tomorrow" is the kind of bug `docs/TESTING.md` exists to catch.
+
+    Deliberately literal: a `today` snooze at 11:50pm expires in ten minutes,
+    because that is what "not today" means. `until` exists for "not for four
+    hours" and takes an explicit timestamp rather than guessing.
+    """
+    if scope == "forever":
+        return None
+    if scope == "until":
+        if until is None:
+            raise ValueError("scope 'until' requires an explicit timestamp")
+        dt = until if isinstance(until, datetime) else datetime.fromisoformat(
+            str(until).replace("Z", "+00:00"))
+        return dt.replace(tzinfo=EASTERN) if dt.tzinfo is None else dt
+    if scope == "today":
+        d = today(now)
+        return datetime.combine(d + timedelta(days=1),
+                                datetime.min.time(), tzinfo=EASTERN)
+    raise ValueError(f"unknown dismissal scope: {scope!r}")
+
+
+def dismissal_active(expires_at, now=None):
+    """Is a dismissal still in force?
+
+    A NULL expiry is `forever` and is always active. An unparseable expiry is
+    treated as EXPIRED — the safe direction is showing you something you had
+    hidden, never hiding something because a timestamp could not be read.
+    """
+    if expires_at is None:
+        return True
+    dt = expires_at
+    if not isinstance(dt, datetime):
+        try:
+            dt = datetime.fromisoformat(str(dt).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=EASTERN)
+    n = (now or datetime.now(EASTERN))
+    if n.tzinfo is None:
+        n = n.replace(tzinfo=EASTERN)
+    return n.astimezone(timezone.utc) < dt.astimezone(timezone.utc)
+
+
+def active_dismissals(rows, now=None):
+    """The set of keys currently hidden, from whatever the database returned."""
+    out = set()
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        key = r.get("key")
+        if key and dismissal_active(r.get("expires_at"), now):
+            out.add(key)
+    return out
+
+
+def apply_dismissals(items, rows, now=None, key="key"):
+    """`items` minus anything currently dismissed.
+
+    Filtering, never deleting: the row stays in the table with its count, so
+    the weekly review can say what you keep snoozing — which the idea rightly
+    calls the most honest signal in the system. An item with no key cannot be
+    dismissed and is always kept; a missing key is not a licence to hide it.
+    """
+    hidden = active_dismissals(rows, now)
+    out = []
+    for it in items or []:
+        k = it.get(key) if isinstance(it, dict) else None
+        if k and k in hidden:
+            continue
+        out.append(it)
+    return out
