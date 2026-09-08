@@ -333,15 +333,21 @@ body.cc[data-mode="evening"] {
 /* The grid is the positioning context for the decoration layer. */
 .wk-grid {
   position: relative; isolation: isolate;
-  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px;
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px;
 }
 
 .wk-day {
   position: relative; z-index: 1;
   display: flex; flex-direction: column; min-width: 0;
   background: color-mix(in srgb, var(--panel-2) 86%, transparent);
-  border: 1px solid var(--line); border-radius: 12px;
-  padding: 10px 10px 12px;
+  border: 1px solid color-mix(in srgb,
+    var(--sn-accent, var(--accent-2)) 26%, var(--line));
+  border-radius: 14px;
+  /* Roomier on purpose: the columns were tight enough that a two-line title
+     and a wrapped time range filled the card. A floor rather than a fixed
+     height, so a heavy day still grows. */
+  padding: 16px 14px 16px;
+  min-height: 260px;
   overflow: hidden;
 }
 .wk-day:focus-visible { outline: 2px solid var(--sn-accent, var(--accent-2)); outline-offset: 2px; }
@@ -354,21 +360,34 @@ body.cc[data-mode="evening"] {
 .wk-day.is-today {
   border-color: var(--sn-accent, var(--accent-2));
   box-shadow: 0 0 0 1px var(--sn-accent, var(--accent-2)) inset,
-              0 6px 22px -12px var(--sn-accent, var(--accent-2));
+              0 8px 30px -14px var(--sn-accent-2, var(--accent-2));
+  /* Today carries the month at roughly double strength. The word "Today" is
+     still on the card — this is emphasis on a label, never a substitute. */
   background:
-    linear-gradient(180deg, var(--sn-wash, rgba(124,156,255,0.10)), transparent 62%),
+    radial-gradient(120% 85% at 0% 0%,
+      color-mix(in srgb, var(--sn-accent, var(--accent-2)) 38%, transparent),
+      transparent 62%),
+    radial-gradient(120% 85% at 100% 0%,
+      color-mix(in srgb, var(--sn-accent-2, var(--accent-2)) 32%, transparent),
+      transparent 58%),
+    radial-gradient(150% 95% at 50% 100%,
+      color-mix(in srgb, var(--sn-accent-3, var(--accent-2)) 24%, transparent),
+      transparent 68%),
     color-mix(in srgb, var(--panel-2) 86%, transparent);
 }
+.wk-day.is-today::before { opacity: 1; height: 5px; }
 /* A window spanning two months says so instead of silently restarting its
    day numbers. */
-.wk-day.month-start { border-left: 2px solid var(--sn-accent, var(--accent-2)); }
+.wk-day.month-start {
+  border-left: 2px solid var(--sn-accent-2, var(--accent-2));
+}
 .wk-day.month-start .wk-mo { color: var(--sn-accent, var(--accent-2)); font-weight: 700; }
 .wk-day.has-clash { border-color: color-mix(in srgb, var(--imp) 40%, var(--line)); }
 
-.wk-hd { position: relative; margin-bottom: 8px; }
+.wk-hd { position: relative; margin-bottom: 10px; }
 .wk-hd-top { display: flex; align-items: center; gap: 6px; min-height: 18px; }
 .wk-dow {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
   color: var(--muted); white-space: nowrap;
   /* No ellipsis: "Wednesday" clipped to "WEDNESD…" fails the one job this
      line has. The Today pill moved to the date row to make the space. */
@@ -377,8 +396,9 @@ body.cc[data-mode="evening"] {
 .wk-rel {
   align-self: center; margin-left: 5px; font-size: 9px; font-weight: 800; letter-spacing: .06em;
   text-transform: uppercase; color: var(--bg);
-  background: var(--sn-accent, var(--accent-2));
-  border-radius: 4px; padding: 1px 5px; white-space: nowrap;
+  background: linear-gradient(90deg, var(--sn-accent, var(--accent-2)),
+                                     var(--sn-accent-2, var(--accent-2)));
+  border-radius: 4px; padding: 2px 6px; white-space: nowrap;
 }
 .wk-count {
   margin-left: auto; font-size: 10px; font-weight: 700;
@@ -386,33 +406,33 @@ body.cc[data-mode="evening"] {
   border-radius: 999px; min-width: 17px; text-align: center; padding: 0 5px;
 }
 .wk-date { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; margin-top: 3px; }
-.wk-num { font-size: 26px; font-weight: 700; line-height: 1.05; letter-spacing: -1px;
+.wk-num { font-size: 38px; font-weight: 700; line-height: 1.02; letter-spacing: -1.5px;
   font-variant-numeric: tabular-nums; color: var(--text); }
-.wk-date sup { font-size: 11px; font-weight: 700; color: var(--muted); }
-.wk-mo { width: 100%; font-size: 11px; color: var(--muted); }
+.wk-date sup { font-size: 13px; font-weight: 700; color: var(--muted); }
+.wk-mo { width: 100%; font-size: 12px; color: var(--muted); }
 
 /* Month motif: a watermark behind the header, never over the text. */
 .wk-motif {
-  position: absolute; right: -4px; top: -6px; font-size: 30px; line-height: 1;
-  opacity: .13; pointer-events: none; z-index: 0; filter: saturate(1.1);
+  position: absolute; right: -6px; top: -10px; font-size: 50px; line-height: 1;
+  opacity: .2; pointer-events: none; z-index: 0; filter: saturate(1.1);
 }
 .wk-day.is-today .wk-motif { opacity: .2; }
 
-.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .wk-ev {
   display: grid; grid-template-columns: auto 1fr; gap: 2px 5px; align-items: baseline;
-  padding: 5px 6px; border-radius: 7px;
-  background: rgba(255,255,255,0.025);
+  padding: 7px 8px; border-radius: 8px;
+  background: rgba(255,255,255,0.03);
   border-left: 2px solid transparent;
 }
 .wk-ev-dot { font-size: 8px; line-height: 1.6; }
 /* Wraps rather than truncating. An ellipsised "10:30 AM – 11:3…" has thrown
    away the one fact the line exists to carry; two short lines have not. */
-.wk-ev-when { grid-column: 2; color: var(--muted); font-size: 10.5px;
+.wk-ev-when { grid-column: 2; color: var(--muted); font-size: 11.5px;
   white-space: normal; }
 .wk-dash { padding: 0 2px; }
 .wk-ev-title {
-  grid-column: 2; color: var(--text); font-weight: 600; font-size: 12px; line-height: 1.3;
+  grid-column: 2; color: var(--text); font-weight: 600; font-size: 13px; line-height: 1.35;
   overflow-wrap: anywhere;
 }
 .wk-ev.allday { background: color-mix(in srgb, var(--sn-accent, var(--accent-2)) 12%, transparent); }
@@ -432,7 +452,7 @@ body.cc[data-mode="evening"] {
   max-width: 100%; text-wrap: balance;
 }
 .wk-ev.needs-you .wk-tag { color: var(--imp); }
-.wk-clear { margin: 2px 0 0; color: var(--muted); font-size: 11px; opacity: .55; }
+.wk-clear { margin: 3px 0 0; color: var(--muted); font-size: 12px; opacity: .55; }
 
 /* An outage is not a clear week — it never renders as one. */
 .wk-down {
@@ -443,20 +463,98 @@ body.cc[data-mode="evening"] {
 }
 
 /* ---- seasonal decoration -------------------------------------------------
-   Accent + motif only. These never touch --text, --panel or --line, so
-   contrast is identical in every month of the year. */
-.wk-grid[data-season="jan"], .wk-day[data-season="jan"] { --sn-accent: #7dd3fc; --sn-wash: rgba(125,211,252,0.13); }
-.wk-grid[data-season="feb"], .wk-day[data-season="feb"] { --sn-accent: #fda4af; --sn-wash: rgba(253,164,175,0.13); }
-.wk-grid[data-season="mar"], .wk-day[data-season="mar"] { --sn-accent: #6ee7b7; --sn-wash: rgba(110,231,183,0.13); }
-.wk-grid[data-season="apr"], .wk-day[data-season="apr"] { --sn-accent: #93c5fd; --sn-wash: rgba(147,197,253,0.13); }
-.wk-grid[data-season="may"], .wk-day[data-season="may"] { --sn-accent: #f9a8d4; --sn-wash: rgba(249,168,212,0.13); }
-.wk-grid[data-season="jun"], .wk-day[data-season="jun"] { --sn-accent: #fcd34d; --sn-wash: rgba(252,211,77,0.13); }
-.wk-grid[data-season="jul"], .wk-day[data-season="jul"] { --sn-accent: #fca5a5; --sn-wash: rgba(252,165,165,0.13); }
-.wk-grid[data-season="aug"], .wk-day[data-season="aug"] { --sn-accent: #67e8f9; --sn-wash: rgba(103,232,249,0.13); }
-.wk-grid[data-season="sep"], .wk-day[data-season="sep"] { --sn-accent: #fde047; --sn-wash: rgba(253,224,71,0.13); }
-.wk-grid[data-season="oct"], .wk-day[data-season="oct"] { --sn-accent: #fb923c; --sn-wash: rgba(251,146,60,0.15); }
-.wk-grid[data-season="nov"], .wk-day[data-season="nov"] { --sn-accent: #f59e0b; --sn-wash: rgba(245,158,11,0.13); }
-.wk-grid[data-season="dec"], .wk-day[data-season="dec"] { --sn-accent: #5eead4; --sn-wash: rgba(94,234,212,0.13); }
+   Each month is a PALETTE, not a single hue: a primary, a secondary and a
+   third that actually reads as that month — October is pumpkin AND witch
+   purple AND ember, not one orange. They are applied as accents, washes and
+   gradients only. --text, --panel and --line are never touched, so the
+   contrast of every word on the card is identical in January and October. */
+.wk-grid[data-season="jan"], .wk-day[data-season="jan"] {
+  --sn-accent: #7dd3fc; --sn-accent-2: #c4b5fd; --sn-accent-3: #e0f2fe;
+}
+.wk-grid[data-season="feb"], .wk-day[data-season="feb"] {
+  --sn-accent: #fb7185; --sn-accent-2: #f9a8d4; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="mar"], .wk-day[data-season="mar"] {
+  --sn-accent: #34d399; --sn-accent-2: #a3e635; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="apr"], .wk-day[data-season="apr"] {
+  --sn-accent: #60a5fa; --sn-accent-2: #5eead4; --sn-accent-3: #c4b5fd;
+}
+.wk-grid[data-season="may"], .wk-day[data-season="may"] {
+  --sn-accent: #f472b6; --sn-accent-2: #fb7185; --sn-accent-3: #86efac;
+}
+.wk-grid[data-season="jun"], .wk-day[data-season="jun"] {
+  --sn-accent: #fbbf24; --sn-accent-2: #fb923c; --sn-accent-3: #38bdf8;
+}
+.wk-grid[data-season="jul"], .wk-day[data-season="jul"] {
+  --sn-accent: #f87171; --sn-accent-2: #60a5fa; --sn-accent-3: #fde047;
+}
+.wk-grid[data-season="aug"], .wk-day[data-season="aug"] {
+  --sn-accent: #22d3ee; --sn-accent-2: #5eead4; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="sep"], .wk-day[data-season="sep"] {
+  --sn-accent: #f59e0b; --sn-accent-2: #fde047; --sn-accent-3: #fb923c;
+}
+.wk-grid[data-season="oct"], .wk-day[data-season="oct"] {
+  --sn-accent: #fb923c; --sn-accent-2: #a855f7; --sn-accent-3: #ef4444;
+}
+.wk-grid[data-season="nov"], .wk-day[data-season="nov"] {
+  --sn-accent: #f97316; --sn-accent-2: #f59e0b; --sn-accent-3: #dc2626;
+}
+.wk-grid[data-season="dec"], .wk-day[data-season="dec"] {
+  --sn-accent: #7dd3fc; --sn-accent-2: #e2e8f0; --sn-accent-3: #34d399;
+}
+
+/* Derived once, so a month only ever declares its three colours above.
+   color-mix keeps the wash tied to the palette instead of hard-coding a
+   parallel set of rgba() values that can drift out of step with it. */
+.wk-grid, .wk-day {
+  --sn-wash:   color-mix(in srgb, var(--sn-accent, var(--accent-2)) 24%, transparent);
+  --sn-wash-2: color-mix(in srgb, var(--sn-accent-2, var(--accent-2)) 20%, transparent);
+  --sn-wash-3: color-mix(in srgb, var(--sn-accent-3, var(--accent-2)) 15%, transparent);
+}
+
+/* Every day card carries the month, not just today's. Two tinted corners and
+   a three-stop bar along the top edge — enough that October and December are
+   unmistakably different screens, faint enough that the events stay the
+   brightest thing on the card. */
+.wk-day::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; z-index: 2;
+  background: linear-gradient(90deg,
+    var(--sn-accent, var(--accent-2)),
+    var(--sn-accent-2, var(--accent-2)) 55%,
+    var(--sn-accent-3, var(--accent-2)));
+  opacity: .95;
+}
+.wk-day {
+  background:
+    radial-gradient(120% 80% at 0% 0%, var(--sn-wash), transparent 60%),
+    radial-gradient(120% 80% at 100% 0%, var(--sn-wash-2), transparent 55%),
+    radial-gradient(140% 90% at 50% 100%, var(--sn-wash-3), transparent 65%),
+    color-mix(in srgb, var(--panel-2) 86%, transparent);
+}
+.wk-day.is-weekend {
+  background:
+    radial-gradient(120% 80% at 0% 0%, var(--sn-wash), transparent 60%),
+    radial-gradient(120% 80% at 100% 0%, var(--sn-wash-2), transparent 55%),
+    radial-gradient(140% 90% at 50% 100%, var(--sn-wash-3), transparent 65%),
+    color-mix(in srgb,
+      color-mix(in srgb, var(--panel-2) 82%, var(--bg)) 86%, transparent);
+}
+
+/* The month's three colours, spelled out beside its name. Colour is never the
+   only carrier of anything here — the season already says "Pumpkin Season" in
+   words; these dots are decoration on top of a label, not instead of one. */
+.wk-swatch {
+  display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle;
+}
+.wk-swatch i {
+  width: 7px; height: 7px; border-radius: 50%; display: block;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.25) inset;
+}
+.wk-swatch i:nth-child(1) { background: var(--sn-accent, var(--accent-2)); }
+.wk-swatch i:nth-child(2) { background: var(--sn-accent-2, var(--accent-2)); }
+.wk-swatch i:nth-child(3) { background: var(--sn-accent-3, var(--accent-2)); }
 
 /* Drifting glyphs, behind every card and non-interactive. */
 .wk-amb-layer {
@@ -465,9 +563,16 @@ body.cc[data-mode="evening"] {
 }
 .wk-flake {
   position: absolute; top: -8%; line-height: 1; opacity: .55;
+  color: var(--sn-accent, var(--accent-2));
   animation-name: wk-fall; animation-timing-function: linear;
   animation-iteration-count: infinite; will-change: transform;
 }
+/* Cycled rather than uniform: one drifting colour is the thing that made the
+   whole theme read as "tinted", which is what it was. Emoji glyphs ignore
+   `color` and keep their own, which is correct — a 🎃 should be pumpkin. */
+.wk-flake:nth-child(3n+2) { color: var(--sn-accent-2, var(--accent-2)); }
+.wk-flake:nth-child(3n+3) { color: var(--sn-accent-3, var(--accent-2)); }
+
 @keyframes wk-fall {
   from { transform: translate3d(0, -20px, 0) rotate(0deg); }
   to   { transform: translate3d(14px, 460px, 0) rotate(300deg); }
@@ -479,7 +584,7 @@ body.cc[data-mode="evening"] {
    without pinching. */
 @media (max-width: 1080px) {
   .wk-grid {
-    grid-auto-flow: column; grid-auto-columns: minmax(168px, 1fr);
+    grid-auto-flow: column; grid-auto-columns: minmax(215px, 1fr);
     grid-template-columns: none;
     overflow-x: auto; scroll-snap-type: x proximity;
     padding-bottom: 6px; scrollbar-width: thin;
@@ -492,7 +597,13 @@ body.cc[data-mode="evening"] {
     grid-template-columns: minmax(0, 1fr);
     overflow-x: visible; gap: 6px;
   }
-  .wk-day { flex-direction: row; align-items: flex-start; gap: 12px; padding: 9px 10px; }
+  .wk-day {
+    flex-direction: row; align-items: flex-start; gap: 12px; padding: 11px 12px;
+    /* The desktop grid needs a floor so seven columns line up; a stacked
+       list does not, and inheriting it turns every quiet day into a screen
+       of empty colour. Height here comes from the events. */
+    min-height: 0;
+  }
   .wk-hd { flex: 0 0 96px; margin-bottom: 0; }
   .wk-date { margin-top: 1px; }
   .wk-num { font-size: 20px; }
