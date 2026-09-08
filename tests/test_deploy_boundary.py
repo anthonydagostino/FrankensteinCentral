@@ -916,3 +916,43 @@ def test_setup_doc_names_the_poller_as_the_only_deploy_path():
         "the two-deployer choice is gone; do not present it"
     assert "sudo ./svc.sh install" not in text, \
         "self-hosted runner install must not be an instruction any more"
+
+
+
+# --- the deploy record has to be readable from inside the container ---------
+#
+# deploy.sh writes the record on the host; the assistant mounts it read-only to
+# answer "what is actually running?". Those are two different files unless the
+# two ends name the same directory, and each had its own default:
+# `$HOME/.frankenstein` here, `/root/.frankenstein` in the compose file. They
+# coincide only when the deploy runs as root, which the shipped systemd unit
+# template does not (`User=REPLACE_WITH_USER`, /home/... paths). Docker creates
+# the absent source directory and mounts it empty, so the dashboard reports the
+# build as unconfirmed no matter how many deploys succeed — the failure mode is
+# a card that can never say anything, which is indistinguishable from a deploy
+# that never runs.
+
+COMPOSE = (ROOT / "docker-compose.yml").read_text()
+
+
+def test_deploy_exports_the_state_dir_it_writes_to():
+    """Exported, so `docker compose` inherits it and mounts the same path."""
+    src = DEPLOY.read_text()
+    assert 'export FRANKENSTEIN_STATE_DIR="$STATE_DIR"' in src
+
+
+def test_the_state_dir_is_exported_before_compose_is_invoked():
+    """After it would be useless: compose reads the environment when it runs."""
+    src = DEPLOY.read_text()
+    export_at = src.index('export FRANKENSTEIN_STATE_DIR')
+    up_at = src.index('$DC up')
+    assert export_at < up_at, "compose is invoked before the state dir is exported"
+
+
+def test_the_mount_honours_that_variable():
+    """A hard-coded mount path would ignore the export and reintroduce the split."""
+    mounts = [l for l in COMPOSE.splitlines() if "/var/frankenstein" in l]
+    assert mounts, "the assistant no longer mounts the deploy record"
+    for line in mounts:
+        assert "${FRANKENSTEIN_STATE_DIR" in line, line
+        assert line.rstrip().endswith(":ro"), f"the record must stay read-only: {line}"
