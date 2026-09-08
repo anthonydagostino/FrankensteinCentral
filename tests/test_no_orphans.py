@@ -203,3 +203,32 @@ def test_the_job_board_is_reachable_from_the_hub():
     """jobs.html was linked only from the legacy lounge, so demoting that page
     took the board offline with it."""
     assert "/jobs.html" in HOME_JS
+
+
+# ── duplicate element ids ──────────────────────────────────────────────────
+#
+# A duplicate id is the same orphan defect wearing different clothes. `home.js`
+# reaches every card through `q("#id")` — `querySelector`, which returns only
+# the FIRST match — so a second element with that id is unreachable markup: it
+# renders empty, keeps whatever `hidden` it was authored with, and never fails.
+#
+# This is not hypothetical. Two branches each added a weekly-review card in a
+# different position and both survived the merge, leaving `id="cc-weekly"`
+# twice on production. The renderer wrote to the top one; the copy in the
+# right-hand column sat hidden forever. Duplicate ids are invalid HTML, so
+# nothing anywhere warned. With this many branches landing in one static page
+# it will happen again, and the check is cheaper than the excavation.
+
+def static_pages():
+    return sorted((ROOT / "gateway" / "static").glob("*.html"))
+
+
+@pytest.mark.parametrize("page", static_pages(), ids=lambda p: p.name)
+def test_no_element_id_appears_twice_on_a_page(page):
+    ids = re.findall(r'\bid="([^"]+)"', page.read_text())
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    assert not dupes, (
+        f"{page.name} declares these ids more than once: {', '.join(dupes)}. "
+        "querySelector returns the first match, so every later copy is dead "
+        "DOM — delete the wrong placement rather than renaming it."
+    )
