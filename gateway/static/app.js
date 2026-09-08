@@ -607,7 +607,7 @@ const RENDERERS = {
           <span class="sub"> ${esc(i.cadence)} · ${i.charges} charges · last ${esc((i.last_seen || "").slice(5))}${i.known_bill ? " · a Firefly bill" : ""}${i.confidence === "low" ? " · low confidence" : ""}</span></span>
           <span class="mono">${fmt(i.amount)}</span></div>`).join("");
       // A truncated read is stated, never rounded off into a total.
-      const note = rec.complete === false
+      const note = rec.window_complete === false
         ? `<p class="empty" style="margin:4px 0 8px">Only part of the history could be read, so nothing here is claimed as new or newly resumed, and no monthly total is given — these are the charges that were seen.</p>`
         : (rec.monthly_equivalent
             ? `<p class="empty" style="margin:4px 0 8px">About <b>${fmt(rec.monthly_equivalent)}/month</b> committed across ${(rec.items || []).filter((i) => i.confidence === "high").length} recurring charges, over the last ${rec.lookback_days || 400} days. Two-charge patterns are listed but not counted.</p>`

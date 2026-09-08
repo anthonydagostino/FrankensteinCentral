@@ -81,11 +81,11 @@ PAYCHECK_TRUNCATED = {
     "configured": True, "available": True, "window_complete": False,
     "fresh": False, "stale_reason": "partial view", "as_of": "2026-09-07",
     "month": {"label": "September 2026", "spent": None, "savings": None,
-              "daily_avg": None, "complete": False},
+              "daily_avg": None, "window_complete": False},
     "cycle": {"start": "2026-09-04", "paycheck": None, "spendable": None,
               "spent": None, "left": None, "per_day": None, "state": "unknown",
               "savings_total": None, "text": "partial read", "allocations": [],
-              "figures_complete": False}}
+              "window_complete": False}}
 
 # The case Codex singled out: truncated window, and NO paycheck was matched,
 # so the brief takes its unavailable path and every pay-cycle field is gone.
@@ -151,7 +151,7 @@ def test_the_rendered_headline_is_plain_when_complete():
 # ---- subscription changes, through the same real seam -----------------------
 
 RECURRING = {
-    "available": True, "complete": True, "absence_claims_suppressed": False,
+    "available": True, "window_complete": True, "absence_claims_suppressed": False,
     "event_count": 3, "tracked": 7, "monthly_equivalent": 214.5,
     "events": [
         {"event": "appeared", "name": "Anthropic", "amount": 20.0,
@@ -192,7 +192,7 @@ def test_a_truncated_recurrence_read_does_not_publish_a_monthly_total():
     """Same rule as the month headline: a floor is not a total. The events it
     did read still show — those are charges it actually saw."""
     html = _render(_money(_spending(), PAYCHECK_ABSENT),
-                   {"recurring": {**RECURRING, "complete": False,
+                   {"recurring": {**RECURRING, "window_complete": False,
                                   "absence_claims_suppressed": True,
                                   "events": [RECURRING["events"][1]],
                                   "event_count": 1}})

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import html
 import json
 import os
 import re
@@ -8,8 +9,8 @@ import urllib.parse
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import dateparse
 
@@ -390,14 +391,50 @@ async def internal_token():
             "calendar_scope": has_calendar_scope()}
 
 
-@app.get("/auth/login")
-async def login():
-    """Kick off Google OAuth. Only needed if you're NOT reusing a refresh token."""
-    if not CLIENT_ID:
-        return JSONResponse(
-            {"error": "Set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to connect Gmail."},
-            status_code=400,
-        )
+# --- the browser-facing OAuth pages -----------------------------------------
+#
+# Google will only accept an `http://` redirect URI when its host is localhost
+# or 127.0.0.1 — a LAN address like http://192.168.1.50:8080/... is rejected
+# outright in the Cloud console, so the callback CANNOT be pointed at the box's
+# network address. That is fine when you run the flow in a browser on the
+# OptiPlex itself, and broken everywhere else: Google sends your laptop to
+# `localhost:8083`, which is your laptop, where nothing is listening. The page
+# fails to load and the connection is never finished.
+#
+# The rescue is that the failed page still has `?code=...` in the address bar.
+# It was delivered; only the thing meant to receive it was on the wrong
+# machine. `/auth/finish` takes that pasted address and completes the exchange
+# server-side, so the flow works from any device with nothing to configure.
+
+PAGE = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect Google — FrankensteinCentral</title>
+<style>
+ body{{background:#0d0f14;color:#e7ecf3;font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      margin:0;padding:28px 20px;display:flex;justify-content:center}}
+ main{{width:100%;max-width:620px}}
+ h2{{margin:0 0 4px;font-size:20px}} p{{margin:10px 0}}
+ .muted{{color:#8a93a6;font-size:13px}}
+ .go{{display:inline-block;margin:14px 0;background:#7c9cff;color:#0d0f14;font-weight:700;
+      text-decoration:none;border-radius:9px;padding:11px 20px}}
+ .go:hover{{background:#6ee7b7}}
+ .box{{background:#161a23;border:1px solid #262c3a;border-radius:11px;padding:14px 16px;margin:18px 0}}
+ code{{background:#1d2230;border:1px solid #262c3a;border-radius:5px;padding:1px 6px;
+       font-size:12.5px;overflow-wrap:anywhere}}
+ input{{width:100%;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;margin:8px 0;
+        background:#0d0f14;color:#e7ecf3;border:1px solid #262c3a;border-radius:7px;padding:9px 10px}}
+ button{{font:inherit;font-weight:700;background:#6ee7b7;color:#0d0f14;border:0;
+         border-radius:8px;padding:9px 16px;cursor:pointer}}
+ .warn{{border-left:3px solid #ff7a7a}} .ok{{border-left:3px solid #6ee7b7}}
+</style>
+<main>{body}</main>"""
+
+
+def _page(body: str) -> HTMLResponse:
+    return HTMLResponse(PAGE.format(body=body))
+
+
+def _consent_url() -> str:
     params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
@@ -406,16 +443,79 @@ async def login():
         "access_type": "offline",
         "prompt": "consent",
     }
-    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
-    return RedirectResponse(url)
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
 
-@app.get("/auth/callback")
-async def callback(code: str | None = None, error: str | None = None):
-    if error:
-        return JSONResponse({"error": error}, status_code=400)
-    if not code:
-        return JSONResponse({"error": "missing code"}, status_code=400)
+def _rescue_form(note: str = "") -> str:
+    """The paste box. Deliberately shown BEFORE anything goes wrong, because
+    once the callback page fails to load there is no link left to follow —
+    the browser is sitting on an error page belonging to no site at all."""
+    return f"""
+<form class="box" method="post" action="finish">
+  <b>If the page after Google says "site can't be reached"</b>
+  <p class="muted">That is expected unless this browser is running on the
+  OptiPlex itself: Google is required to send the code back to
+  <code>{esc(REDIRECT_URI)}</code>, and <code>localhost</code> means
+  <em>this</em> device. Nothing is broken and nothing is lost — the code is
+  in the failed page's address bar. Copy that whole address and paste it
+  here.</p>
+  <input name="pasted" autocomplete="off" spellcheck="false"
+         placeholder="http://localhost:8083/auth/callback?code=4/0Ab...&amp;scope=...">
+  <button type="submit">Finish connecting</button>
+  {note}
+</form>"""
+
+
+def esc(s: str) -> str:
+    return html.escape(str(s), quote=True)
+
+
+def _extract_code(pasted: str) -> str | None:
+    """The authorization code out of whatever got pasted: the whole address,
+    just the query string, or the bare code."""
+    pasted = (pasted or "").strip()
+    if not pasted:
+        return None
+    query = urllib.parse.urlparse(pasted).query or pasted
+    found = urllib.parse.parse_qs(query).get("code")
+    if found and found[0].strip():
+        return found[0].strip()
+    # A bare code, pasted on its own. Google's codes look like "4/0AeanS0b…":
+    # slashes, dashes and underscores, but never a scheme, a query delimiter
+    # or whitespace. Anything carrying those was an address we failed to find
+    # a code in, and returning it as one would send the URL itself to Google
+    # and report a baffling refusal instead of "paste the whole address".
+    looks_like_a_url = "://" in pasted or any(c in pasted for c in "?&= \t")
+    return None if looks_like_a_url else pasted
+
+
+@app.get("/auth/login")
+async def login():
+    """The connect page: a link to Google's consent screen, plus the rescue
+    form for the redirect that cannot reach a browser off the box."""
+    if not CLIENT_ID or not CLIENT_SECRET:
+        return _page(
+            "<h2>Google isn't configured yet</h2>"
+            "<div class='box warn'><p>Set <code>GOOGLE_CLIENT_ID</code> and "
+            "<code>GOOGLE_CLIENT_SECRET</code> in your <code>.env</code>, then "
+            "restart the stack.</p><p class='muted'>See docs/SETUP-GMAIL.md for "
+            "where to get them.</p></div>")
+    return _page(
+        "<h2>Connect Google</h2>"
+        "<p>One approval covers both Gmail and Google Calendar. Make sure you "
+        "leave the calendar permission ticked — unticking it is what leaves the "
+        "week grid showing local events only.</p>"
+        f"<a class='go' href='{esc(_consent_url())}'>Continue to Google →</a>"
+        + _rescue_form())
+
+
+async def _exchange(code: str) -> tuple[bool, str]:
+    """Trade an authorization code for tokens and adopt them.
+
+    Returns (ok, html). Shared by the callback and the paste form so both
+    routes save the credential identically — a token obtained by pasting is
+    exactly as good as one that arrived by redirect.
+    """
     async with httpx.AsyncClient() as client:
         r = await client.post(
             "https://oauth2.googleapis.com/token",
@@ -429,7 +529,20 @@ async def callback(code: str | None = None, error: str | None = None):
             timeout=15,
         )
     if r.status_code != 200:
-        return JSONResponse({"error": "token exchange failed", "detail": r.text}, status_code=502)
+        detail = r.text[:400]
+        hint = ""
+        if "invalid_grant" in detail:
+            hint = ("<p class='muted'>An authorization code works once and "
+                    "expires after a few minutes. Start again from "
+                    "<b>Continue to Google</b> above and paste the new "
+                    "address promptly.</p>")
+        elif "redirect_uri_mismatch" in detail:
+            hint = (f"<p class='muted'>Google Cloud console → Credentials → your "
+                    f"OAuth client → Authorized redirect URIs must contain exactly "
+                    f"<code>{esc(REDIRECT_URI)}</code>.</p>")
+        return False, ("<div class='box warn'><b>Google refused the code.</b>"
+                       f"{hint}<p class='muted'>{esc(detail)}</p></div>")
+
     tok = r.json()
     TOKENS["access_token"] = tok.get("access_token", "")
     if tok.get("refresh_token"):
@@ -442,20 +555,56 @@ async def callback(code: str | None = None, error: str | None = None):
     _ACCESS["token"] = tok.get("access_token", "")
     _ACCESS["exp"] = time.time() + int(tok.get("expires_in", 3600))
     _ACCESS["scope"] = tok.get("scope", "")
+
     cal = has_calendar_scope()
     cal_line = (
-        "<p>📅 Google Calendar access granted — your calendar will appear on "
-        "the dashboard within a few minutes.</p>" if cal
-        else "<p>⚠ Gmail is connected, but Google <b>did not</b> grant calendar "
-             "access. Re-run this flow and tick the calendar permission, or the "
-             "week grid will only ever show events stored locally.</p>"
-    )
-    return HTMLResponse(
-        "<h2>✅ Gmail connected</h2>"
-        "<p>Your inbox is now live in the hub. You can close this tab.</p>"
-        + cal_line +
-        '<p><a href="http://localhost:8080/">← Back to the hub</a></p>'
-    )
+        "<div class='box ok'>📅 <b>Google Calendar access granted.</b> Your real "
+        "calendar will appear on the week grid within about 15 minutes, or "
+        "immediately if you restart the schedule service.</div>" if cal
+        else "<div class='box warn'>⚠ <b>Gmail is connected, but Google did not "
+             "grant calendar access.</b> Run this again and leave the calendar "
+             "permission ticked, or the week grid will only ever show events "
+             "stored here.</div>")
+    return True, ("<h2>✅ Google connected</h2>"
+                  "<p>Your inbox is live in the hub.</p>" + cal_line +
+                  "<p class='muted'>You can close this tab. Refresh your "
+                  "dashboard to see the change.</p>")
+
+
+@app.get("/auth/callback")
+async def callback(code: str | None = None, error: str | None = None):
+    """Where Google sends the browser. Only reachable when the browser is on
+    the same machine as this service — see the note above `PAGE`."""
+    if error:
+        return _page(f"<h2>Google returned an error</h2>"
+                     f"<div class='box warn'><p>{esc(error)}</p></div>"
+                     + _rescue_form())
+    if not code:
+        return _page("<h2>No authorization code in that address</h2>"
+                     + _rescue_form())
+    ok, body = await _exchange(code)
+    return _page(body if ok else body + _rescue_form())
+
+
+@app.post("/auth/finish")
+async def finish(request: Request):
+    """Complete the connection from the address of the page that failed.
+
+    The form body is parsed by hand rather than with fastapi's `Form(...)`,
+    which needs `python-multipart`. This service's requirements.txt does not
+    list it, and a connect page that 500s on the box because of a missing
+    dependency is worse than four lines of urllib.
+    """
+    raw = (await request.body()).decode("utf-8", "replace")
+    pasted = urllib.parse.parse_qs(raw).get("pasted", [""])[0]
+    code = _extract_code(pasted)
+    if not code:
+        return _page("<h2>Couldn't find a code in that</h2>"
+                     "<div class='box warn'><p>Paste the <em>whole</em> address "
+                     "of the page that failed to load — it should contain "
+                     "<code>code=</code>.</p></div>" + _rescue_form())
+    ok, body = await _exchange(code)
+    return _page(body if ok else body + _rescue_form())
 
 
 async def _fetch_inbox() -> list[dict] | None:

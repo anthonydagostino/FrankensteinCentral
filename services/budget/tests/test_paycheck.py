@@ -465,7 +465,7 @@ def test_a_truncated_window_suppresses_totals_and_guidance():
 def test_a_complete_window_is_unaffected():
     d = standard()
     assert d["window_complete"] is True
-    assert d["month"]["complete"] is True
+    assert d["month"]["window_complete"] is True
     assert d["cycle"]["per_day"] is not None
 
 
@@ -612,7 +612,7 @@ def test_a_truncated_window_makes_every_money_figure_unknown():
         transfers=[],
         freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
                    "ledger_latest_txn": "2026-09-07", "window_complete": False})["cycle"]
-    assert c["figures_complete"] is False
+    assert c["window_complete"] is False
     for key in ("paycheck", "spendable", "spent", "left",
                 "savings_total", "from_savings", "per_day"):
         assert c[key] is None, f"{key} survived a truncated window"

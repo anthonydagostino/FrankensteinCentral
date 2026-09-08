@@ -59,10 +59,18 @@ Total time: ~5 minutes. You'll copy 2 values, add 1 web address, click "Allow".
    docker compose up --build
    ```
 
-2. In your browser, go to: **http://localhost:8083/auth/login**
-3. Google will ask you to sign in and show a permissions screen. Click
-   **Allow**.
-4. You'll land on a "✅ Gmail connected" page. That's it.
+2. In your browser, go to the connect page:
+   - on the OptiPlex itself: **http://localhost:8083/auth/login**
+   - from any other device: **http://&lt;the box's address&gt;:8080/api/gmail/auth/login**
+     (the same address you open the dashboard at, with `/api/gmail/auth/login`
+     on the end) — or just click **Connect Google Calendar** on the week card.
+3. Click **Continue to Google**, sign in, and click **Allow**. Leave the
+   calendar permission ticked.
+4. You'll land on a "✅ Google connected" page. That's it.
+
+**If step 3 lands on "site can't be reached", that is expected and nothing is
+lost** — see the next section. The connect page has a paste box for exactly
+this; finish there and you are done.
 
 From now on your real inbox shows up in the hub, and the assistant triages it.
 You won't have to do this again — the connection is saved, even across
@@ -117,6 +125,26 @@ Events are imported into the schedule service every `GCAL_SYNC_SECONDS`
   address is listed as a test user (Google Cloud Console → APIs & Services →
   OAuth consent screen → Test users). You already use PowerBuy, so you likely
   are.
+- **"This site can't be reached" right after you pick your Google account:**
+  the commonest one, and it is not a fault. Google requires the code to come
+  back to a redirect address you registered, and it only accepts plain `http://`
+  addresses when the host is `localhost` or `127.0.0.1` — a LAN address like
+  `http://192.168.1.50:8080/...` is rejected outright in the Cloud console, so
+  the callback *cannot* be pointed at the box's network address. On a browser
+  running on the OptiPlex, `localhost:8083` is the box and everything works.
+  From your laptop or phone, `localhost` is *that* device, where nothing is
+  listening — so the page fails.
+
+  Nothing is lost: the authorization code is sitting in the failed page's
+  address bar. Copy the whole address, go back to the connect page
+  (`/auth/login`), and paste it into the **"If the page after Google says site
+  can't be reached"** box. That completes the connection server-side and saves
+  the credential exactly as the redirect would have.
+
+  If you would rather not paste, the alternatives are to run the flow in a
+  browser on the OptiPlex, or to tunnel the port first:
+  `ssh -L 8083:localhost:8083 you@the-box`, then use
+  `http://localhost:8083/auth/login` on your laptop.
 - **"redirect_uri_mismatch":** The address in Step 2 must match exactly,
   including `http://` and no trailing slash: `http://localhost:8083/auth/callback`.
 - **Want to disconnect:** delete the `gmail_token` docker volume

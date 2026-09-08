@@ -370,14 +370,14 @@ def test_cycle_reports_a_truncated_window_as_incomplete(firefly, client, monkeyp
     _pay_ledger(firefly)
     monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
     d = client.get("/cycle").json()
-    assert d["window"]["complete"] is False
+    assert d["window_complete"] is False
 
 
 def test_cycle_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
     d = client.get("/cycle").json()
-    assert d["window"]["complete"] is True
+    assert d["window_complete"] is True
 
 
 def _always_capped(real):
@@ -440,13 +440,13 @@ def test_history_reports_a_truncated_read_as_incomplete(firefly, client, monkeyp
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
     monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
-    assert client.get("/history").json()["window"]["complete"] is False
+    assert client.get("/history").json()["window_complete"] is False
 
 
 def test_history_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
-    assert client.get("/history").json()["window"]["complete"] is True
+    assert client.get("/history").json()["window_complete"] is True
 
 
 def test_history_carries_fireflys_declared_bills(firefly, client, monkeypatch):
@@ -506,4 +506,5 @@ def test_history_payload_matches_what_the_budget_service_reads(firefly, client, 
     d = client.get("/history").json()
     assert {"today", "window", "withdrawals", "bills",
             "ingest_latest", "ingest_days"} <= set(d)
-    assert {"start", "end", "lookback_days", "complete"} <= set(d["window"])
+    assert {"start", "end", "lookback_days"} <= set(d["window"])
+    assert "window_complete" in d

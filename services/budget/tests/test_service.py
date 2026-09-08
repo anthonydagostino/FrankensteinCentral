@@ -81,7 +81,8 @@ def _monthly(name, first, count, amount):
 HISTORY = {
     "connected": True, "today": "2026-09-04",
     "window": {"start": "2025-07-31", "end": "2026-09-04",
-               "lookback_days": 400, "complete": True},
+               "lookback_days": 400},
+    "window_complete": True,
     "withdrawals": (_monthly("Netflix", "2025-08-10", 13, 15.49)
                     + [{"date": "2026-09-02", "desc": "Netflix",
                         "destination": "Netflix", "amount": 17.99,
@@ -211,11 +212,10 @@ def test_the_headline_is_a_headline_not_the_whole_list(upstream, client):
 def test_a_truncated_history_reaches_the_engine_as_incomplete(upstream, client):
     """The completeness flag has to survive the hop, or absence claims get
     made from a partial read."""
-    upstream["history"] = {**HISTORY,
-                           "window": {**HISTORY["window"], "complete": False}}
+    upstream["history"] = {**HISTORY, "window_complete": False}
     client.get("/recurring?fresh=1")
     r = client.get("/status?fresh=1").json()["recurring"]
-    assert r["complete"] is False
+    assert r["window_complete"] is False
     assert r["absence_claims_suppressed"] is True
     assert [e["event"] for e in r["events"]] == ["changed"]
 
