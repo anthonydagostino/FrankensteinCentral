@@ -911,13 +911,24 @@ async def build_home(fresh: bool = False) -> dict:
             # to a screen, so the sleep column stayed null forever.
             "sleep": (core or {}).get("sleep", {}),
         },
-        "score": (core or {}).get("score", {"score": 0, "parts": {}}),
+        # A missing core payload means we do not KNOW the score. The old
+        # default asserted 0, which the header then displayed as a real bad day
+        # during any core outage.
+        "score": (core or {}).get(
+            "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
         "captures": (captures.get("items", []) if captures else [])[:8],
         "next_event": events[0] if events else None,
         "calendar": calendar,
         "week": week,
         "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
-        "systems": {"healthy": not down, "down": down},
+        # NOT a claim about the stack. This only ever probed the two sub-apps
+        # the home payload itself needs, so `healthy: true` meant "core and
+        # gmail answered" while thirteen other services could be down. The
+        # footer now renders the gateway's /api/health, which probes every
+        # registered service; this field says what it actually looked at, so
+        # no reader can mistake it for the whole picture again.
+        "systems": {"checked": ["core", "email"], "down": down,
+                    "covers_all_services": False},
         # What the box is actually running. A failed deploy leaves the
         # PREVIOUS build serving and is otherwise completely silent from
         # the UI, so this is the only place a stale build announces itself.

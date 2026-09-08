@@ -48,6 +48,59 @@
     } catch { return; }
     HOME = d;
     render(d);
+    // The footer's health claim came from the assistant, which only ever looked
+    // at core and gmail -- 2 of 15 services. The gateway already probes all of
+    // them concurrently and the UI threw the answer away. Fetched separately so
+    // a slow health probe never delays the dashboard itself.
+    refreshSystems();
+  }
+
+  // ---- footer: the REAL systems aggregate -----------------------------------
+  async function refreshSystems() {
+    const el = q("#cc-systems");
+    if (!el) return;
+    let health;
+    try {
+      health = await fetch("/api/health").then((r) => r.json());
+    } catch {
+      // Could not ask. That is not "healthy" -- the old default said it was.
+      el.textContent = "● Status unknown";
+      el.style.color = "var(--muted)";
+      el.title = "The health endpoint could not be reached";
+      el.onclick = null;
+      return;
+    }
+    if (!health || typeof health !== "object" || !Object.keys(health).length) {
+      el.textContent = "● Status unknown";
+      el.style.color = "var(--muted)";
+      el.title = "The health endpoint returned nothing usable";
+      return;
+    }
+    const keys = Object.keys(health).sort();
+    const down = keys.filter((k) => (health[k] || {}).status !== "up");
+    const total = keys.length;
+    if (!down.length) {
+      el.textContent = `● All ${total} services healthy`;
+      el.style.color = "var(--muted)";
+    } else {
+      // Name them. "Something is down" sends you looking; a name does not.
+      const shown = down.slice(0, 3).join(", ");
+      el.textContent = `⚠ ${down.length} of ${total} down: ${shown}`
+        + (down.length > 3 ? ` +${down.length - 3} more` : "");
+      el.style.color = "var(--imp)";
+    }
+    el.title = keys
+      .map((k) => `${(health[k] || {}).status === "up" ? "ok  " : "DOWN"} ${k}`)
+      .join("\n");
+    el.style.cursor = "pointer";
+    el.onclick = () => {
+      const list = keys
+        .map((k) => `${(health[k] || {}).status === "up" ? "●" : "⚠"} ${esch(k)}`)
+        .join(" · ");
+      el.insertAdjacentHTML("afterend",
+        `<span class="cc-sys-list">${list}</span>`);
+      el.onclick = null;
+    };
   }
 
   // ---- top / clock ----------------------------------------------------------
@@ -64,7 +117,19 @@
   // ---- render ---------------------------------------------------------------
   function render(d) {
     paintClock();
-    q("#cc-score-n").textContent = (d.score && d.score.score) || 0;
+    // `|| 0` printed a confident 0 for BOTH a genuinely bad day and a day
+    // nothing had been logged on yet -- and it printed it in the header, all
+    // day, starting at midnight. A null score means "nothing tracked yet".
+    const sc = d.score && d.score.score;
+    const pill = q("#cc-score-n");
+    pill.textContent = sc == null ? "–" : sc;
+    const pillWrap = q("#cc-score-pill");
+    if (pillWrap) {
+      pillWrap.classList.toggle("untracked", sc == null);
+      pillWrap.title = sc == null
+        ? "Nothing tracked yet today"
+        : `Today's score: ${sc}, from ${d.score.tracked} of ${d.score.of} tracked`;
+    }
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
     renderSince(d);
@@ -117,7 +182,8 @@
       const diff = d.money.today - prev.spendToday;
       if (diff > 0) bits.push(`<span class="it"><b>$${Math.round(diff)}</b> new spending</span>`);
     }
-    if (d.score && prev.score != null && d.score.score !== prev.score) {
+    if (d.score && d.score.score != null && prev.score != null
+        && d.score.score !== prev.score) {
       bits.push(`<span class="it">Score ${d.score.score > prev.score ? "up" : "down"} to <b>${d.score.score}</b></span>`);
     }
     if (!bits.length) bits.push('<span class="it">No new alerts. You\'re current.</span>');
@@ -960,7 +1026,7 @@
 
   function renderHealth(d) {
     const h = d.health || {};
-    const score = d.score || { score: 0, parts: {} };
+    const score = d.score || { score: null, parts: {}, tracked: 0, of: 0 };
     const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
     const studyPct = st.goal_min ? Math.min(100, Math.round((st.today_min / st.goal_min) * 100)) : 0;
     const waterPct = w.goal ? Math.min(100, Math.round((w.oz / w.goal) * 100)) : 0;
@@ -982,13 +1048,30 @@
       `<button class="hx-btn ${sleepHours === h ? "on" : ""}" data-sleep="${h}">${h}h</button>`).join("");
     const exam = st.exam;
     const parts = score.parts || {};
-    const scoreBars = Object.keys(parts).map((k) =>
-      `<div class="score-bar"><span>${esch(k)}</span><div class="track"><div class="fill" style="width:${Math.round((parts[k].ratio || 0) * 100)}%"></div></div></div>`).join("");
+    // An untracked component is drawn as an empty, muted track labelled "not
+    // tracked yet" -- NOT as a full-width bar at 0%, which is what a real miss
+    // looks like. `ratio || 0` rendered both identically.
+    const scoreBars = Object.keys(parts).map((k) => {
+      const part = parts[k] || {};
+      const untracked = part.ratio == null;
+      const pct = untracked ? 0 : Math.round(part.ratio * 100);
+      return `<div class="score-bar${untracked ? " untracked" : ""}">`
+        + `<span>${esch(k)}</span>`
+        + `<div class="track"><div class="fill" style="width:${pct}%"></div></div>`
+        + `<em>${untracked ? "not tracked yet" : pct + "%"}</em></div>`;
+    }).join("");
+    const hasScore = score.score != null;
+    const scoreHeading = hasScore
+      ? `today's score ${score.score}`
+      : "nothing tracked yet today";
+    const scoreSub = hasScore && score.of && score.tracked !== score.of
+      ? `<span class="score-of">from ${score.tracked} of ${score.of} tracked</span>`
+      : "";
     q("#cc-health").innerHTML = `
-      <h3>Health &amp; discipline · today's score ${score.score || 0}</h3>
+      <h3>Health &amp; discipline · ${scoreHeading}</h3>
       <div class="hx-score">
-        <div class="score-ring" style="--p:${score.score || 0}"><div class="hole">${score.score || 0}</div></div>
-        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}</div>
+        <div class="score-ring${hasScore ? "" : " untracked"}" style="--p:${hasScore ? score.score : 0}"><div class="hole">${hasScore ? score.score : "–"}</div></div>
+        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
       </div>
       <div class="hx">
         <div class="hx-row">
