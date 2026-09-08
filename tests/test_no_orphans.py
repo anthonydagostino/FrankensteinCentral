@@ -102,6 +102,12 @@ def endpoints():
 ENDPOINTS_REACHED_ANOTHER_WAY = {
     ("gmail", "/auth/login"): "the browser navigates here to start OAuth consent",
     ("gmail", "/auth/callback"): "Google redirects the browser here after consent",
+    ("gmail", "/auth/finish"): (
+        "posted by the form on /auth/login, whose action is the RELATIVE "
+        "'finish' so the page works both directly and behind the gateway "
+        "proxy — a grep for the path finds nothing. It is the rescue for the "
+        "callback landing on a browser that is not on the box; "
+        "services/gmail/tests/test_sync.py exercises it end to end."),
     ("gmail", "/sample"): "manual diagnostic, documented in docs/SETUP-GMAIL.md",
     ("gmail", "/sync-status"): "manual diagnostic; the home card reads mode/sync instead",
     ("firefly", "/audit"): "manual diagnostic, documented in docs/BUDGETS.md",
