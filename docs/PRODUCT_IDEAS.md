@@ -1,16 +1,18 @@
 # FrankensteinCentral — Product Ideas for the Product Owner
 
-**Status: recommendations only. Not a directive, not authorized scope.**
+**Status: a backlog of findings, not a plan of record.** Anthony decides what
+gets built and in what order; nothing here is scheduled by virtue of being
+written down.
 
-`STATE.json` reads `turn: product_owner` / `status: awaiting_directive`, so there
-is no authorized task and no product code was touched to produce this. Under
-`PROTOCOL.md` Claude "may recommend technical and product considerations —
-recommending is not deciding." This file is that recommendation set. It does not
-modify `PRODUCT_DIRECTIVE.md` or `STATE.json`, and it does not assume the PO will
-accept any of it.
+*Updated 2026-09-08:* the acceptance and deployment-authorization gates were
+removed on 2026-09-07, so the earlier framing of this file — "recommendations
+only, awaiting a directive" — no longer describes anything real. `STATE.json`,
+`PRODUCT_DIRECTIVE.md` and the turn-taking protocol are gone. What has not
+changed is that each entry below is a finding with evidence, and picking one up
+is a decision, not a formality.
 
-Each idea below is written so it can be lifted straight into a directive if you
-want it: objective, requirements, and an acceptance signal.
+Every idea is written so it can be worked directly: the problem with file and
+line references, a proposal, an effort estimate, and an acceptance signal.
 
 ---
 
@@ -1377,6 +1379,194 @@ one automatically. With this many agents merging into one static page it will
 happen again.
 
 **Effort:** XS
+
+---
+
+# Wave 6 — the safety nets are now the whole story
+
+`CLAUDE.md` is explicit about what replaced the approval layer:
+
+> **What still stops a bad deploy.** Two things, and neither is an approval —
+> nobody has to be asked: the test gate … and fast-forward only. … Those are
+> safety nets. Removing the approval layer did not remove them, and "ship
+> faster" is not a reason to switch them off.
+
+That is a defensible trade, and the scripts implementing it are unusually well
+reasoned — `autopull.sh` in particular refuses to act on a stale ref, refuses to
+infer a running SHA, and documents the live wedge that taught it to. But when
+two mechanisms are all that stand between a bad push and a dead dashboard, their
+gaps stop being technical debt and become the risk model. Nobody has audited
+them since the gate came off, so this wave does.
+
+Five of the six are in `scripts/`. The last one is the human-facing consequence.
+
+## 46. A deploy is recorded as "success" without ever checking the stack came up
+
+`deploy.sh` runs the test gate, then:
+
+```bash
+$DC up -d --build --remove-orphans
+docker image prune -f >/dev/null 2>&1 || true
+record "success" "$(git rev-parse HEAD)"
+```
+
+`docker compose up -d` returns when containers have been **started**, not when
+they are **serving**. A container that starts and immediately crash-loops
+satisfies it. So `deployed.json` gets `running_commit: <sha>` for a stack that
+may be entirely down.
+
+The consequence is worse than a wrong label, because `autopull.sh` reads that
+field as ground truth:
+
+```bash
+if [ -n "$RUNNING" ] && [ "$RUNNING" = "$DESIRED" ]; then
+  exit 0  # the desired commit is the one actually running — nothing to do
+fi
+```
+
+DESIRED equals RUNNING, so the poller concludes it has converged and **stops
+retrying**. The box sits on a broken deploy and the deployment system believes
+it succeeded. That is precisely the wedge class `autopull.sh`'s own docstring
+describes having already been burned by — *"Comparing HEAD (the earlier
+behavior) made that state look converged and permanently suppressed the retry.
+That wedge happened live during the protocol bootstrap."* The comparison was
+fixed; the thing being compared still isn't verified.
+
+It also makes the deploy card (idea #24, now shipped) confidently report a
+commit as running when nothing is.
+
+**Proposal.** After `up -d`, poll for a bounded window (30–60s) and record
+`success` only if the stack is actually up; otherwise record a distinct
+`started_unhealthy` result, leave `running_commit` unchanged, and let the poller
+retry. Needs #49.
+
+**Effort:** S · **Acceptance signal:** deploy a commit whose container exits on
+boot; `deployed.json` does not claim it is running, and the poller tries again.
+
+## 47. The test gate has an off switch that leaves no trace
+
+```bash
+# Set DEPLOY_SKIP_TESTS=1 to force a deploy past this (emergencies only).
+if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
+```
+
+An escape hatch is reasonable — emergencies are real, and a gate with no
+override gets removed rather than used carefully. The problem is that it is
+**invisible afterwards**. `record "success"` writes an identical entry either
+way: same shape, same fields, no marker. Nothing downstream — not
+`frankenstein-status.sh`, not the deploy card, not you — can distinguish a
+tested deploy from an untested one, an hour later or a month later.
+
+`CLAUDE.md` names the test gate as one of two things protecting production and
+says not to switch it off, but does not mention that the switch exists. Someone
+reading only `CLAUDE.md` would not know to look for it.
+
+**Proposal.** Keep the hatch. Record it: `"tests": "passed" | "skipped"` in
+`deployed.json`, surfaced on the deploy card as a warning that persists until
+the next tested deploy replaces it. An override you can see is a safety net; one
+you can't is a hole.
+
+**Effort:** XS
+
+## 48. The gate is defined by the code it is gating
+
+`deploy.sh` resets the working tree to production and *then* runs
+`scripts/test.sh` from that tree. So the commit under test supplies the test
+runner that judges it. A change that weakens `test.sh` — narrowing a glob,
+deleting a test file, an `|| true` in the wrong place — disables the net for
+every subsequent deploy, and passes its own gate while doing so.
+
+This is inherent to self-testing and not a flaw on its own; what changed is that
+the reviewer who would have caught it in a diff is gone, and several agents now
+push here daily. CI runs the same suite on every push, but nothing prevents a
+promotion while CI is red, and `promote.sh` never consults it.
+
+**Proposal.** A small invariant test pinning the *shape* of the gate: `test.sh`
+still invokes both pytest and `node --test`; the expected test files exist; the
+collected test count does not fall below a floor. It cannot stop a determined
+change, but it turns a silent weakening into a red suite — which is the same
+bargain `tests/test_no_orphans.py` already makes, and that file's docstring
+makes the case better than I can: the point is "to make the question one you
+answer when it is cheap."
+
+**Effort:** S
+
+## 49. Sixteen services, one healthcheck
+
+Only `db` declares a `healthcheck:` in `docker-compose.yml`. `gateway`,
+`assistant`, `core`, `gmail`, `firefly`, `schedule`, `budget`, `stocks`,
+`finance`, `tasks`, `networth`, `deals`, `vault`, `plex` and `powerbuy` have
+none — so `depends_on` on those falls back to `service_started`, which means
+"the process exists", and Compose has no opinion about whether any of them ever
+answered a request.
+
+Every one of these services already exposes `/health`, and the gateway already
+probes all fifteen. The information exists; Compose just isn't told.
+
+This is what makes #46 hard to fix cleanly, and it has a second cost: the
+staggered boot ordering the compose file carefully expresses is mostly
+decorative, because `service_started` is satisfied the instant a container
+exists.
+
+**Proposal.** A `healthcheck:` per service hitting its own `/health`. Three
+lines each, and it makes "is the stack up?" answerable by `docker compose ps`
+rather than by inference.
+
+**Effort:** S · **Unlocks:** #46
+
+## 50. Seven services have no tests at all
+
+With the review layer gone, the suite is the only thing that reads a change
+before it ships. These services have zero test files:
+
+```
+deals   finance   networth   plex   powerbuy   tasks   vault
+```
+
+Some of that is fine — `plex` and `deals` are low-stakes readers. But
+`networth` holds account balances and applies recurring contribution rules,
+`finance` owns bills and due dates, `powerbuy` is resale income, and `tasks`
+feeds the score. Those four are money or state, untested, in a system that now
+ships on green-suite-plus-fast-forward.
+
+Note the asymmetry this creates: an untested service **cannot fail the gate**.
+The more of the system that has no tests, the less the one remaining safety net
+actually covers, and nothing surfaces that. A suite that is green because it
+never looked is indistinguishable from one that is green because it checked.
+
+**Proposal.** Not blanket coverage — the four that touch money or state, and a
+line in the deploy output naming how many services the suite actually exercised.
+
+**Effort:** M · **Acceptance signal:** `networth`'s recurring-contribution rule
+and `finance`'s due-date arithmetic are swept across a calendar, per
+`docs/TESTING.md`.
+
+## 51. You have no idea what changed on your own dashboard
+
+The human consequence of everything above. Several agents now ship to production
+daily; production moved 49 commits in one day while this document was being
+written, and again while wave 5 was. You find out what changed by noticing it.
+
+There is a deploy card showing the running SHA — that answers *which* commit,
+not *what happened*. And this repo has unusually good commit subjects: *"One
+weekly card was dead DOM, and nothing could have told us"*, *"Money card: the
+real pie chart, not bars"*, *"Calendar: real colours, Google events as the
+content, and a Calendar connection that works"*. Those are already release
+notes; nothing renders them.
+
+**Proposal.** A "what changed" card, fed by commit subjects between the last
+SHA you acknowledged and the running one, folded into the existing
+since-you-last-checked mechanism so it clears when you've seen it. Filter to
+subjects that aren't merges.
+
+This is also the honest counterweight to removing the review layer. Nobody reads
+the diffs before they ship any more — which is the point — but that only works
+if you can see afterwards what shipped. Right now you can't.
+
+**Effort:** S · **Depends on:** the deploy record (exists), the
+since-last-checked mechanism (exists)
+**Acceptance signal:** open the dashboard after a day away and read, in one
+card, what changed about it.
 
 ---
 
