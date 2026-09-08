@@ -914,7 +914,7 @@
     // Committed spending, stated as a monthly figure so it is comparable to
     // the other numbers on the card. Suppressed when the read was truncated:
     // a floor presented as a total is the failure docs/BUDGETS.md forbids.
-    if (rec.available && rec.complete !== false && rec.monthly_equivalent)
+    if (rec.available && rec.window_complete !== false && rec.monthly_equivalent)
       subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 

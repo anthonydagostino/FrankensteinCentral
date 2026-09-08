@@ -199,7 +199,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "days_left": month.get("days_left"),
         # An empty month with nothing imported computes to $0. That is
         # arithmetic, not knowledge — say unknown.
-        "complete": window_complete,
+        "window_complete": window_complete,
         "spent": None if (month_ingested is False or not window_complete)
                  else _round(month_spent),
         "savings": None if (month_ingested is False or not window_complete)
@@ -427,7 +427,10 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "days_elapsed": (today - last_date).days + 1,
             "paycheck": paycheck_amount,
             # False => every money figure in this block is unknown, not exact.
-            "figures_complete": window_complete,
+            # Same boolean as the top-level flag and deliberately the same
+            # name: it was `figures_complete` here, which read as a different
+            # fact and invited a consumer to check only one of them.
+            "window_complete": window_complete,
             "paycheck_desc": pays[0].get("desc") or "",
             "paycheck_parts": len(same_day),
             "allocations": allocations,

@@ -309,6 +309,36 @@ average amount, next expected date, paid-this-month). If the user hasn't
 configured bills in Firefly, the section simply doesn't render
 (`supported:false`); no parallel bill database exists here.
 
+## The completeness flag: one name, `window_complete`
+
+Every payload that can be truncated carries **`window_complete`** — at the top
+level, under that exact name, on every endpoint that has it:
+
+| service | endpoints |
+|---|---|
+| firefly | `/spending`, `/month`, `/cycle`, `/history` |
+| budget | `/status`, `/paycheck` (top level, and inside `month` and `cycle`), `/recurring` |
+| assistant | the `money` block of `/home` |
+
+`false` means the page-cap walk stopped early, so the rows are a partial view
+of the window and no total computed from them is a total. See *Freshness* for
+what each consumer suppresses in response.
+
+It used to be spelled five ways at once — `window_complete` on two firefly
+endpoints, `window.complete` on the other two, `month.complete` and
+`figures_complete` inside the paycheck payload, and `complete` on
+`/recurring`. That is not cosmetic. Reading the wrong spelling returns `null`,
+and **`null` is indistinguishable from "the read was fine"** unless the caller
+already knows which name that particular endpoint chose. It caused a real
+misread: a consumer asked `/recurring` for `window_complete`, got `null`
+sitting next to `absence_claims_suppressed: false`, and could not tell whether
+the honesty guard had failed or the key was simply named something else.
+
+`tests/test_wire_names.py` is the guard. It fails if any service publishes or
+reads the concept under another name, if the flag moves back inside firefly's
+`window` object, or if a producer stops publishing it at all — the last one
+because a guard that only bans names would also pass if the flag vanished.
+
 ## Recurring charges (recurring.py — pure and unit-tested)
 
 Firefly holds every transaction, so recurrence is a property of the system
