@@ -44,16 +44,79 @@
   async function refresh(fresh) {
     let d;
     try {
-      d = await fetch("/api/assistant/home" + (fresh ? "?fresh=1" : "")).then((r) => r.json());
-    } catch { return; }
+      const res = await fetch("/api/assistant/home" + (fresh ? "?fresh=1" : ""));
+      d = await res.json();
+      // The service worker stamps a cached reply so the page can tell a live
+      // payload from a replayed one. Without the stamp we are online.
+      const cachedAt = res.headers.get("X-FC-Cached-At");
+      if (cachedAt) d = Offline.staleView(d, cachedAt, new Date().toISOString());
+    } catch {
+      // No network AND nothing cached. Say so rather than leaving whatever is
+      // on screen looking current.
+      showOffline(null);
+      return;
+    }
     HOME = d;
     render(d);
+    showOffline(d.offline);
     // The footer's health claim came from the assistant, which only ever looked
     // at core and gmail -- 2 of 15 services. The gateway already probes all of
     // them concurrently and the UI threw the answer away. Fetched separately so
     // a slow health probe never delays the dashboard itself.
     refreshSystems();
   }
+
+  // ---- offline ---------------------------------------------------------------
+  // Opening the hub from a phone home screen with the box unreachable used to
+  // give a white page. It now paints the last payload -- which immediately
+  // creates the risk docs/BUDGETS.md exists to prevent, so the banner is not
+  // decoration: it is the thing that stops yesterday's figures reading as
+  // today's. Volatile fields are suppressed upstream in Offline.staleView.
+  function showOffline(offline) {
+    let el = q("#cc-offline");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "cc-offline";
+      el.setAttribute("role", "status");
+      const since = q("#cc-since");
+      if (since && since.parentNode) since.parentNode.insertBefore(el, since);
+      else document.body.insertBefore(el, document.body.firstChild);
+    }
+    // Three states, and `null` means something different from absent:
+    //   null       no network AND nothing cached -- a total failure
+    //   undefined  a live payload; nothing to say
+    //   object     a cached payload, which must announce itself
+    if (offline === null) {
+      el.hidden = false;
+      el.textContent = "Offline, and nothing saved to show yet.";
+    } else if (!offline || !offline.stale) {
+      el.hidden = true;
+      el.textContent = "";
+    } else {
+      el.hidden = false;
+      el.textContent = Offline.banner(offline);
+    }
+  }
+
+  // Register the worker. A service worker needs a SECURE CONTEXT, so over
+  // plain HTTP on the LAN this does nothing at all -- the hub is not behind
+  // HTTPS until Tailscale (SCRUM-48) lands. Reported rather than assumed:
+  // silently doing nothing is how you end up believing offline works.
+  function registerWorker() {
+    if (!("serviceWorker" in navigator)) {
+      console.info("[fc] offline mode unavailable: no service worker support");
+      return;
+    }
+    if (!self.isSecureContext) {
+      console.info("[fc] offline mode inactive: needs HTTPS (SCRUM-48). "
+        + "The hub still works; it just will not open offline.");
+      return;
+    }
+    navigator.serviceWorker.register("/sw.js").catch((e) => {
+      console.warn("[fc] offline mode failed to register:", e && e.message);
+    });
+  }
+  registerWorker();
 
   // ---- footer: the REAL systems aggregate -----------------------------------
   async function refreshSystems() {
