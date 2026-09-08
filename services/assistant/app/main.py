@@ -616,7 +616,7 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     # would quietly print a partial read as an exact month-to-date total.
     # Either source saying "truncated" makes it truncated; they read one ledger.
     month_complete = sp.get("window_complete", True) is not False
-    if pay_month.get("complete") is False:
+    if pay_month.get("window_complete") is False:
         month_complete = False
     if pay.get("configured") and pay_month.get("spent") is not None:
         month_spend = pay_month.get("spent")
@@ -724,8 +724,13 @@ def _paycheck_brief(pay: dict) -> dict:
         "allocation_overlaps": c.get("allocation_overlaps", []),
         "unmatched_savings": c.get("unmatched_savings", []),
         "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
-        "figures_complete": c.get("figures_complete", True),
-        "window_complete": pay.get("window_complete", True),
+        # One flag, not two. `figures_complete` (from the cycle block) and
+        # `window_complete` (from the top) were always the same boolean, and
+        # flattening both into this dict now means the same key — so they
+        # collapse. The top-level one is the more reliable source: it survives
+        # the degraded path where the cycle block is dropped entirely.
+        "window_complete": pay.get("window_complete",
+                                   c.get("window_complete", True)),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),
         "left": c.get("left"), "per_day": c.get("per_day"),
