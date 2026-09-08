@@ -226,12 +226,27 @@ async def dashboard():
             "connected": _connected()}
 
 
+class _Rows(list):
+    """A transaction list that remembers whether paging reached the end.
+
+    A plain list to every existing caller; `_cycle_payload` reads `.complete`
+    so it can refuse to publish totals built on a truncated window.
+    """
+    complete = True
+
+
 async def _fetch_txns(client, txn_type: str, start: str, end: str,
                       max_pages: int = 6) -> list[dict]:
     """All splits of one type in [start, end], paging through Firefly.
     Transfers are never fetched here — moving money between your own accounts
-    is not spending or income."""
-    out, page = [], 1
+    is not spending or income.
+
+    The page cap is a resource limit, not a statement about the ledger. When
+    it is hit the list is INCOMPLETE, and callers that publish totals must say
+    so: silently returning a truncated window understates spending and can
+    miss the paycheck itself while still producing confident-looking figures.
+    `_fetch_complete` reports it."""
+    out, page = _Rows(), 1
     while page <= max_pages:
         r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
                              params={"type": txn_type, "start": start, "end": end,
@@ -268,6 +283,9 @@ async def _fetch_txns(client, txn_type: str, start: str, end: str,
         if len(data) < 50:
             break
         page += 1
+    else:
+        # Ran to the cap without a short page: more may remain upstream.
+        out.complete = False
     return out
 
 
@@ -351,6 +369,10 @@ async def _spending() -> dict:
         wd = await _fetch_withdrawals(client, fetch_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd)
+    # Same page cap as /cycle and /month. The homepage month headline is fed
+    # from here, so without this it renders a truncated read as an exact
+    # month-to-date total.
+    spending_complete = wd.complete
 
     def d(s):
         try:
@@ -434,6 +456,10 @@ async def _spending() -> dict:
         "tz": str(LOCAL_TZ),
         "txn_count": len(wd),
         "today": round(today_sum, 2), "week": round(week_sum, 2), "month": round(month_sum, 2),
+        # False => `month` is a LOWER BOUND, not the total. Unread withdrawals
+        # can only add to it, so "at least" is honest where "unknown" would
+        # throw away real information.
+        "window_complete": spending_complete,
         "last_month_to_date": round(lm_to_date, 2), "pace_pct": pace_pct,
         "baseline": baseline, "pace_note": pace_note,
         "earliest_txn": earliest.isoformat() if earliest else None,
@@ -481,6 +507,10 @@ async def _month_payload() -> dict:
         dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
         ledger_latest = await _ledger_latest(client)
         ingest_latest = await _ingest_latest(client, wd + dep)
+    # Same page cap as /cycle. A truncated month read understates spending,
+    # which makes every budget look healthier than it is — the dangerous
+    # direction — so the signal is published here too rather than only there.
+    month_complete = wd.complete and dep.complete
     days_stale = max(0, (today - ledger_latest).days) if ledger_latest else None
     ingest_days = max(0, (today - ingest_latest).days) if ingest_latest else None
 
@@ -514,6 +544,7 @@ async def _month_payload() -> dict:
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
+        "window_complete": month_complete,
         "days_stale": days_stale,
         "ledger_latest_txn": ledger_latest.isoformat() if ledger_latest else None,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
@@ -583,6 +614,9 @@ async def _cycle_payload() -> dict:
     # Firefly is asked for one day past today so the range is never
     # zero-length; drop anything future-dated so no claim covers days that
     # haven't happened.
+    # A capped page walk is not a complete window. Record it BEFORE the
+    # future-date filter rebuilds the lists as plain lists.
+    complete = wd.complete and dep.complete and tr.complete
     keep = lambda rows: [t for t in rows if t["date"] and t["date"] <= today.isoformat()]  # noqa: E731
     wd, dep, tr = keep(wd), keep(dep), keep(tr)
     return {
@@ -591,7 +625,10 @@ async def _cycle_payload() -> dict:
         "tz": str(LOCAL_TZ),
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+                   "lookback_days": CYCLE_LOOKBACK_DAYS,
+                   # False => Firefly had more than the page cap in this
+                   # window, so these lists are a truncated view of it.
+                   "complete": complete},
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
@@ -620,6 +657,35 @@ async def cycle():
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 
 
+async def _bill_items(client, today: date) -> list[dict]:
+    """Firefly's declared bills, normalized. Split out from the endpoint so
+    recurrence detection can consult the same list: a charge the user has
+    already told Firefly about is not a discovery, and announcing it as one
+    is the fastest way to make the feature feel dumb."""
+    r = await client.get(f"{FIREFLY_URL}/api/v1/bills",
+                         headers=_headers(), timeout=20)
+    r.raise_for_status()
+    data = r.json().get("data", [])
+    items = []
+    for b in data:
+        at = b.get("attributes", {})
+        if at.get("active") is False:
+            continue
+        try:
+            lo = float(at.get("amount_min") or 0)
+            hi = float(at.get("amount_max") or lo)
+            amount = round((lo + hi) / 2, 2)
+        except (TypeError, ValueError):
+            amount = None
+        nxt = (at.get("next_expected_match") or "")[:10]
+        paid_dates = [p.get("date", "")[:10] for p in (at.get("paid_dates") or [])]
+        paid_this_month = any(p[:7] == today.isoformat()[:7] for p in paid_dates if p)
+        items.append({"name": at.get("name", ""), "amount": amount,
+                      "next_due": nxt or None, "paid_this_month": paid_this_month})
+    items.sort(key=lambda b: b.get("next_due") or "9999")
+    return items
+
+
 @app.get("/bills")
 async def bills():
     """Firefly's own bills, normalized — Firefly stays the source of truth for
@@ -627,30 +693,78 @@ async def bills():
     if not _connected():
         return {"connected": False, "supported": False, "items": []}
     try:
-        today = _today()
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{FIREFLY_URL}/api/v1/bills",
-                                 headers=_headers(), timeout=20)
-            r.raise_for_status()
-            data = r.json().get("data", [])
-        items = []
-        for b in data:
-            at = b.get("attributes", {})
-            if at.get("active") is False:
-                continue
-            try:
-                lo = float(at.get("amount_min") or 0)
-                hi = float(at.get("amount_max") or lo)
-                amount = round((lo + hi) / 2, 2)
-            except (TypeError, ValueError):
-                amount = None
-            nxt = (at.get("next_expected_match") or "")[:10]
-            paid_dates = [p.get("date", "")[:10] for p in (at.get("paid_dates") or [])]
-            paid_this_month = any(p[:7] == today.isoformat()[:7] for p in paid_dates if p)
-            items.append({"name": at.get("name", ""), "amount": amount,
-                          "next_due": nxt or None, "paid_this_month": paid_this_month})
-        items.sort(key=lambda b: b.get("next_due") or "9999")
+            items = await _bill_items(client, _today())
         return {"connected": True, "supported": len(items) > 0, "items": items}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
+
+
+HISTORY_LOOKBACK_DAYS = 400   # 13 months: long enough to see an annual renewal
+                              # twice, which is what makes it recognisable as
+                              # annual rather than as a one-off.
+HISTORY_MAX_PAGES = 20        # 1000 splits; past this the read is truncated
+                              # and says so rather than pretending otherwise.
+
+
+def _history_window(today: date, lookback: int = HISTORY_LOOKBACK_DAYS) -> tuple[str, str]:
+    """The range a recurrence read needs, as (start, end).
+
+    `start` is not decoration downstream: it is the first day anything could
+    have been observed, so it is the only thing that separates "this charge is
+    new" from "this is the oldest charge I can see". The end is one day past
+    today for the same reason as every other window here — Firefly answers a
+    zero-length range with 422.
+    """
+    start = today - timedelta(days=max(lookback, 1))
+    return start.isoformat(), (today + timedelta(days=1)).isoformat()
+
+
+async def _history_payload() -> dict:
+    today = _today()
+    start, end = _history_window(today)
+    async with httpx.AsyncClient() as client:
+        wd = await _fetch_txns(client, "withdrawal", start, end,
+                               max_pages=HISTORY_MAX_PAGES)
+        try:
+            bill_items = await _bill_items(client, today)
+        except Exception:  # noqa: BLE001
+            # Bills are an input that only ever suppresses announcements. If
+            # Firefly won't answer, the read still stands — it just can't
+            # claim a charge is already declared.
+            bill_items = []
+        ingest_latest = await _ingest_latest(client, wd)
+    complete = wd.complete
+    rows = [t for t in wd if t["date"] and t["date"] <= today.isoformat()]
+    return {
+        "connected": True,
+        "today": today.isoformat(),
+        "window": {"start": start, "end": today.isoformat(),
+                   "lookback_days": HISTORY_LOOKBACK_DAYS,
+                   # False => more withdrawals exist in this window than the
+                   # page cap read, so absence cannot be concluded from it.
+                   "complete": complete},
+        "withdrawals": rows,
+        "bills": bill_items,
+        "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
+        "ingest_days": (max(0, (today - ingest_latest).days)
+                        if ingest_latest else None),
+    }
+
+
+@app.get("/history")
+async def history():
+    """A long read of withdrawals plus Firefly's declared bills — the raw
+    material for recurrence detection. The math lives in the budget service's
+    pure engine (services/budget/app/recurring.py); this stays a dumb window.
+
+    Cached hard: thirteen months of transactions is an expensive read and the
+    answer barely moves within a day.
+    """
+    if not _connected():
+        return {"connected": False}
+    try:
+        return await _cached("history", 900, _history_payload)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
 

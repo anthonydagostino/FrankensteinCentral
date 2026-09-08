@@ -28,6 +28,19 @@
       APPSMAP = {}; apps.forEach((a) => (APPSMAP[a.key] = a));
     } catch {}
   }
+  // The seven-day window is anchored to the server's local day, so a tab left
+  // open across midnight would keep showing yesterday as "Today" until a
+  // manual reload. Re-fetch just after the boundary, then re-arm. The delay
+  // itself lives in weekclock.js so it can be swept by node --test.
+  let midnightTimer = null;
+  function scheduleMidnightRollover() {
+    if (midnightTimer) clearTimeout(midnightTimer);
+    const delay = WeekClock.msUntilNextMidnight(new Date());
+    midnightTimer = setTimeout(() => {
+      refresh(true).finally(scheduleMidnightRollover);
+    }, Math.max(1000, delay));
+  }
+
   async function refresh(fresh) {
     let d;
     try {
@@ -35,6 +48,59 @@
     } catch { return; }
     HOME = d;
     render(d);
+    // The footer's health claim came from the assistant, which only ever looked
+    // at core and gmail -- 2 of 15 services. The gateway already probes all of
+    // them concurrently and the UI threw the answer away. Fetched separately so
+    // a slow health probe never delays the dashboard itself.
+    refreshSystems();
+  }
+
+  // ---- footer: the REAL systems aggregate -----------------------------------
+  async function refreshSystems() {
+    const el = q("#cc-systems");
+    if (!el) return;
+    let health;
+    try {
+      health = await fetch("/api/health").then((r) => r.json());
+    } catch {
+      // Could not ask. That is not "healthy" -- the old default said it was.
+      el.textContent = "● Status unknown";
+      el.style.color = "var(--muted)";
+      el.title = "The health endpoint could not be reached";
+      el.onclick = null;
+      return;
+    }
+    if (!health || typeof health !== "object" || !Object.keys(health).length) {
+      el.textContent = "● Status unknown";
+      el.style.color = "var(--muted)";
+      el.title = "The health endpoint returned nothing usable";
+      return;
+    }
+    const keys = Object.keys(health).sort();
+    const down = keys.filter((k) => (health[k] || {}).status !== "up");
+    const total = keys.length;
+    if (!down.length) {
+      el.textContent = `● All ${total} services healthy`;
+      el.style.color = "var(--muted)";
+    } else {
+      // Name them. "Something is down" sends you looking; a name does not.
+      const shown = down.slice(0, 3).join(", ");
+      el.textContent = `⚠ ${down.length} of ${total} down: ${shown}`
+        + (down.length > 3 ? ` +${down.length - 3} more` : "");
+      el.style.color = "var(--imp)";
+    }
+    el.title = keys
+      .map((k) => `${(health[k] || {}).status === "up" ? "ok  " : "DOWN"} ${k}`)
+      .join("\n");
+    el.style.cursor = "pointer";
+    el.onclick = () => {
+      const list = keys
+        .map((k) => `${(health[k] || {}).status === "up" ? "●" : "⚠"} ${esch(k)}`)
+        .join(" · ");
+      el.insertAdjacentHTML("afterend",
+        `<span class="cc-sys-list">${list}</span>`);
+      el.onclick = null;
+    };
   }
 
   // ---- top / clock ----------------------------------------------------------
@@ -51,12 +117,27 @@
   // ---- render ---------------------------------------------------------------
   function render(d) {
     paintClock();
-    q("#cc-score-n").textContent = (d.score && d.score.score) || 0;
+    // `|| 0` printed a confident 0 for BOTH a genuinely bad day and a day
+    // nothing had been logged on yet -- and it printed it in the header, all
+    // day, starting at midnight. A null score means "nothing tracked yet".
+    const sc = d.score && d.score.score;
+    const pill = q("#cc-score-n");
+    pill.textContent = sc == null ? "–" : sc;
+    const pillWrap = q("#cc-score-pill");
+    if (pillWrap) {
+      pillWrap.classList.toggle("untracked", sc == null);
+      pillWrap.title = sc == null
+        ? "Nothing tracked yet today"
+        : `Today's score: ${sc}, from ${d.score.tracked} of ${d.score.of} tracked`;
+    }
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
     renderSince(d);
-    renderCalendar(d);
+    renderWeeklyReview(d.weekly_review);
+    renderWeek(d);
     renderDoNext(d.do_next, d);
+    renderAttention(d.nudges);
+    renderDeadlines(d.deadlines);
     renderInbox(d.inbox);
     renderMoney(d.money, d.budget);
     renderPortfolio(d.portfolio);
@@ -64,9 +145,8 @@
     renderHealth(d);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    const sys = d.systems || { healthy: true, down: [] };
-    q("#cc-systems").textContent = sys.healthy ? "● Systems healthy" : "⚠ " + (sys.down || []).join(", ") + " down";
-    q("#cc-systems").style.color = sys.healthy ? "var(--muted)" : "var(--imp)";
+    renderSystems();
+    renderDeploy(d);
     saveSnapshot(d);
   }
 
@@ -102,7 +182,8 @@
       const diff = d.money.today - prev.spendToday;
       if (diff > 0) bits.push(`<span class="it"><b>$${Math.round(diff)}</b> new spending</span>`);
     }
-    if (d.score && prev.score != null && d.score.score !== prev.score) {
+    if (d.score && d.score.score != null && prev.score != null
+        && d.score.score !== prev.score) {
       bits.push(`<span class="it">Score ${d.score.score > prev.score ? "up" : "down"} to <b>${d.score.score}</b></span>`);
     }
     if (!bits.length) bits.push('<span class="it">No new alerts. You\'re current.</span>');
@@ -117,42 +198,372 @@
   // a reply is the single most actionable thing the pipeline produces, and it
   // used to be dropped before it ever reached the page.
   const CAL_STATUS = {
-    confirmed: { dot: "🟢", label: "confirmed" },
-    pending:   { dot: "🟡", label: "offered — awaiting reply" },
-    countered: { dot: "🟠", label: "they countered — needs your yes" },
+    confirmed: { label: "confirmed" },
+    pending:   { label: "offered — awaiting reply" },
+    countered: { label: "they countered — needs your yes" },
   };
-  function evWhen(raw) {
-    if (!raw) return "";
-    const d = new Date(String(raw).replace(" ", "T"));
-    if (isNaN(d.getTime())) return String(raw);
-    const now = new Date();
-    const tmr = new Date(now); tmr.setDate(now.getDate() + 1);
-    const t = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    if (d.toDateString() === now.toDateString()) return "Today " + t;
-    if (d.toDateString() === tmr.toDateString()) return "Tomorrow " + t;
-    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + t;
+  // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
+  // The footer used to compute its claim from `d.systems`, which the assistant
+  // builds from core and gmail alone — so eleven other services could be down
+  // while it said "Systems healthy". The gateway probes all fifteen at
+  // /api/health and the UI discarded it. Now it doesn't.
+  let SYSHEALTH = null;
+  async function loadSystems() {
+    try {
+      SYSHEALTH = await fetch("/api/health").then((r) => r.json());
+    } catch { SYSHEALTH = null; }   // null reads as "unknown", not healthy
+    renderSystems();
   }
-  function renderCalendar(d) {
-    const items = d.calendar || [];
-    if (!items.length) {
-      q("#cc-calendar").innerHTML = `<h3>Schedule</h3><p class="att-empty">Nothing coming up.</p>`;
+
+  function renderSystems() {
+    const el = q("#cc-systems");
+    if (!el) return;
+    const s = SystemsHealth.summarize(SYSHEALTH);
+    el.textContent = SystemsHealth.line(s);
+    el.style.color = s.state === "degraded" ? "var(--imp)"
+      : s.state === "unknown" ? "var(--muted)" : "var(--muted)";
+    // The full per-service roll is one click away rather than always on show.
+    el.title = s.state === "unknown"
+      ? "The gateway's /api/health probe did not answer"
+      : Object.keys(SYSHEALTH || {}).sort().map((k) =>
+          `${(SYSHEALTH[k] || {}).status === "up" ? "●" : "✕"} ${k}`).join("\n");
+    el.style.cursor = s.total ? "help" : "default";
+  }
+
+
+  // ---- the box's own deploy state (PRODUCT_IDEAS #24) ------------------------
+  // A failed deploy is otherwise completely silent: the previous build keeps
+  // serving, so the dashboard looks perfect while the fix you shipped is not
+  // the code you are looking at. Read-only — promote.sh stays the only path
+  // to production and there are deliberately no controls here.
+  function renderDeploy(d) {
+    const el = q("#cc-deploy");
+    if (!el) return;
+    const v = DeployState.describe(d && d.deploy);
+    el.textContent = v.text;
+    el.title = v.title;
+    // Only `bad` is loud. `unknown` is muted but must never be styled as ok.
+    el.style.color = v.tone === "bad" ? "var(--imp)"
+      : v.tone === "warn" ? "var(--imp)" : "var(--muted)";
+    el.style.cursor = "help";
+    el.dataset.tone = v.tone;
+  }
+
+  // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
+  // core has served GET /weekly-review since it was written and nothing ever
+  // rendered it. On Sunday evening it takes the top of the page; the rest of
+  // the week it sits above the calendar, quietly.
+  function wrRow(label, row, unit, fmt) {
+    if (!row) return "";
+    const f = fmt || ((v) => `${v}${unit || ""}`);
+    // "No goal set" and "unknown" are NOT 0% — reporting either as failure is
+    // the same dishonesty the money layer's rules forbid.
+    if (row.state === "unknown") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v wr-unknown">—</span>
+        <span class="wr-note">not recorded</span></div>`;
+    }
+    if (row.state === "no_goal") {
+      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+        <span class="wr-v">${esch(f(row.value))}</span>
+        <span class="wr-note">no goal set</span></div>`;
+    }
+    const pct = Math.max(0, Math.min(100, row.pct));
+    return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
+      <span class="wr-v">${esch(f(row.value))} <i>/ ${esch(f(row.goal))}</i></span>
+      <span class="wr-bar"><i style="width:${pct}%" class="${row.state}"></i></span>
+      <span class="wr-pct ${row.state}">${row.pct}%</span></div>`;
+  }
+
+  function renderWeeklyReview(wr) {
+    const el = q("#cc-weekly");
+    // An unreachable core is not a week where nothing happened: no card at all
+    // beats a card full of zeroes.
+    if (!wr) { el.hidden = true; return; }
+    el.hidden = false;
+    el.classList.toggle("lead", wr.slot === "lead");
+
+    const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m`.replace(" 0m", "") : `${v}m`);
+    const t = wr.study && wr.study.trend_min;
+    const trend = (t === null || t === undefined || t === 0) ? ""
+      : `<span class="wr-trend ${t > 0 ? "up" : "down"}">${t > 0 ? "▲" : "▼"} ${esch(mins(Math.abs(t)))} vs last week</span>`;
+
+    el.innerHTML = `<h3>${wr.slot === "lead" ? "Your week" : "This week so far"}</h3>
+      ${wrRow("Study", wr.study, "", mins)}
+      ${wrRow("Gym", wr.gym, "")}
+      ${wrRow("Water", wr.water, " days")}
+      ${trend}`;
+  }
+
+  // ---- the week grid --------------------------------------------------------
+  // Seven day columns: today and the next six. The server does every date
+  // decision (see services/assistant/app/dashboard.py:week_window and its
+  // calendar sweep); this only draws what it is handed, so the browser clock
+  // and the container clock can never disagree about which day is which.
+
+  // Decoration only. A season is picked from the date and changes accent and
+  // motif — never text colour, never what the data says.
+  const SEASONS = {
+    jan: { name: "Deep Winter", glyph: "❄", drift: ["❄", "❅", "❆"] },
+    feb: { name: "Sweetheart", glyph: "♥", drift: ["♥", "♡"] },
+    mar: { name: "First Green", glyph: "☘", drift: ["☘", "❀"] },
+    apr: { name: "Showers", glyph: "☂", drift: ["☂", "ᴗ"] },
+    may: { name: "Bloom", glyph: "✿", drift: ["✿", "❀", "✾"] },
+    jun: { name: "Solstice", glyph: "☀", drift: ["☀", "✺"] },
+    jul: { name: "Fireworks", glyph: "✺", drift: ["✺", "✹"] },
+    aug: { name: "High Summer", glyph: "⛱", drift: ["⛱", "≋"] },
+    sep: { name: "Harvest", glyph: "✾", drift: ["🌾", "🍃"] },
+    oct: { name: "Pumpkin Season", glyph: "🎃", drift: ["🎃", "🦇", "🍁"] },
+    nov: { name: "Late Autumn", glyph: "🍂", drift: ["🍂", "🍁", "🌰"] },
+    dec: { name: "Snowfall", glyph: "❄", drift: ["❄", "❅", "❆", "✻"] },
+  };
+
+  const AMBIENCE_KEY = "cc.ambience";
+  const ambienceOn = () => localStorage.getItem(AMBIENCE_KEY) !== "off";
+
+  // Each commitment gets its own colour, so a day reads as a set of distinct
+  // things instead of one grey block, and so a recurring event keeps the same
+  // colour week after week. The rules live in evcolor.js, where node --test
+  // holds them to it.
+  const eventColor = (e) => EventColor.of(e);
+
+  function evRow(e) {
+    const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
+    const cls = [
+      "wk-ev",
+      e.needs_you ? "needs-you" : "",
+      e.conflict ? "clash" : "",
+      e.ongoing ? "live" : "",
+      e.all_day ? "allday" : "",
+      e.from_google ? "from-google" : "",
+    ].filter(Boolean).join(" ");
+    // The status word is spelled out, never carried by the colour alone.
+    const tag = e.status && e.status !== "confirmed"
+      ? `<span class="wk-tag">${esch(st.label)}</span>` : "";
+    const when = e.end_label
+      ? `${esch(e.time_label)}<span class="wk-dash">–</span>${esch(e.end_label)}`
+      : esch(e.time_label);
+    const where = e.location
+      ? `<span class="wk-ev-where">${esch(e.location)}</span>` : "";
+    const flags = [
+      e.ongoing ? `<span class="wk-flag live">now</span>` : "",
+      // "Overlaps" on its own is baffling when the other commitment is in a
+      // different column, so a cross-midnight clash says so.
+      e.conflict ? `<span class="wk-flag clash" title="${e.conflict_offday
+        ? `Overlaps a commitment on the ${e.conflict_neighbour} day`
+        : "Overlaps another commitment this day"}">⚠ overlaps${
+        e.conflict_offday ? ` ${esch(e.conflict_neighbour)} day` : ""}</span>` : "",
+    ].filter(Boolean).join("");
+    const origin = e.from_google ? "From your Google Calendar" : "Added in FrankensteinCentral";
+    return `<li class="${cls}" style="--ev:${eventColor(e)}" title="${esch(origin)}">
+      <span class="wk-ev-when mono">${when}</span>
+      <span class="wk-ev-title">${esch(e.title || "Untitled")}</span>
+      ${where}${flags}${tag}
+    </li>`;
+  }
+
+  function dayCard(day, index) {
+    const season = SEASONS[day.season] || SEASONS.jan;
+    const cls = [
+      "wk-day",
+      day.is_today ? "is-today" : "",
+      day.is_weekend ? "is-weekend" : "",
+      day.starts_month && !day.is_today ? "month-start" : "",
+      day.conflicts ? "has-clash" : "",
+    ].filter(Boolean).join(" ");
+
+    // "Today" replaces the weekday rather than sitting next to it: on the two
+    // cards that have one it is the more useful of the pair, and the two
+    // together were the only thing that made this line wrap onto a second row.
+    // The full weekday and date stay in the card's aria-label regardless.
+    const rel = day.relative_label
+      ? `<span class="wk-rel">${esch(day.relative_label)}</span>` : "";
+    const count = day.counts.total
+      ? `<span class="wk-count" title="${day.counts.total} scheduled">${day.counts.total}</span>`
+      : "";
+    const body = day.counts.total
+      ? `<ul class="wk-evs">${day.events.map(evRow).join("")}</ul>`
+      : `<p class="wk-clear">Clear</p>`;
+    // The month appears only where the window actually crosses into a new one.
+    // `starts_month` is also true on the first card, but the range beside the
+    // "This week" heading already names that month, and the first card is the
+    // one carrying the TODAY pill — the least room and the least need.
+    const month = day.starts_month && index > 0
+      ? `<span class="wk-mo">${esch(day.month_short)}</span>` : "";
+
+    // aria-label carries the full date so the column is announced as
+    // "Wednesday, October 1st, 2026", not as a bare "1".
+    const label = `${day.long_label}${day.counts.total
+      ? `, ${day.counts.total} scheduled` : ", nothing scheduled"}${
+      day.conflicts ? ", has overlapping commitments" : ""}`;
+    // The date is a small marker in the top-left corner, not the headline: what
+    // matters on a day is what is happening on it. The number was 26px and took
+    // the widest line in the card, which pushed the actual commitments down and
+    // made every column look the same from across the room.
+    return `<article class="${cls}" data-season="${esch(day.season)}"
+        role="listitem" tabindex="0" aria-label="${esch(label)}">
+      <header class="wk-hd">
+        <div class="wk-hd-top">
+          <time class="wk-date" datetime="${esch(day.iso)}">
+            <span class="wk-num">${day.day}</span><sup>${esch(day.ordinal_suffix)}</sup>
+          </time>
+          ${rel ? "" : `<span class="wk-dow">${esch(day.weekday_short)}</span>`}
+          ${month}${rel}${count}
+        </div>
+        ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
+      </header>
+      ${body}
+    </article>`;
+  }
+
+  function renderWeek(d) {
+    const el = q("#cc-calendar");
+    const week = d.week;
+    const openBtn = `<button class="hx-btn" id="cal-open">Open schedule →</button>`;
+
+    // An unreachable service is not a clear week. Saying "nothing coming up"
+    // when the schedule service is down is the calmest possible way to hide a
+    // real commitment, so the two states never share a rendering.
+    if (!week || !week.days || !week.days.length) {
+      el.innerHTML = `<h3>This week</h3>
+        <p class="att-empty">Schedule unavailable.</p>
+        <div class="hx-btns" style="margin-top:10px">${openBtn}</div>`;
+      wireWeek();
       return;
     }
-    const rows = items.map((e) => {
-      const st = CAL_STATUS[e.status] || CAL_STATUS.confirmed;
-      const needsYou = e.status === "countered";
-      const tag = (e.status && e.status !== "confirmed")
-        ? `<span class="cal-tag">${esch(st.label)}</span>` : "";
-      return `<div class="cal-row${needsYou ? " needs-you" : ""}">
-        <span class="cal-dot" title="${esch(st.label)}">${st.dot}</span>
-        <span class="cal-t mono">${esch(evWhen(e.starts_at))}</span>
-        <span class="cal-title">${esch(e.title || "Untitled")}</span>${tag}
-      </div>`;
-    }).join("");
-    q("#cc-calendar").innerHTML = `<h3>Schedule</h3><div class="cal-rows">${rows}</div>
-      <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="cal-open">Open schedule →</button></div>`;
+    // An outage is the only state with nothing to draw. Disconnected and
+    // unknown still have real local commitments in Postgres, so the grid is
+    // rendered and the caveat sits above it — hiding a week you do have is
+    // its own dishonesty.
+    if (week.state === "unreachable") {
+      el.innerHTML = `<h3>This week</h3>
+        <p class="wk-down">⚠ Can't reach the schedule service. This is an
+        outage, not a clear week — commitments may exist that aren't shown
+        here.</p>
+        <div class="hx-btns" style="margin-top:10px">${openBtn}</div>`;
+      wireWeek();
+      return;
+    }
+
+    const days = week.days;
+    const first = days[0], last = days[days.length - 1];
+    const range = first.month === last.month
+      ? `${first.month} ${first.day}–${last.day}`
+      : `${first.month} ${first.day} – ${last.month} ${last.day}`;
+    const season = SEASONS[first.season] || SEASONS.jan;
+
+    const clashes = days.reduce((n, x) => n + (x.conflicts ? 1 : 0), 0);
+    const notes = [
+      clashes ? `<span class="wk-note clash">⚠ ${clashes} day${clashes > 1 ? "s" : ""} with overlaps</span>` : "",
+      week.beyond ? `<span class="wk-note">+${week.beyond} later</span>` : "",
+    ].filter(Boolean).join("");
+
+    // Four ways the grid can be incomplete, said differently, because they
+    // call for different actions: reconnect, re-consent, wait, or nothing.
+    const CAVEAT = {
+      disconnected: {
+        cls: "warn", icon: "⚠", fix: true,
+        text: `Google Calendar isn't connected, so only commitments stored
+               here are shown. A clear day may not be a free day.`,
+      },
+      needs_consent: {
+        cls: "warn", icon: "⚠", fix: true,
+        text: `Google is refusing this account's calendar. The saved Google
+               login was approved for mail only, and a login keeps the
+               permissions it was granted — so this will not fix itself.
+               Reconnect and approve calendar access to see your real
+               schedule here.`,
+      },
+      unknown: {
+        cls: "muted", icon: "◔", fix: false,
+        text: `Couldn't confirm the calendar connection, so anything that
+               lives only in Google may be missing from this week.`,
+      },
+    };
+    const cv = CAVEAT[week.state];
+    // The repair is a link, not a sentence telling you to go and find one.
+    // /api/gmail/auth/login redirects to Google's consent screen; approving
+    // there mints a credential that carries the calendar scope.
+    const caveat = cv
+      ? `<p class="wk-caveat ${cv.cls}">${cv.icon} ${esch(
+          cv.text.replace(/\s+/g, " ").trim())}${cv.fix
+          ? ` <a class="wk-fix" href="/api/gmail/auth/login">Connect Google Calendar →</a>`
+          : ""}</p>`
+      : "";
+
+    // Positive evidence, and the only kind that means anything here: a count
+    // of what actually came out of Google. `state === "ok"` only says a probe
+    // got an answer — it says that just as cheerfully when nothing has ever
+    // been imported.
+    const synced = week.state === "ok"
+      ? `<span class="wk-note synced" title="Events on this week's grid that came from your Google Calendar">${
+          week.from_google ? `📅 ${week.from_google} from Google` : "📅 Google Calendar connected"}</span>`
+      : "";
+
+    el.innerHTML = `
+      <div class="wk-top" data-season="${esch(first.season)}">
+        <h3>This week</h3>
+        <span class="wk-range">${esch(range)}</span>
+        <span class="wk-season" title="Seasonal theme">${
+          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
+        ${synced}${notes}
+        <button class="wk-amb" id="wk-amb" type="button"
+          aria-pressed="${ambienceOn()}" title="Seasonal decoration">
+          ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
+      </div>
+      ${caveat}
+      <div class="wk-grid" role="list" data-season="${esch(first.season)}">
+        ${days.map((day, i) => dayCard(day, i)).join("")}
+        <div class="wk-amb-layer" aria-hidden="true"></div>
+      </div>
+      <div class="hx-btns" style="margin-top:12px">${openBtn}</div>`;
+
+    mountAmbience(el.querySelector(".wk-amb-layer"), first.season);
+    wireWeek();
+  }
+
+  function mountAmbience(layer, seasonKey) {
+    if (!layer) return;
+    layer.innerHTML = "";
+    if (!ambienceOn()) return;
+    // Motion is opt-out via the toggle and automatically suppressed for
+    // prefers-reduced-motion in CSS; the glyphs stay purely decorative and
+    // never sit above interactive content.
+    const drift = (SEASONS[seasonKey] || SEASONS.jan).drift;
+    const n = 14;
+    let html = "";
+    for (let i = 0; i < n; i++) {
+      const g = drift[i % drift.length];
+      const left = Math.round((i / n) * 100 + (i % 3) * 4);
+      const dur = 9 + ((i * 7) % 11);
+      const delay = -((i * 13) % 17);
+      const size = 11 + ((i * 5) % 10);
+      html += `<span class="wk-flake" style="left:${left}%;
+        animation-duration:${dur}s; animation-delay:${delay}s;
+        font-size:${size}px">${g}</span>`;
+    }
+    layer.innerHTML = html;
+  }
+
+  function wireWeek() {
     const b = q("#cal-open");
     if (b) b.onclick = () => openAppKey("schedule");
+    const amb = q("#wk-amb");
+    if (amb) amb.onclick = () => {
+      localStorage.setItem(AMBIENCE_KEY, ambienceOn() ? "off" : "on");
+      if (HOME) renderWeek(HOME);
+    };
+    // Left/right move between days; the grid is one tab stop per column.
+    const cards = Array.from(document.querySelectorAll(".wk-day"));
+    cards.forEach((card, i) => {
+      card.onkeydown = (e) => {
+        const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const next = cards[i + step];
+        if (next) next.focus();
+      };
+    });
   }
 
   function renderDoNext(dn, d) {
@@ -170,6 +581,92 @@
       </div>`;
     if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
   }
+
+  // ---- Needs attention ------------------------------------------------------
+  // AUDIT.md section 3 promised a unified attention feed with Important/FYI
+  // severity. core._nudges() has been building exactly that on every /today --
+  // icons, severity, detail lines, typed actions -- and nothing ever rendered
+  // it. Do-Next shows the single most urgent thing; this is everything else
+  // that is still waiting, which is the difference between a prompt and a list
+  // you can actually clear.
+  function renderAttention(nudges) {
+    const el = q("#cc-attention");
+    if (!el) return;
+    const items = Array.isArray(nudges) ? nudges : [];
+    if (!items.length) {
+      // Empty because nothing needs attention is a real state and worth
+      // saying, but it does not need a whole card competing for the eye.
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    // Important first, then FYI, each keeping the order core produced.
+    const rank = (n) => (n.severity === "important" ? 0 : 1);
+    const sorted = items.slice().sort((a, b) => rank(a) - rank(b));
+    const important = sorted.filter((n) => n.severity === "important").length;
+    const rows = sorted.map((n, i) => {
+      const sev = n.severity === "important" ? "important" : "fyi";
+      const btn = n.action
+        ? `<button class="att-btn" data-nudge="${i}">${esch(actionLabel(n.action))}</button>`
+        : "";
+      return `<div class="att-row ${sev}">
+          <span class="att-icon" aria-hidden="true">${esch(n.icon || "•")}</span>
+          <span class="att-text">
+            <b>${esch(n.title || "")}</b>
+            ${n.detail ? `<em>${esch(n.detail)}</em>` : ""}
+          </span>
+          <span class="att-sev" title="${sev === "important" ? "Important" : "FYI"}">${sev === "important" ? "Important" : "FYI"}</span>
+          ${btn}
+        </div>`;
+    }).join("");
+    el.hidden = false;
+    el.innerHTML = `<h3>Needs attention`
+      + (important ? ` <span class="att-count">${important} important</span>` : "")
+      + `</h3>${rows}`;
+    // Reuse the Do-Next executor rather than a second copy of the same
+    // vocabulary -- the two must not drift into doing different things for
+    // the same action type.
+    el.querySelectorAll("[data-nudge]").forEach((b) => {
+      b.onclick = () => handleAction(sorted[Number(b.dataset.nudge)].action);
+    });
+  }
+
+  // ---- Deadlines ------------------------------------------------------------
+  // The assistant has been extracting interview times and bill due dates on
+  // every sync and filing them since the pipeline was written. Until now the
+  // only page that could display them was the legacy lounge.
+  function renderDeadlines(dl) {
+    const el = q("#cc-deadlines");
+    if (!el) return;
+    const d = dl || {};
+    const overdue = d.overdue || [], upcoming = d.upcoming || [], undated = d.undated || [];
+    if (!overdue.length && !upcoming.length && !undated.length) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    const when = (iso) => {
+      const t = new Date(iso);
+      if (isNaN(t)) return "";
+      return t.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    };
+    const row = (x, cls, note) => `<div class="dl-row ${cls}">
+        <span class="dl-text"><b>${esch(x.title)}</b>${x.source ? `<em>${esch(x.source)}</em>` : ""}</span>
+        <span class="dl-when">${esch(note || when(x.due_at))}</span>
+      </div>`;
+    // Overdue is its own state and is never sorted in with upcoming. An
+    // undated row says so rather than being rendered as due today -- the
+    // extractor stores a null when the email carried no date, and inventing
+    // one would be the "unknown rendered as a value" mistake again.
+    const html = overdue.map((x) => row(x, "overdue")).join("")
+      + upcoming.map((x) => row(x, "upcoming")).join("")
+      + undated.map((x) => row(x, "undated", "no date found")).join("");
+    el.hidden = false;
+    el.innerHTML = `<h3>Deadlines`
+      + (overdue.length ? ` <span class="dl-count">${overdue.length} overdue</span>` : "")
+      + `</h3>${html}`;
+  }
+
 
   function actionLabel(a) {
     if (!a) return "";
@@ -321,7 +818,11 @@
     // user can't retrace. "Expected" allocations are labelled as such: they
     // are the configured amount, not something seen in the ledger.
     let payLine = "";
-    if (pay.available && !pay.overdue) {
+    if (pay.available && pay.window_complete === false) {
+      // Every money figure is unknown here, so the arithmetic line would read
+      // "— paycheck − — to savings = —". State the reason instead.
+      payLine = `<p class="mny-pay">💵 ${esch(pay.text || "Only part of this window could be read, so this paycheck's figures can't be stated.")}</p>`;
+    } else if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
           : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
@@ -329,10 +830,27 @@
       }).join(" · ");
       const perDay = pay.per_day != null
         ? ` · about ${money(pay.per_day, 2)}/day keeps you to payday` : "";
+      // Money that came back out of savings is available but is NOT part of
+      // what this paycheck left you, so it is stated separately, never added.
+      const fromSav = pay.from_savings
+        ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
+      // An ambiguous allocation config would otherwise just look like a
+      // smaller number.
+      // A transfer whose description says "savings" but whose accounts don't.
+      // Direction can't be read from a description, so it is named here rather
+      // than guessed — silently ignoring it would push "left to spend" up.
+      // A real transfer whose only matching rule is withheld-before-deposit:
+      // deducted by nothing, so the configuration needs fixing.
+      const withheldConflict = (pay.withheld_rule_conflicts || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
+      const unmatched = (pay.unmatched_savings || []).length
+        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
+      const overlap = (pay.allocation_overlaps || []).length
+        ? `<br><span class="sub warn">⚠ ${esch(pay.allocation_overlaps[0])} — counted once, under the first rule. Fix the match terms in Settings.</span>` : "";
       payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
         − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
         · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}
+        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}${withheldConflict}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
@@ -357,12 +875,41 @@
     } else if (bud.available && !bud.configured) {
       budLine = `<p class="bud-line"><span id="bud-setup" style="cursor:pointer;color:var(--accent-2)">Set up monthly budgets →</span></p>`;
     }
+    // ---- subscriptions: what changed since you last looked --------------
+    // Only ever events. A list of every subscription belongs in the budget
+    // app; the card's job is to say what you didn't already know. An
+    // unavailable read renders nothing at all rather than "none found" —
+    // silence about an unread ledger beats a false all-clear.
+    const rec = bud.recurring || {};
+    let recLine = "";
+    if (rec.available && (rec.events || []).length) {
+      const verb = { appeared: "started charging", resumed: "charged again after a break" };
+      const per = { weekly: "wk", fortnightly: "2wk", monthly: "mo",
+                    quarterly: "qtr", annual: "yr" };
+      const bits = rec.events.map((e) => {
+        // Two charges set a cadence but not a fact. Every event inferred from
+        // one interval says so, including a price move — "Netflix went up" off
+        // two charges could as easily be two unrelated purchases.
+        const hedge = e.confidence === "low" ? " (seen twice — may not be a pattern)" : "";
+        if (e.event === "changed")
+          return `<b>${esch(e.name)}</b> ${money(e.from, 2)} → <b>${money(e.to, 2)}</b>${hedge}`;
+        return `<b>${esch(e.name)}</b> ${money(e.amount, 2)}/${esch(per[e.cadence] || e.cadence || "")} — ${verb[e.event] || "changed"}${hedge}`;
+      });
+      const more = rec.event_count > bits.length
+        ? ` · ${rec.event_count - bits.length} more` : "";
+      recLine = `<p class="mny-sub mny-rec">🔁 ${bits.join(" · ")}${more}</p>`;
+    }
     // Secondary context: a rolling window and remaining budget capacity.
     // Neither is a bank balance and neither is "left to spend".
     const subBits = [];
     if (m.last_30 != null) subBits.push(`Past 30 days <b>${money(m.last_30)}</b>${trend30}${through30}`);
     if (bud.fresh && bud.budget_room != null)
       subBits.push(`Budget room <b>${money(bud.budget_room)}</b> ${esch(bud.budget_room_scope || "across active budgets")}`);
+    // Committed spending, stated as a monthly figure so it is comparable to
+    // the other numbers on the card. Suppressed when the read was truncated:
+    // a floor presented as a total is the failure docs/BUDGETS.md forbids.
+    if (rec.available && rec.complete !== false && rec.monthly_equivalent)
+      subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
@@ -406,11 +953,11 @@
       <h3>Money</h3>
       ${staleLine}
       <div class="mny-hero">
-        <div class="mny-stat"><div class="v">${m.month != null ? money(m.month) : "—"}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}</span></div></div>
+        <div class="mny-stat"><div class="v">${m.month == null ? "—" : (m.month_complete === false ? "at least " : "") + money(m.month)}</div><div class="l">${m.month_label ? `Spent in ${esch(m.month_label.split(" ")[0])}` : "Spent this month"}<br><span style="font-size:10px">${m.month_complete === false ? "more transactions than could be read — a floor, not the total" : `month to date${m.month_savings ? ` · ${money(m.month_savings)} to savings not counted` : ""}`}</span></div></div>
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
-      ${payLine}${budLine}${subLine}
+      ${payLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
@@ -428,13 +975,31 @@
   }
 
   function renderPortfolio(p) {
-    p = p || { configured: false };
-    if (!p.configured) {
+    p = p || { state: "unreachable" };
+    // Three states, not two (PRODUCT_IDEAS #13). A stocks service that is down
+    // is NOT an empty portfolio, and telling you to "add your stocks" over a
+    // transient blip sends you to fix configuration that is already correct.
+    if (p.state === "unreachable") {
+      q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
+        <p class="att-empty">Couldn't reach the stocks service just now — a
+        connection problem, not a setup one. Your holdings are unchanged;
+        figures are hidden rather than guessed at.</p>`;
+      return;
+    }
+    if (p.state === "not_configured" || !p.configured) {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
         <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your stocks →</b><br>Then you'll see daily change, movers & watchlist here.</p>`;
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
       return;
     }
+    // The "Alert on move >= (%)" setting finally produces an alert.
+    const alerts = p.alerts || [];
+    const alertLine = alerts.length
+      ? `<div class="pf-alert">⚡ ${alerts.length} past your ${esch(String(p.move_threshold_pct))}% alert: `
+        + alerts.slice(0, 4).map((a) =>
+            `<b class="${a.direction}">${esch(a.symbol)} ${a.change_pct >= 0 ? "+" : ""}${a.change_pct}%</b>`).join(", ")
+        + (alerts.length > 4 ? ` +${alerts.length - 4} more` : "") + `</div>`
+      : "";
     const dc = p.day_change || 0, cls = dc >= 0 ? "up" : "down", arrow = dc >= 0 ? "▲" : "▼";
     const mv = p.movers || {};
     const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b></span><span class="${x.change_pct >= 0 ? "up" : "down"} mono">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}% · ${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
@@ -450,34 +1015,63 @@
     q("#cc-portfolio").innerHTML = `
       <h3>Portfolio · what changed</h3>
       ${live.length ? `<div class="mny-hero">
-        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">Today · ${dc >= 0 ? "+" : ""}${money(dc)}</div></div>
+        <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">${esch(p.session_label || "Last session")} · ${dc >= 0 ? "+" : ""}${money(dc)}${p.session_label ? "" : `<br><span style="font-size:10px">as-of date unavailable</span>`}</div></div>
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
         ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>` : ""}
+      ${alertLine}
       ${moverRow(mv.up, "▲")}${moverRow(mv.down, "▼")}
       <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
   }
 
   function renderHealth(d) {
     const h = d.health || {};
-    const score = d.score || { score: 0, parts: {} };
+    const score = d.score || { score: null, parts: {}, tracked: 0, of: 0 };
     const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
     const studyPct = st.goal_min ? Math.min(100, Math.round((st.today_min / st.goal_min) * 100)) : 0;
     const waterPct = w.goal ? Math.min(100, Math.round((w.oz / w.goal) * 100)) : 0;
     const fmtH = (m) => `${Math.floor((m || 0) / 60)}h ${(m || 0) % 60}m`;
-    const focusBtns = (st.presets || [25, 45, 60]).map((m) => `<button class="hx-btn" data-focus="${m}">${m}m</button>`).join("");
+    // `focus_sessions.label` is in the schema and the UI only ever wrote
+    // "Study", so a column built to tell sessions apart held one value.
+    const focusBtns = (st.presets || [25, 45, 60]).map((m) => `<button class="hx-btn" data-focus="${m}">${m}m</button>`).join("")
+      + `<input class="cc-input hx-label" id="hx-focus-label" list="hx-focus-labels" placeholder="Study" title="What is this session for?" />`
+      + `<datalist id="hx-focus-labels"><option>Study</option><option>Deep work</option><option>Reading</option><option>Job hunt</option><option>Admin</option></datalist>`;
     const waterBtns = (w.presets || [8, 16, 24]).map((oz) => `<button class="hx-btn" data-water="${oz}">+${oz}</button>`).join("");
     const rating = nut.rating;
     const nutBtns = ["poor", "okay", "good"].map((r) => `<button class="hx-btn ${rating === r ? "on" : ""}" data-nut="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join("");
+    // Sleep: column, model, POST /sleep and a score component all shipped with
+    // no control anywhere, so the value stayed null and the component could
+    // never contribute. Unlogged reads as "not logged", never as 0 hours.
+    const sleepHours = (d.health && d.health.sleep && d.health.sleep.hours != null)
+      ? d.health.sleep.hours : null;
+    const sleepBtnsHtml = [6, 7, 8, 9].map((h) =>
+      `<button class="hx-btn ${sleepHours === h ? "on" : ""}" data-sleep="${h}">${h}h</button>`).join("");
     const exam = st.exam;
     const parts = score.parts || {};
-    const scoreBars = Object.keys(parts).map((k) =>
-      `<div class="score-bar"><span>${esch(k)}</span><div class="track"><div class="fill" style="width:${Math.round((parts[k].ratio || 0) * 100)}%"></div></div></div>`).join("");
+    // An untracked component is drawn as an empty, muted track labelled "not
+    // tracked yet" -- NOT as a full-width bar at 0%, which is what a real miss
+    // looks like. `ratio || 0` rendered both identically.
+    const scoreBars = Object.keys(parts).map((k) => {
+      const part = parts[k] || {};
+      const untracked = part.ratio == null;
+      const pct = untracked ? 0 : Math.round(part.ratio * 100);
+      return `<div class="score-bar${untracked ? " untracked" : ""}">`
+        + `<span>${esch(k)}</span>`
+        + `<div class="track"><div class="fill" style="width:${pct}%"></div></div>`
+        + `<em>${untracked ? "not tracked yet" : pct + "%"}</em></div>`;
+    }).join("");
+    const hasScore = score.score != null;
+    const scoreHeading = hasScore
+      ? `today's score ${score.score}`
+      : "nothing tracked yet today";
+    const scoreSub = hasScore && score.of && score.tracked !== score.of
+      ? `<span class="score-of">from ${score.tracked} of ${score.of} tracked</span>`
+      : "";
     q("#cc-health").innerHTML = `
-      <h3>Health &amp; discipline · today's score ${score.score || 0}</h3>
+      <h3>Health &amp; discipline · ${scoreHeading}</h3>
       <div class="hx-score">
-        <div class="score-ring" style="--p:${score.score || 0}"><div class="hole">${score.score || 0}</div></div>
-        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}</div>
+        <div class="score-ring${hasScore ? "" : " untracked"}" style="--p:${hasScore ? score.score : 0}"><div class="hole">${hasScore ? score.score : "–"}</div></div>
+        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
       </div>
       <div class="hx">
         <div class="hx-row">
@@ -500,24 +1094,49 @@
           <div class="hx-head"><span class="l">🍽️ Nutrition today</span></div>
           <div class="hx-btns">${nutBtns}</div>
         </div>
+        <div class="hx-row">
+          <div class="hx-head"><span class="l">😴 Sleep</span><span class="v">${sleepHours == null ? "not logged" : sleepHours + "h"}</span></div>
+          <div class="hx-btns">${sleepBtnsHtml}</div>
+        </div>
       </div>`;
-    q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, "Study")));
+    const focusLabel = () => (q("#hx-focus-label") && q("#hx-focus-label").value.trim()) || "Study";
+    q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, focusLabel())));
     q("#cc-health").querySelectorAll("[data-water]").forEach((b) => (b.onclick = async () => { await post("/core/water", { oz: +b.dataset.water }); toast(`+${b.dataset.water} oz`); refresh(true); }));
     q("#cc-health").querySelector("[data-gym]").onclick = async () => { await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); };
     q("#cc-health").querySelectorAll("[data-nut]").forEach((b) => (b.onclick = async () => { await post("/core/nutrition", { rating: b.dataset.nut }); refresh(true); }));
+    // `daily_log.sleep_hours`, POST /sleep and the `sleep` score component all
+    // existed with no control anywhere in the UI, so the column stayed null
+    // forever and the component could never contribute.
+    const sleepBtns = q("#cc-health").querySelectorAll("[data-sleep]");
+    sleepBtns.forEach((b) => (b.onclick = async () => {
+      await post("/core/sleep", { hours: +b.dataset.sleep });
+      toast(`${b.dataset.sleep}h sleep logged`);
+      refresh(true);
+    }));
   }
 
   function renderCapture(items) {
     items = items || [];
+    // `captures.kind` and `CapturePatch.kind` have been in the schema from the
+    // start; the UI only ever wrote 'note', so the column carried one value.
+    const KINDS = { note: "📝", task: "✓", idea: "💡" };
     const list = items.map((c) =>
-      `<div class="cap-item" data-id="${c.id}"><span>•</span><span>${esch(c.text)}</span><button class="x" title="done">✕</button></div>`).join("");
+      `<div class="cap-item" data-id="${c.id}"><span title="${esch(c.kind || "note")}">${KINDS[c.kind] || "•"}</span><span>${esch(c.text)}</span><button class="x" title="done">✕</button></div>`).join("");
     q("#cc-capture").innerHTML = `
       <h3>Quick capture</h3>
-      <div class="cap-form"><input class="cc-input" id="cap-input" placeholder="What's on your mind?" /><button class="hx-btn" id="cap-add">Add</button></div>
+      <div class="cap-form">
+        <select class="cc-input cap-kind" id="cap-kind" title="What kind of thing is this?">
+          <option value="note">📝 Note</option>
+          <option value="task">✓ Task</option>
+          <option value="idea">💡 Idea</option>
+        </select>
+        <input class="cc-input" id="cap-input" placeholder="What's on your mind?" /><button class="hx-btn" id="cap-add">Add</button>
+      </div>
       <div class="cap-list">${list}</div>`;
     const add = async () => {
       const v = q("#cap-input").value.trim(); if (!v) return;
-      await post("/core/capture", { text: v }); q("#cap-input").value = ""; refresh(true);
+      const kind = (q("#cap-kind") || {}).value || "note";
+      await post("/core/capture", { text: v, kind }); q("#cap-input").value = ""; refresh(true);
     };
     q("#cap-add").onclick = add;
     q("#cap-input").onkeydown = (e) => { if (e.key === "Enter") add(); };
@@ -708,6 +1327,12 @@
       tiles.push(`<a class="launch-tile" href="${links._importer}" target="_blank" rel="noopener" title="Firefly data importer">
         <span class="ic">📥</span><span class="nm">Importer</span><span class="dot"></span><span class="ext">↗</span></a>`);
     }
+    // jobs.html shipped in gateway/static and was linked ONLY from the legacy
+    // lounge, so demoting that page took the job-hunt board offline with it.
+    // A static page rather than a registered service, so it gets a tile of its
+    // own rather than a registry entry.
+    tiles.push(`<a class="launch-tile" href="/jobs.html" title="Job hunt board">
+      <span class="ic">💼</span><span class="nm">Job hunt</span><span class="dot"></span></a>`);
     grid.innerHTML = tiles.join("") || '<p class="att-empty">No apps registered.</p>';
     grid.querySelectorAll(".launch-tile[data-key]").forEach((el) => {
       el.onclick = (e) => {
@@ -959,11 +1584,14 @@
   (async function boot() {
     await loadApps();
     await refresh(true);
+    loadSystems();
+    scheduleMidnightRollover();
     // background refresh every 60s (skip while a modal/palette/focus is open)
     setInterval(() => {
       if (q("#overlay").classList.contains("open")) return;
       if (!q("#palette").hidden || !q("#focus").hidden) return;
       refresh(false);
+      loadSystems();
     }, 60000);
   })();
 })();

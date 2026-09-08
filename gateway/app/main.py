@@ -76,10 +76,21 @@ async def proxy(app_key: str, path: str, request: Request):
                 {"error": f"{sub.name} unavailable", "detail": str(exc)},
                 status_code=502,
             )
+    # A redirect is nothing but its Location header, and only content, status
+    # and content-type were being copied — so an upstream 307 arrived at the
+    # browser as a 307 pointing nowhere and simply did nothing. That is the
+    # whole of /api/gmail/auth/login, which is how Google Calendar gets
+    # reconnected, so the one repair the dashboard can offer was unreachable
+    # through the front door it is served from.
+    headers = {}
+    location = upstream.headers.get("location")
+    if location:
+        headers["location"] = location
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type"),
+        headers=headers,
     )
 
 

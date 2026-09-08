@@ -115,54 +115,87 @@ function setMode(mode) {
   $("#modal-mode").textContent = label;
 }
 
-// Inline-SVG donut for category spending (no external chart libs — CSP-safe).
-const DONUT_COLORS = ["#e0592a", "#f5c542", "#5bd6c0", "#4aa3ff", "#c58cff",
-  "#7bd88f", "#ff8a5b", "#38bdf8", "#a3e635", "#f2b8d0"];
+// The donut's geometry, markup and slice labels live in donut.js so they can
+// be unit-tested by `node --test` rather than only eyeballed. This file keeps
+// the part that genuinely needs a browser: pointing at a wedge.
+const DONUT_COLORS = (typeof Donut !== "undefined" && Donut.COLORS) || [];
 
 function spendingDonut(cats, title) {
-  const items = (cats || []).filter((c) => Number(c.amount) > 0);
-  if (!items.length) return "";
-  // Keep the biggest 8 slices; roll the rest into "Other".
-  const sorted = [...items].sort((a, b) => b.amount - a.amount);
-  const top = sorted.slice(0, 8);
-  const rest = sorted.slice(8);
-  if (rest.length) top.push({ name: "Other", amount: rest.reduce((s, c) => s + Number(c.amount), 0) });
-  const total = top.reduce((s, c) => s + Number(c.amount), 0);
-  const cx = 100, cy = 100, rO = 82, rI = 50;
-  const pt = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
-  let a0 = -Math.PI / 2;
-  const slices = top.map((c, i) => {
-    const frac = Number(c.amount) / total;
-    const a1 = a0 + frac * Math.PI * 2;
-    const large = a1 - a0 > Math.PI ? 1 : 0;
-    const [x0, y0] = pt(rO, a0), [x1, y1] = pt(rO, a1);
-    const [x2, y2] = pt(rI, a1), [x3, y3] = pt(rI, a0);
-    // A single full slice can't be drawn as one arc; nudge it closed.
-    const path = frac >= 0.999
-      ? `M${cx - rO} ${cy} A${rO} ${rO} 0 1 1 ${cx + rO} ${cy} A${rO} ${rO} 0 1 1 ${cx - rO} ${cy} M${cx - rI} ${cy} A${rI} ${rI} 0 1 0 ${cx + rI} ${cy} A${rI} ${rI} 0 1 0 ${cx - rI} ${cy} Z`
-      : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${rO} ${rO} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} L${x2.toFixed(2)} ${y2.toFixed(2)} A${rI} ${rI} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z`;
-    a0 = a1;
-    return `<path d="${path}" fill="${DONUT_COLORS[i % DONUT_COLORS.length]}" fill-rule="evenodd"></path>`;
-  }).join("");
-  const legend = top.map((c, i) => {
-    const pct = Math.round((Number(c.amount) / total) * 100);
-    return `<div class="row" style="padding:4px 0"><div class="grow">
-      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${DONUT_COLORS[i % DONUT_COLORS.length]};margin-right:8px"></span>
-      <b>${esc(c.name)}</b> <span class="sub">${pct}%</span></div>
-      <span class="right">$${Number(c.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>`;
-  }).join("");
-  const totalTxt = `$${Math.round(total).toLocaleString()}`;
-  return `
-    <h4>${esc(title || "Spending — last 30 days")}</h4>
-    <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
-      <svg viewBox="0 0 200 200" width="180" height="180" style="flex:0 0 auto">
-        ${slices}
-        <text x="100" y="96" text-anchor="middle" fill="var(--text)" font-size="20" font-weight="700">${totalTxt}</text>
-        <text x="100" y="116" text-anchor="middle" fill="var(--muted, #8a93a6)" font-size="11">30-day spend</text>
-      </svg>
-      <div style="flex:1;min-width:200px">${legend}</div>
-    </div>`;
+  return typeof Donut !== "undefined" ? Donut.render(cats, title) : "";
 }
+
+/* Hover, focus and touch all mean the same thing here: "tell me about this
+ * wedge". One delegated listener on the document handles every donut on the
+ * page, whenever it was rendered — the alternative is re-binding after each
+ * innerHTML swap, and a donut that silently stops responding after a refresh
+ * is worse than one that never responded at all.
+ *
+ * The centre of the donut is the readout. It holds the 30-day total at rest
+ * and the pointed-at slice while pointing, then puts the total back — so the
+ * chart never leaves a partial figure sitting where a total was, which is the
+ * same rule docs/BUDGETS.md applies to every other number on the page. */
+(function wireDonutHover() {
+  if (typeof document === "undefined") return;
+
+  function donutOf(el) {
+    const wrap = el.closest && el.closest(".dn-wrap");
+    return wrap || null;
+  }
+
+  function show(wrap, i) {
+    const svg = wrap.querySelector(".dn-svg");
+    const total = wrap.querySelector(".dn-total");
+    const cap = wrap.querySelector(".dn-cap");
+    if (!svg || !total || !cap) return;
+    if (total.dataset.rest === undefined) {
+      total.dataset.rest = total.textContent;
+      cap.dataset.rest = cap.textContent;
+    }
+    const slice = svg.querySelector('.dn-slice[data-i="' + i + '"]');
+    if (!slice) return;
+    // Read the two figures straight off the wedge. donut.js composed them
+    // (centreFor) next to the label they belong with, already trimmed to fit
+    // the hole — this used to re-split data-label on " · " and " $", which
+    // made the middle of the chart depend on a separator picked for display.
+    total.textContent = slice.getAttribute("data-v") || "";
+    cap.textContent = slice.getAttribute("data-cap") || "";
+    wrap.classList.add("dn-active");
+    svg.querySelectorAll(".dn-slice").forEach((p) =>
+      p.classList.toggle("is-on", p.getAttribute("data-i") === String(i)));
+    wrap.querySelectorAll(".dn-row").forEach((r) =>
+      r.classList.toggle("is-on", r.getAttribute("data-i") === String(i)));
+  }
+
+  function clear(wrap) {
+    const total = wrap.querySelector(".dn-total");
+    const cap = wrap.querySelector(".dn-cap");
+    if (total && total.dataset.rest !== undefined) total.textContent = total.dataset.rest;
+    if (cap && cap.dataset.rest !== undefined) cap.textContent = cap.dataset.rest;
+    wrap.classList.remove("dn-active");
+    wrap.querySelectorAll(".is-on").forEach((e) => e.classList.remove("is-on"));
+  }
+
+  function onEnter(ev) {
+    const el = ev.target.closest && ev.target.closest("[data-i]");
+    const wrap = el && donutOf(el);
+    if (!wrap) return;
+    show(wrap, el.getAttribute("data-i"));
+  }
+
+  function onLeave(ev) {
+    const wrap = donutOf(ev.target);
+    if (!wrap) return;
+    // Only clear when the pointer has actually left the whole donut, not when
+    // it crosses between two adjacent wedges.
+    if (ev.relatedTarget && wrap.contains(ev.relatedTarget)) return;
+    clear(wrap);
+  }
+
+  document.addEventListener("mouseover", onEnter, true);
+  document.addEventListener("mouseout", onLeave, true);
+  document.addEventListener("focusin", onEnter, true);
+  document.addEventListener("focusout", onLeave, true);
+})();
 
 const RENDERERS = {
   async powerbuy(app, body) {
@@ -396,7 +429,14 @@ const RENDERERS = {
   },
 
   async budget(app, body) {
-    const d = await api("/budget/status");
+    // The full recurring inventory is its own read: /status carries only the
+    // headline (a few events), because the 13-month history behind the list
+    // is too expensive to put on the homepage's hot path.
+    const [d, rec] = await Promise.all([
+      api("/budget/status"),
+      api("/budget/recurring").catch(() => ({ available: false,
+        reason: "the budget service didn't answer" })),
+    ]);
     setMode(d.available === false ? "disconnected" : (d.freshness && !d.freshness.current_ok ? "paused" : ""));
     $(".modal").classList.add("wide");
 
@@ -543,6 +583,41 @@ const RENDERERS = {
     const unbudgeted = ubCats.length ? `
       <p class="empty" style="margin-top:10px">Not in any budget: ${ubCats.map(([k, v]) => `${esc(k)} ${fmt(v)}`).join(" · ")}</p>` : "";
 
+    // ---- recurring charges ----
+    // The Money card shows only what CHANGED; the full inventory lives here.
+    // Every row states its own evidence — how many charges it was inferred
+    // from, and when it was last seen — because a subscription list you
+    // can't audit is a list you can't act on.
+    let recSection = "";
+    if (rec.available) {
+      const badge = { appeared: ["new", "started charging"],
+                      changed: ["price", "changed price"],
+                      resumed: ["back", "charged again after a break"] };
+      const evs = (rec.events || []).map((e) => {
+        const [tag] = badge[e.event] || ["", ""];
+        const what = e.event === "changed"
+          ? `${fmt(e.from)} → <b>${fmt(e.to)}</b>`
+          : `<b>${fmt(e.amount)}</b> ${esc(e.cadence || "")}`;
+        return `<div class="btxn"><span class="grow"><b>${esc(e.name)}</b>
+          <span class="sub"> ${esc(tag)}${e.confidence === "low" ? " · seen twice only" : ""}</span></span>
+          <span class="mono">${what}</span></div>`;
+      }).join("");
+      const rows = (rec.items || []).map((i) => `
+        <div class="btxn"><span class="grow"><b>${esc(i.name)}</b>
+          <span class="sub"> ${esc(i.cadence)} · ${i.charges} charges · last ${esc((i.last_seen || "").slice(5))}${i.known_bill ? " · a Firefly bill" : ""}${i.confidence === "low" ? " · low confidence" : ""}</span></span>
+          <span class="mono">${fmt(i.amount)}</span></div>`).join("");
+      // A truncated read is stated, never rounded off into a total.
+      const note = rec.complete === false
+        ? `<p class="empty" style="margin:4px 0 8px">Only part of the history could be read, so nothing here is claimed as new or newly resumed, and no monthly total is given — these are the charges that were seen.</p>`
+        : (rec.monthly_equivalent
+            ? `<p class="empty" style="margin:4px 0 8px">About <b>${fmt(rec.monthly_equivalent)}/month</b> committed across ${(rec.items || []).filter((i) => i.confidence === "high").length} recurring charges, over the last ${rec.lookback_days || 400} days. Two-charge patterns are listed but not counted.</p>`
+            : "");
+      if (rows || evs)
+        recSection = `<h4>Recurring charges</h4>${note}${evs}${rows}`;
+    } else if (rec.reason) {
+      recSection = `<h4>Recurring charges</h4><p class="empty">Couldn't read the transaction history — ${esc(rec.reason)}. Not "no subscriptions found".</p>`;
+    }
+
     // ---- bills ----
     const billRows = bills.supported ? bills.items.slice(0, 8).map((b) => `
       <div class="btxn"><span class="grow"><b>${esc(b.name)}</b></span>
@@ -555,6 +630,7 @@ const RENDERERS = {
       <div class="vgrid">${vessels}</div>
       ${uncat}${unbudgeted}
       ${billRows ? `<h4>Fixed bills (from Firefly)</h4><div>${billRows}</div>` : ""}
+      ${recSection}
       <div class="hx-btns" style="margin-top:14px">
         <button class="btn btn-ghost" id="bud-edit">Edit budgets</button>
       </div>`;

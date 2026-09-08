@@ -232,6 +232,11 @@ services:
       # /internal/token endpoint) to push events to the real Google Calendar.
       GMAIL_URL: http://gmail:8000
       GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+      # How often the schedule service pulls Google Calendar into Postgres.
+      # It owns this now: the pull used to happen only inside the assistant's
+      # sync cycle, which AUTO_SYNC_SECONDS disables by default, so on a stock
+      # deployment nothing ever imported a Google event. 0 disables.
+      GCAL_SYNC_SECONDS: ${GCAL_SYNC_SECONDS:-900}
     depends_on:
       db:
         condition: service_healthy
@@ -275,6 +280,14 @@ services:
       NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
     ports:
       - "8085:8000"
+    volumes:
+      # The host's deploy record, READ-ONLY. deploy.sh writes it outside
+      # the repo so it survives the `git reset --hard` a deploy performs,
+      # and the dashboard needs it to notice that the last deploy failed
+      # and left the previous build serving. Read-only because nothing in a
+      # container has any business changing what the box believes it is
+      # running. An absent mount reads as `unknown`, never `current`.
+      - ${FRANKENSTEIN_STATE_DIR:-/root/.frankenstein}:/var/frankenstein:ro
     depends_on:
       db:
         condition: service_healthy

@@ -196,6 +196,89 @@ The next payday is `last paycheck + cadence`, where cadence is the **observed**
 gap between the last two paychecks when it is plausible (5–40 days) and the
 configured `cadence_days` otherwise.
 
+### Direction, not just names (PO review of `e7adf83`)
+
+Firefly records both legs of every movement, so **which account the money left
+and which it entered** is the only reliable signal of direction. Two P1 defects
+shipped because matching searched every field indiscriminately:
+
+- a $300 transfer **out of** savings was counted as a $300 contribution **to**
+  it, and
+- a grocery run **paid from** the savings account disappeared from spending
+  entirely.
+
+The rule now:
+
+| what matched | meaning |
+|---|---|
+| destination only | **contribution** — money went into savings |
+| source only | **reverse** — money came out; reported as `from_savings`, never added to spendable |
+| both ends | same account; no net movement |
+| neither (no account data at all) | fall back to description/category — the only case where a description may decide |
+
+A description reading "Savings" says nothing about direction — the same word
+appears on the way in and on the way out — so it is consulted **only** when
+neither account is named.
+
+**This means allocations should match on the account name, not the
+description.** If a movement's description matches a rule but neither of its
+accounts does, direction is unknowable: it is counted neither way and reported
+as `unmatched_savings`, shown on the card. Ignoring it silently would
+understate savings and push "left to spend" **up**, which is the dangerous
+direction — the same class of error as the defect this section fixes, pointed
+the other way.
+
+**Each movement is claimed by at most one allocation**, in configuration
+order. Two rules that both matched "savings" used to deduct the same transfer
+twice, quietly halving what the card said was left. Overlapping configuration
+is now surfaced as `allocation_overlaps` rather than silently producing a
+smaller number.
+
+### Withheld rules never claim a real movement
+
+An allocation marked `already_withheld` describes money the employer took
+**before** the deposit landed, so it deducts nothing by design. Single
+assignment (above) originally took the first matching rule regardless, so a
+pre-deposit rule could claim a genuine post-payday transfer and then deduct
+zero — the contribution vanished and "left to spend" read high. Post-deposit
+rules now get first refusal. If a real movement matches **only** a withheld
+rule, the configuration is wrong: it is reported as
+`withheld_rule_conflicts` and named on the card, never silently zeroed.
+
+### A truncated window is not a total
+
+`/cycle` pages Firefly under a cap. Hitting that cap means the window is a
+**partial view**, not a small ledger, so `window.complete` is published and the
+engine treats it exactly like a stale ledger.
+
+**Every** money figure in the cycle goes `null`, not just the derived ones.
+The error runs in both directions: missing withdrawals make `left` an
+*overestimate*, while a missing deposit makes the paycheck itself wrong and
+`left` an *underestimate*. So none of these numbers is a floor, and absent
+completeness evidence reads as unknown rather than as proof that what was read
+is all there is. `figures_complete: false` marks the whole block.
+
+**A lower bound is not the same as unknown, and the difference is per-figure.**
+Month-to-date spend from a truncated read can only grow — unread withdrawals
+add to it — so the headline renders "**at least** $X" rather than throwing the
+number away. `left` has no such property (missing withdrawals overstate it, a
+missing deposit understates it), so it goes `null`. Month completeness is
+carried **independently of the pay cycle**: a truncated window with no matching
+paycheck takes the unavailable path and loses every cycle field, so a headline
+relying on those would silently print a partial read as an exact total.
+
+**The boundary case:** at exactly `cap × 50` rows every page read was full and
+the cap is spent, so the next page might hold one more row or none. There is
+no evidence either way, and no evidence must not read as complete — so that
+case is reported incomplete. A short final page is the only proof the ledger
+ended inside the window.
+
+`/month` publishes the same signal, and the **monthly budget engine** consumes
+it: a truncated month read understates spend, which would make every budget
+look healthier than it is, so it pauses guidance with
+`signal: "incomplete_window"`. Undercounting spending
+confidently is the failure mode this prevents.
+
 ### What it refuses to claim
 
 - **Expected ≠ observed.** An allocation the ledger hasn't seen yet still
@@ -225,6 +308,66 @@ Firefly's own bills API is the source of truth (`firefly /bills` — name,
 average amount, next expected date, paid-this-month). If the user hasn't
 configured bills in Firefly, the section simply doesn't render
 (`supported:false`); no parallel bill database exists here.
+
+## Recurring charges (recurring.py — pure and unit-tested)
+
+Firefly holds every transaction, so recurrence is a property of the system
+rather than a script you run by hand. `firefly /history` reads 13 months of
+**withdrawals** (transfers are not purchases, and the $1,100 to Fidelity every
+payday is a perfect monthly pattern that is not a subscription) plus Firefly's
+declared bills; `budget /recurring` turns that into an inventory and, more
+importantly, into **events**.
+
+| event | claim |
+|---|---|
+| `appeared` | something started charging you that wasn't charging before |
+| `changed` | a known charge moved price |
+| `resumed` | one you believed cancelled charged again after a gap |
+
+The card shows events only. The value of the feature is its false-positive
+rate: a card that announces a new subscription every time you buy coffee twice
+gets ignored, and an ignored card is worse than none — the month something
+real appears, you scroll past that too. So the rules are refusals:
+
+- **A cadence must be a rhythm.** The median interval sets it; every other
+  interval must be that rhythm or a whole multiple of it (a skipped month is
+  not a disproof). Anything else — three days when the rhythm is thirty — is a
+  merchant you use often, not a commitment, and it is dropped entirely rather
+  than reported at low confidence.
+- **"Appeared" requires history before it.** If the first charge sits within a
+  cadence of `window.start`, the honest answer is "I can't see far enough
+  back", not "this is new". `history_before_days` carries the evidence.
+- **"New" has a shelf life** (`APPEARED_WINDOW_DAYS`), and a cadence too slow
+  to establish itself inside that shelf life can never be new. This is what
+  kills the signature false positive of the genre — an annual renewal seen
+  twice, announced as a brand-new subscription — and it kills it by
+  arithmetic, not by demanding a third charge that a monthly subscription
+  would never produce in time.
+- **A resumption is only news while it is fresh.** The gap stays in the
+  history forever; without this, the card would announce "it came back!" every
+  day for the rest of time.
+- **A price change must clear both a relative and an absolute floor**
+  (2% *and* $0.50), so card-rounding drift is not an announcement and a $1.99
+  charge doesn't "change price" over a dime. The established price is the
+  **mode**, not the mean and not the latest, so one promotional month does not
+  redefine what a thing costs.
+- **A bill declared in Firefly is never a discovery.** Firefly stays the
+  source of truth; the detector only reports what the user hasn't already
+  said.
+
+### Honesty under a truncated read
+
+Same rule as everywhere else here (see *Freshness*): `window.complete = false`
+suppresses `appeared` and `resumed` **entirely**, because both are claims
+about what *isn't* in the data and a partial read cannot support one. Price
+changes survive — those are two charges that were actually read. The response
+says `absence_claims_suppressed: true` rather than implying there were none,
+and the card drops the "$X/mo across N subscriptions" line rather than
+publishing a floor as a total.
+
+Low-confidence items (two charges — a cadence, but only one interval) are
+listed and hedged on screen, and are **excluded** from the monthly-equivalent
+total rather than estimated into it.
 
 ## Future path (architected, not built)
 

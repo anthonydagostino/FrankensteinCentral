@@ -269,6 +269,50 @@ else:
     add("FAIL", "gmail svc", f"{err}")
 print()
 
+print("-- google calendar (schedule service) --")
+# Prints states and counts only. No token, no scope value, no event details
+# ever leave this script — same rule as the rest of it.
+st, ch, err = get(8084, "/calendar-health", timeout=20)
+if st == 200 and ch is not None:
+    state = ch.get("state", "?")
+    if state == "ok":
+        add("PASS", "gcal conn", "Calendar API answered — credential is in scope")
+    elif state == "needs_consent":
+        add("FAIL", "gcal conn",
+            "credential REFUSED by Calendar (wrong scopes). The saved Google "
+            "login was granted mail access only and will never gain calendar "
+            "access on its own. Fix: open http://localhost:8083/auth/login and "
+            "approve calendar access.")
+    elif state == "disconnected":
+        add("FAIL", "gcal conn", "no Google credential at all — "
+                                 "connect Gmail first (docs/SETUP-GMAIL.md)")
+    else:
+        add("WARN", "gcal conn", f"state={state} — could not reach Calendar just now")
+    iv = ch.get("pull_interval_seconds")
+    if iv is None:
+        add("WARN", "gcal pull", "no pull_interval_seconds — schedule container is an OLD build, redeploy")
+    elif iv == 0:
+        add("WARN", "gcal pull", "import loop DISABLED (GCAL_SYNC_SECONDS=0) — "
+                                 "nothing will import from Google Calendar")
+    else:
+        add("PASS", "gcal pull", f"importing every {iv}s")
+else:
+    add("WARN", "gcal conn", f"no /calendar-health ({err or 'old build?'})")
+
+# How much actually arrived. The connection being healthy and events actually
+# being imported are different facts, and only the second one is what the
+# dashboard draws.
+st, evs, err = get(8084, "/events", timeout=20)
+if st == 200 and evs is not None:
+    rows = evs.get("events", [])
+    from_google = [e for e in rows if e.get("source") == "google_calendar"]
+    add("PASS" if from_google else "WARN", "gcal events",
+        f"{len(from_google)} of {len(rows)} stored event(s) came from Google Calendar"
+        + ("" if from_google else " — nothing imported yet"))
+else:
+    add("WARN", "gcal events", f"{err or 'schedule service did not answer'}")
+print()
+
 print("-- budget (time-aware, over Firefly) --")
 st, bs, err = get(8088, "/status?fresh=1", timeout=60)
 if st == 200 and bs is not None:
@@ -337,6 +381,38 @@ if st == 200 and pay is not None:
             f"(savings excluded: ${m.get('savings')}), avg ${m.get('daily_avg')}/day")
 else:
     add("WARN", "paycheck", f"{err or 'no data'} — OLD build (no /paycheck)? redeploy needed")
+
+print()
+print("-- recurring charges --")
+st, rec, err = get(8088, "/recurring", timeout=90)
+if st == 200 and rec is not None:
+    if not rec.get("available"):
+        add("WARN", "recurring", f"unavailable — {rec.get('reason','?')}")
+    else:
+        items = rec.get("items", [])
+        high = [i for i in items if i.get("confidence") == "high"]
+        add("PASS", "recurring", f"{len(items)} detected ({len(high)} confident) "
+            f"over {rec.get('lookback_days')}d from {rec.get('window_start')}; "
+            f"~${rec.get('monthly_equivalent')}/mo committed")
+        if not rec.get("complete", True):
+            # The page cap bit. Everything read still stands; what CANNOT be
+            # concluded is anything about what is missing.
+            add("WARN", "recurring window",
+                "TRUNCATED read — 'appeared'/'resumed' suppressed by design; "
+                "raise HISTORY_MAX_PAGES if this persists")
+        for e in rec.get("events", [])[:5]:
+            detail = (f"${e.get('from')} -> ${e.get('to')}"
+                      if e.get("event") == "changed"
+                      else f"${e.get('amount')} {e.get('cadence')}")
+            add("PASS", f"  {e.get('event')}", f"{str(e.get('name'))[:24]}: {detail} "
+                f"[{e.get('confidence')}, {e.get('charges')} charges]")
+        # A merchant matched to a Firefly bill is deliberately never announced.
+        known = [i for i in items if i.get("known_bill")]
+        if known:
+            add("PASS", "  declared", f"{len(known)} already a Firefly bill — "
+                "never reported as a discovery")
+else:
+    add("WARN", "recurring", f"{err or 'no data'} — OLD build (no /recurring)? redeploy needed")
 
 print()
 print("-- Firefly data-quality audit (last 12 months) --")

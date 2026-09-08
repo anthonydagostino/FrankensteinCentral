@@ -40,15 +40,14 @@ bash scripts/promote.sh              # promote STATE.json's implementation_commi
 bash scripts/promote.sh <sha>        # promote a specific commit
 ```
 
-`promote.sh` refuses unless **all three** hold:
+`promote.sh` refuses on exactly one condition:
 
-1. `STATE.json` status is `accepted` — the Product Owner accepted the work.
-2. `PRODUCT_DIRECTIVE.md` says `Deployment Authorization: deploy-approved`.
-3. The move is a **fast-forward** — production history is never rewritten.
+1. The move must be a **fast-forward** — production history is never rewritten.
 
-Acceptance and deployment authorization are **separate gates**. `accepted` means
-the work is good; it does not mean ship it now. Authorization does not excuse
-failing acceptance. Both, or no promotion.
+There is no acceptance gate and no deployment-authorization gate. They were
+removed on 2026-09-07 at Anthony's instruction as owner. What still stops a bad
+deploy is not an approval: `deploy.sh` runs the full suite on the box before
+touching any container and aborts if it fails.
 
 `--force` / `--bootstrap` skip gates 1 and 2 but **never** gate 3. They exist
 for the one-time bootstrap migration and explicitly approved overrides.
@@ -155,6 +154,15 @@ git -C ~/FrankensteinCentral rev-parse origin/production
 ```
 
 If `running_commit` equals `origin/production`, the deploy already happened.
+
+You should not have to SSH in to learn this. The dashboard footer reads the
+same record and says what is running — and when the last attempt failed, it
+says so and names the older build you are actually looking at. That case used
+to be completely silent from the UI: `deploy.sh` only advances
+`running_commit` on success, so a failed deploy leaves the previous build
+serving every request perfectly. On 2026-09-07 that ran for five poll cycles
+unnoticed. The footer is read-only — `promote.sh` is still the only way to
+move production.
 
 ### A deploy keeps retrying
 
