@@ -465,7 +465,7 @@ def test_a_truncated_window_suppresses_totals_and_guidance():
 def test_a_complete_window_is_unaffected():
     d = standard()
     assert d["window_complete"] is True
-    assert d["month"]["complete"] is True
+    assert d["month"]["window_complete"] is True
     assert d["cycle"]["per_day"] is not None
 
 
@@ -612,7 +612,7 @@ def test_a_truncated_window_makes_every_money_figure_unknown():
         transfers=[],
         freshness={"ingest_days": 0, "activity_days": 0, "month_ingested": True,
                    "ledger_latest_txn": "2026-09-07", "window_complete": False})["cycle"]
-    assert c["figures_complete"] is False
+    assert c["window_complete"] is False
     for key in ("paycheck", "spendable", "spent", "left",
                 "savings_total", "from_savings", "per_day"):
         assert c[key] is None, f"{key} survived a truncated window"
@@ -685,3 +685,76 @@ def test_the_three_rows_that_all_say_savings_are_told_apart():
                                            source="Savings", destination="Store")])
     assert purchase["savings_total"] == 0.0
     assert purchase["left"] == 1750.0, "a purchase funded from savings vanished from spending"
+
+
+# ---- claiming a movement once is only half of not double-counting ---------
+#
+# The claim loop already assigns each movement to at most one rule and records
+# the collision in `allocation_overlaps`. The rules that LOST it still had
+# `seen == []`, so they fell through to their configured amount: the same $100
+# left the pot once as `observed` and again as `expected`, and the overlap was
+# reported while the arithmetic went on being wrong.
+
+def test_two_rules_matching_one_movement_deduct_it_once_in_total():
+    cfg = {**CFG, "allocations": [
+        {"name": "Savings", "amount": 100, "match": ["savings"]},
+        {"name": "Savings Pot", "amount": 100, "match": ["savings"]}]}
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 100.0,
+                           source="Checking", destination="Savings")],
+            cfg=cfg)["cycle"]
+    assert d["savings_total"] == 100.0, "the same movement was deducted under two rules"
+    assert d["left"] == 2300.0
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Savings"]["source"] == "observed"
+    assert allocs["Savings Pot"]["source"] == "ambiguous_rule"
+    assert allocs["Savings Pot"]["amount"] == 0.0
+    assert allocs["Savings Pot"]["claimed_by"] == ["Savings"]
+    assert d["allocation_overlaps"], "the collision should still be reported, not just fixed"
+
+
+def test_a_rule_with_no_movement_at_all_still_expects_its_configured_amount():
+    """The guard against over-suppression. `ambiguous_rule` must fire only on a
+    genuine collision — a rule whose transfer simply hasn't been imported yet
+    is still `expected`, exactly as before."""
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "x", 1100.0,
+                           source="Checking", destination="Fidelity")])["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Fidelity"]["source"] == "observed"
+    assert allocs["Marcus"]["source"] == "expected"
+    assert allocs["Marcus"]["amount"] == 500.0
+    assert allocs["Marcus"]["claimed_by"] is None
+
+
+def test_distinct_rules_with_distinct_movements_are_both_observed():
+    """The other over-suppression guard: two rules that do not compete must
+    both keep their own money."""
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "x", 1100.0,
+                           source="Checking", destination="Fidelity"),
+                       txn(date(2026, 8, 29), "y", 500.0,
+                           source="Checking", destination="Marcus")])["cycle"]
+    assert d["savings_total"] == 1600.0
+    assert all(a["source"] == "observed" for a in d["allocations"])
+
+
+def test_a_withheld_rule_still_yields_to_the_post_deposit_rule():
+    """Existing behaviour that the fix must not disturb: post-deposit rules get
+    first refusal, so the real transfer lands on the rule that can account for
+    it rather than on the one that deducts nothing by design."""
+    cfg = {**CFG, "allocations": [
+        {"name": "401k", "amount": 300, "match": ["savings"], "already_withheld": True},
+        {"name": "Savings", "amount": 100, "match": ["savings"]}]}
+    d = run(date(2026, 9, 4),
+            deposits=[txn(date(2026, 8, 28), "ACME PAYROLL", 2400.0)],
+            transfers=[txn(date(2026, 8, 29), "To savings", 100.0,
+                           source="Checking", destination="Savings")],
+            cfg=cfg)["cycle"]
+    allocs = {a["name"]: a for a in d["allocations"]}
+    assert allocs["Savings"]["source"] == "observed"
+    assert allocs["401k"]["source"] == "withheld_before_deposit"
+    assert d["savings_total"] == 100.0

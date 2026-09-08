@@ -625,10 +625,14 @@ async def _cycle_payload() -> dict:
         "tz": str(LOCAL_TZ),
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": CYCLE_LOOKBACK_DAYS,
-                   # False => Firefly had more than the page cap in this
-                   # window, so these lists are a truncated view of it.
-                   "complete": complete},
+                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+        # False => Firefly had more than the page cap in this window, so these
+        # lists are a truncated view of it. Published at the TOP level, under
+        # the one name this concept has everywhere (see docs/BUDGETS.md): it
+        # used to sit inside `window` as `complete` here and as
+        # `window_complete` on /spending and /month, and reading the wrong one
+        # returns null — which is indistinguishable from "the read was fine".
+        "window_complete": complete,
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
@@ -740,10 +744,11 @@ async def _history_payload() -> dict:
         "connected": True,
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": HISTORY_LOOKBACK_DAYS,
-                   # False => more withdrawals exist in this window than the
-                   # page cap read, so absence cannot be concluded from it.
-                   "complete": complete},
+                   "lookback_days": HISTORY_LOOKBACK_DAYS},
+        # False => more withdrawals exist in this window than the page cap
+        # read, so absence cannot be concluded from it. Top level, same name
+        # as every other payload.
+        "window_complete": complete,
         "withdrawals": rows,
         "bills": bill_items,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,

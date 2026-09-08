@@ -358,39 +358,57 @@ body.cc[data-mode="evening"] {
      of the year the grid was the same grey as the rest of the page and the
      theme was only nameable, never visible. */
   background:
-    linear-gradient(165deg, var(--sn-wash, transparent), transparent 62%),
+    radial-gradient(120% 80% at 0% 0%, var(--sn-wash), transparent 60%),
+    radial-gradient(120% 80% at 100% 0%, var(--sn-wash-2), transparent 55%),
+    radial-gradient(140% 90% at 50% 100%, var(--sn-wash-3), transparent 65%),
     color-mix(in srgb, var(--panel-2) 86%, transparent);
-  border: 1px solid color-mix(in srgb, var(--sn-accent, var(--line)) 22%, var(--line));
-  border-radius: 12px;
-  padding: 10px 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--sn-accent, var(--line)) 26%, var(--line));
+  border-radius: 14px;
+  /* Roomier: a two-line title and a wrapped time range filled the old card.
+     A floor, not a fixed height — a heavy day still grows past it. */
+  padding: 14px 12px 15px;
+  min-height: 250px;
   overflow: hidden;
 }
 /* A rule of the month's colour across the top of every column. */
 .wk-day::before {
-  content: ""; position: absolute; inset: 0 0 auto; height: 3px; z-index: 2;
+  content: ""; position: absolute; inset: 0 0 auto; height: 4px; z-index: 2;
   background: linear-gradient(90deg,
     var(--sn-accent, var(--accent-2)),
-    color-mix(in srgb, var(--sn-accent, var(--accent-2)) 35%, transparent));
-  opacity: .85;
+    var(--sn-accent-2, var(--accent-2)) 55%,
+    var(--sn-accent-3, var(--accent-2)));
+  opacity: .95;
 }
 .wk-day:focus-visible { outline: 2px solid var(--sn-accent, var(--accent-2)); outline-offset: 2px; }
 .wk-day.is-weekend {
-  background: color-mix(in srgb,
-    color-mix(in srgb, var(--panel-2) 82%, var(--bg)) 86%, transparent);
+  background:
+    radial-gradient(120% 80% at 0% 0%, var(--sn-wash), transparent 60%),
+    radial-gradient(120% 80% at 100% 0%, var(--sn-wash-2), transparent 55%),
+    radial-gradient(140% 90% at 50% 100%, var(--sn-wash-3), transparent 65%),
+    color-mix(in srgb,
+      color-mix(in srgb, var(--panel-2) 82%, var(--bg)) 86%, transparent);
 }
 
 /* Today: a ring plus a "Today" word. Never colour alone. */
 .wk-day.is-today {
   border-color: var(--sn-accent, var(--accent-2));
   box-shadow: 0 0 0 1px var(--sn-accent, var(--accent-2)) inset,
-              0 6px 22px -12px var(--sn-accent, var(--accent-2));
+              0 8px 30px -14px var(--sn-accent-2, var(--accent-2));
+  /* Today carries the month at roughly double strength. The word "Today" is
+     still on the card — this is emphasis on a label, never a substitute. */
   background:
-    linear-gradient(180deg, var(--sn-wash, rgba(124,156,255,0.10)), transparent 62%),
+    radial-gradient(120% 85% at 0% 0%,
+      color-mix(in srgb, var(--sn-accent, var(--accent-2)) 38%, transparent), transparent 62%),
+    radial-gradient(120% 85% at 100% 0%,
+      color-mix(in srgb, var(--sn-accent-2, var(--accent-2)) 32%, transparent), transparent 58%),
+    radial-gradient(150% 95% at 50% 100%,
+      color-mix(in srgb, var(--sn-accent-3, var(--accent-2)) 24%, transparent), transparent 68%),
     color-mix(in srgb, var(--panel-2) 86%, transparent);
 }
+.wk-day.is-today::before { opacity: 1; height: 5px; }
 /* A window spanning two months says so instead of silently restarting its
    day numbers. */
-.wk-day.month-start { border-left: 2px solid var(--sn-accent, var(--accent-2)); }
+.wk-day.month-start { border-left: 2px solid var(--sn-accent-2, var(--accent-2)); }
 .wk-day.month-start .wk-mo { color: var(--sn-accent, var(--accent-2)); font-weight: 700; }
 .wk-day.has-clash { border-color: color-mix(in srgb, var(--imp) 40%, var(--line)); }
 
@@ -513,18 +531,49 @@ body.cc[data-mode="evening"] {
 /* ---- seasonal decoration -------------------------------------------------
    Accent + motif only. These never touch --text, --panel or --line, so
    contrast is identical in every month of the year. */
-.wk-grid[data-season="jan"], .wk-day[data-season="jan"], .wk-top[data-season="jan"] { --sn-accent: #7dd3fc; --sn-wash: rgba(125,211,252,0.13); }
-.wk-grid[data-season="feb"], .wk-day[data-season="feb"], .wk-top[data-season="feb"] { --sn-accent: #fda4af; --sn-wash: rgba(253,164,175,0.13); }
-.wk-grid[data-season="mar"], .wk-day[data-season="mar"], .wk-top[data-season="mar"] { --sn-accent: #6ee7b7; --sn-wash: rgba(110,231,183,0.13); }
-.wk-grid[data-season="apr"], .wk-day[data-season="apr"], .wk-top[data-season="apr"] { --sn-accent: #93c5fd; --sn-wash: rgba(147,197,253,0.13); }
-.wk-grid[data-season="may"], .wk-day[data-season="may"], .wk-top[data-season="may"] { --sn-accent: #f9a8d4; --sn-wash: rgba(249,168,212,0.13); }
-.wk-grid[data-season="jun"], .wk-day[data-season="jun"], .wk-top[data-season="jun"] { --sn-accent: #fcd34d; --sn-wash: rgba(252,211,77,0.13); }
-.wk-grid[data-season="jul"], .wk-day[data-season="jul"], .wk-top[data-season="jul"] { --sn-accent: #fca5a5; --sn-wash: rgba(252,165,165,0.13); }
-.wk-grid[data-season="aug"], .wk-day[data-season="aug"], .wk-top[data-season="aug"] { --sn-accent: #67e8f9; --sn-wash: rgba(103,232,249,0.13); }
-.wk-grid[data-season="sep"], .wk-day[data-season="sep"], .wk-top[data-season="sep"] { --sn-accent: #fde047; --sn-wash: rgba(253,224,71,0.13); }
-.wk-grid[data-season="oct"], .wk-day[data-season="oct"], .wk-top[data-season="oct"] { --sn-accent: #fb923c; --sn-wash: rgba(251,146,60,0.15); }
-.wk-grid[data-season="nov"], .wk-day[data-season="nov"], .wk-top[data-season="nov"] { --sn-accent: #f59e0b; --sn-wash: rgba(245,158,11,0.13); }
-.wk-grid[data-season="dec"], .wk-day[data-season="dec"], .wk-top[data-season="dec"] { --sn-accent: #5eead4; --sn-wash: rgba(94,234,212,0.13); }
+/* Derived once from the three colours above, so a month declares its palette
+   in exactly one place and its tints cannot drift out of step with it. */
+.wk-grid, .wk-day, .wk-top {
+  --sn-wash:   color-mix(in srgb, var(--sn-accent, var(--accent-2)) 24%, transparent);
+  --sn-wash-2: color-mix(in srgb, var(--sn-accent-2, var(--accent-2)) 20%, transparent);
+  --sn-wash-3: color-mix(in srgb, var(--sn-accent-3, var(--accent-2)) 15%, transparent);
+}
+.wk-grid[data-season="jan"], .wk-day[data-season="jan"], .wk-top[data-season="jan"] {
+  --sn-accent: #7dd3fc; --sn-accent-2: #c4b5fd; --sn-accent-3: #e0f2fe;
+}
+.wk-grid[data-season="feb"], .wk-day[data-season="feb"], .wk-top[data-season="feb"] {
+  --sn-accent: #fb7185; --sn-accent-2: #f9a8d4; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="mar"], .wk-day[data-season="mar"], .wk-top[data-season="mar"] {
+  --sn-accent: #34d399; --sn-accent-2: #a3e635; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="apr"], .wk-day[data-season="apr"], .wk-top[data-season="apr"] {
+  --sn-accent: #60a5fa; --sn-accent-2: #5eead4; --sn-accent-3: #c4b5fd;
+}
+.wk-grid[data-season="may"], .wk-day[data-season="may"], .wk-top[data-season="may"] {
+  --sn-accent: #f472b6; --sn-accent-2: #fb7185; --sn-accent-3: #86efac;
+}
+.wk-grid[data-season="jun"], .wk-day[data-season="jun"], .wk-top[data-season="jun"] {
+  --sn-accent: #fbbf24; --sn-accent-2: #fb923c; --sn-accent-3: #38bdf8;
+}
+.wk-grid[data-season="jul"], .wk-day[data-season="jul"], .wk-top[data-season="jul"] {
+  --sn-accent: #f87171; --sn-accent-2: #60a5fa; --sn-accent-3: #fde047;
+}
+.wk-grid[data-season="aug"], .wk-day[data-season="aug"], .wk-top[data-season="aug"] {
+  --sn-accent: #22d3ee; --sn-accent-2: #5eead4; --sn-accent-3: #fcd34d;
+}
+.wk-grid[data-season="sep"], .wk-day[data-season="sep"], .wk-top[data-season="sep"] {
+  --sn-accent: #f59e0b; --sn-accent-2: #fde047; --sn-accent-3: #fb923c;
+}
+.wk-grid[data-season="oct"], .wk-day[data-season="oct"], .wk-top[data-season="oct"] {
+  --sn-accent: #fb923c; --sn-accent-2: #a855f7; --sn-accent-3: #ef4444;
+}
+.wk-grid[data-season="nov"], .wk-day[data-season="nov"], .wk-top[data-season="nov"] {
+  --sn-accent: #f97316; --sn-accent-2: #f59e0b; --sn-accent-3: #dc2626;
+}
+.wk-grid[data-season="dec"], .wk-day[data-season="dec"], .wk-top[data-season="dec"] {
+  --sn-accent: #7dd3fc; --sn-accent-2: #e2e8f0; --sn-accent-3: #34d399;
+}
 
 /* Drifting glyphs, behind every card and non-interactive. */
 .wk-amb-layer {
@@ -533,9 +582,16 @@ body.cc[data-mode="evening"] {
 }
 .wk-flake {
   position: absolute; top: -8%; line-height: 1; opacity: .55;
+  color: var(--sn-accent, var(--accent-2));
   animation-name: wk-fall; animation-timing-function: linear;
   animation-iteration-count: infinite; will-change: transform;
 }
+/* Cycled, not uniform. One drifting colour is what made the whole theme read
+   as "tinted". Emoji glyphs ignore `color` and keep their own, which is
+   correct — a 🎃 should be pumpkin. */
+.wk-flake:nth-child(3n+2) { color: var(--sn-accent-2, var(--accent-2)); }
+.wk-flake:nth-child(3n+3) { color: var(--sn-accent-3, var(--accent-2)); }
+
 @keyframes wk-fall {
   from { transform: translate3d(0, -20px, 0) rotate(0deg); }
   to   { transform: translate3d(14px, 460px, 0) rotate(300deg); }
@@ -568,7 +624,13 @@ body.cc[data-mode="evening"] {
   /* The header used to be a 96px column beside the events, to make room for a
      26px date. It is one short line now, so it reads better as a full-width
      strip above them — and the events get the whole width instead of ~60%. */
-  .wk-day { flex-direction: column; gap: 6px; padding: 9px 10px; }
+  .wk-day {
+    flex-direction: column; gap: 6px; padding: 11px 12px;
+    /* The floor exists to line seven columns up. A stacked list has no
+       columns, and inheriting it turns every quiet day into a screenful of
+       empty colour. Height here comes from the events. */
+    min-height: 0;
+  }
   .wk-hd { margin-bottom: 0; }
   .wk-evs { min-width: 0; }
   .wk-clear { margin-top: 0; }
@@ -729,3 +791,14 @@ body.cc[data-mode="evening"] {
 .cap-form .cap-kind { flex: 0 0 auto; max-width: 6.5rem; }
 .hx-btns .hx-label { flex: 1 1 6rem; min-width: 5rem; font-size: .76rem; padding: .2rem .4rem; }
 
+
+/* The month's three colours, beside the name it already spells out. Colour is
+   never the only carrier of anything here — this is decoration on a label. */
+.wk-swatch { display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }
+.wk-swatch i {
+  width: 7px; height: 7px; border-radius: 50%; display: block;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.25) inset;
+}
+.wk-swatch i:nth-child(1) { background: var(--sn-accent, var(--accent-2)); }
+.wk-swatch i:nth-child(2) { background: var(--sn-accent-2, var(--accent-2)); }
+.wk-swatch i:nth-child(3) { background: var(--sn-accent-3, var(--accent-2)); }

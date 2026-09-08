@@ -505,7 +505,13 @@
         <h3>This week</h3>
         <span class="wk-range">${esch(range)}</span>
         <span class="wk-season" title="Seasonal theme">${
-          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}</span>
+          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}${
+          // The month's three colours, next to the name it already spells
+          // out. Suppressed with the rest of the decoration when the toggle
+          // is off — this is decor, and the toggle means all of it.
+          ambienceOn()
+            ? `<span class="wk-swatch" aria-hidden="true"><i></i><i></i><i></i></span>`
+            : ""}</span>
         ${synced}${notes}
         <button class="wk-amb" id="wk-amb" type="button"
           aria-pressed="${ambienceOn()}" title="Seasonal decoration">
@@ -908,7 +914,7 @@
     // Committed spending, stated as a monthly figure so it is comparable to
     // the other numbers on the card. Suppressed when the read was truncated:
     // a floor presented as a total is the failure docs/BUDGETS.md forbids.
-    if (rec.available && rec.complete !== false && rec.monthly_equivalent)
+    if (rec.available && rec.window_complete !== false && rec.monthly_equivalent)
       subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
