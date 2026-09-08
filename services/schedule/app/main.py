@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from datetime import datetime
@@ -16,6 +17,22 @@ pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
 
 VALID_STATUSES = {"pending", "countered", "confirmed", "declined"}
 
+# How often this service pulls the real Google Calendar into Postgres, in
+# seconds; 0 disables it.
+#
+# This loop exists because the pull had exactly one caller — the assistant's
+# sync cycle — and that cycle is gated behind AUTO_SYNC_SECONDS, which ships
+# as 0 (disabled) in both docker-compose.yml and .env.example. So on a default
+# deployment `POST /sync-from-calendar` was never invoked by anything, and no
+# Google Calendar event ever reached the database no matter how healthy the
+# OAuth credential was. The dashboard then showed a week built only from
+# locally-created rows and looked, correctly but uselessly, empty.
+#
+# Owning the pull here also puts it in the right place: importing Google
+# Calendar is the schedule service's job, and it should not stop happening
+# because an unrelated aggregation loop is switched off.
+GCAL_SYNC_SECONDS = int(os.environ.get("GCAL_SYNC_SECONDS", "900"))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id          TEXT PRIMARY KEY,
@@ -32,6 +49,10 @@ CREATE TABLE IF NOT EXISTS events (
 ALTER TABLE events ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'confirmed';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS thread_id TEXT;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS gcal_event_id TEXT;
+-- Where the event came from and where it happens. `location` is imported from
+-- Google Calendar so a day card can say "Dentist — 400 Main St" instead of
+-- making you open Google to find out where you are meant to be.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS location TEXT;
 """
 
 
@@ -60,11 +81,29 @@ class ResolveThread(BaseModel):
     keep_external_ids: list[str] = []
 
 
+async def _gcal_pull_loop():
+    """Keep the local copy of Google Calendar current on its own.
+
+    Failures are swallowed on purpose: Calendar being unreachable (or not yet
+    consented) is an expected steady state here, and it must never take the
+    schedule service down with it. `/calendar-health` is what reports on it.
+    """
+    await asyncio.sleep(min(20, GCAL_SYNC_SECONDS))  # let gmail boot first
+    while True:
+        try:
+            await sync_from_calendar()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            pass
+        await asyncio.sleep(GCAL_SYNC_SECONDS)
+
+
 @app.on_event("startup")
 async def startup():
     await pool.open(wait=True, timeout=30)
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
+    if GCAL_SYNC_SECONDS > 0:
+        asyncio.create_task(_gcal_pull_loop())
 
 
 @app.on_event("shutdown")
@@ -263,23 +302,38 @@ async def sync_from_calendar():
                 continue
 
             if existing:
-                if existing["status"] != ev["status"] or existing["starts_at"] != ev["starts_at"]:
+                # Title, end and location are compared too. Renaming a meeting
+                # or moving it an hour later in Google used to leave the old
+                # copy sitting on the dashboard indefinitely, because only
+                # status and start were checked and an unchanged start meant
+                # "nothing to do".
+                if (existing["status"] != ev["status"]
+                        or existing["starts_at"] != ev["starts_at"]
+                        or existing["title"] != ev["title"]
+                        or existing.get("ends_at") != ev["ends_at"]
+                        or existing.get("location") != ev["location"]):
                     await conn.execute(
-                        "UPDATE events SET title = %s, starts_at = %s, status = %s WHERE external_id = %s",
-                        (ev["title"], ev["starts_at"], ev["status"], ext_id),
+                        """
+                        UPDATE events SET title = %s, starts_at = %s, ends_at = %s,
+                               location = %s, status = %s
+                        WHERE external_id = %s
+                        """,
+                        (ev["title"], ev["starts_at"], ev["ends_at"], ev["location"],
+                         ev["status"], ext_id),
                     )
                     updated += 1
                 continue
 
             await conn.execute(
                 """
-                INSERT INTO events (id, title, starts_at, source, external_id, status,
-                                     gcal_event_id, created_at)
-                VALUES (%s, %s, %s, 'google_calendar', %s, %s, %s, %s)
+                INSERT INTO events (id, title, starts_at, ends_at, location, source,
+                                     external_id, status, gcal_event_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, 'google_calendar', %s, %s, %s, %s)
                 ON CONFLICT (external_id) DO NOTHING
                 """,
-                (str(uuid.uuid4()), ev["title"], ev["starts_at"], ext_id, ev["status"],
-                 ev["gcal_id"], datetime.utcnow().isoformat()),
+                (str(uuid.uuid4()), ev["title"], ev["starts_at"], ev["ends_at"],
+                 ev["location"], ext_id, ev["status"], ev["gcal_id"],
+                 datetime.utcnow().isoformat()),
             )
             imported += 1
     return {"synced": True, "imported": imported, "updated": updated}
@@ -298,7 +352,15 @@ async def calendar_health():
     Writes nothing.
     """
     state = await gcal.probe()
-    return {"state": state, "ok": state == "ok"}
+    return {
+        "state": state,
+        "ok": state == "ok",
+        # What the reader should DO about it. `needs_consent` is the one state
+        # that is fixable in a single click and was previously indistinguishable
+        # from a transient outage, so it is the one worth naming a route for.
+        "fix": "reconnect" if state in ("disconnected", "needs_consent") else None,
+        "pull_interval_seconds": GCAL_SYNC_SECONDS,
+    }
 
 
 @app.get("/")

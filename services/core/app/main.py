@@ -13,7 +13,7 @@ source of truth instead of duplicating it:
 Nothing here is secret; no credentials are stored or returned.
 """
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -25,7 +25,10 @@ from pydantic import BaseModel
 app = FastAPI(title="Core Service")
 
 # "Today" must mean the user's actual day, not the box's UTC day.
-EASTERN = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
+from .daymath import (  # noqa: E402 - the clock seam and score arithmetic
+    EASTERN, compute_score, local_day as _parse_day, today as _today,
+    week_start as _week_start,
+)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000").rstrip("/")
@@ -119,14 +122,6 @@ DEFAULT_SETTINGS = {
 }
 
 NUTRITION_RATIO = {"poor": 0.34, "okay": 0.67, "good": 1.0}
-
-
-def _today() -> date:
-    return datetime.now(EASTERN).date()
-
-
-def _week_start(d: date) -> date:
-    return d - timedelta(days=d.weekday())  # Monday
 
 
 # ---- models -----------------------------------------------------------------
@@ -239,18 +234,6 @@ async def _open_tasks() -> int | None:
             return None
 
 
-def _parse_day(raw: str) -> date | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return date.fromisoformat(str(raw)[:10])
-        except ValueError:
-            return None
-
-
 # ---- study metrics ----------------------------------------------------------
 async def _study() -> dict:
     today = _today()
@@ -308,22 +291,6 @@ async def _exam_pace(settings: dict, week_min: int) -> dict | None:
 
 
 # ---- score engine -----------------------------------------------------------
-def compute_score(components: dict, weights: dict) -> dict:
-    """Transparent daily score. Each component is a 0..1 ratio; the score is the
-    weighted average over enabled components (weight>0), renormalised to 100.
-    Partial completion is rewarded. `null` components are treated as not-yet."""
-    active = {k: w for k, w in weights.items() if w and w > 0}
-    total_w = sum(active.values()) or 1
-    parts = {}
-    acc = 0.0
-    for k, w in active.items():
-        ratio = components.get(k)
-        ratio = 0.0 if ratio is None else max(0.0, min(1.0, float(ratio)))
-        parts[k] = {"ratio": round(ratio, 3), "weight": w}
-        acc += ratio * w
-    return {"score": round(100 * acc / total_w), "parts": parts}
-
-
 async def _daily_state() -> dict:
     """The full per-day personal state + score. This is the primary read the
     assistant folds into the home screen."""
