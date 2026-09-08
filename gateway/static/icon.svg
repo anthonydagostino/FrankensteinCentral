@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="FrankensteinCentral">
+  <!-- Home-screen icon. SVG rather than PNGs so there is no binary in a public
+       repo and no build step; the maskable safe zone is the centre 80%. -->
+  <rect width="512" height="512" rx="96" fill="#12151c"/>
+  <g fill="none" stroke="#6aa6ff" stroke-width="26" stroke-linecap="round">
+    <path d="M156 150v212"/>
+    <path d="M356 150v212"/>
+    <path d="M156 256h200"/>
+  </g>
+  <circle cx="156" cy="150" r="20" fill="#4caf82"/>
+  <circle cx="356" cy="362" r="20" fill="#e0574a"/>
+</svg>

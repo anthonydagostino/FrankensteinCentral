@@ -799,6 +799,15 @@ body.cc[data-mode="evening"] {
 .wk-swatch i:nth-child(2) { background: var(--sn-accent-2, var(--accent-2)); }
 .wk-swatch i:nth-child(3) { background: var(--sn-accent-3, var(--accent-2)); }
 
+/* Offline banner (PRODUCT_IDEAS #7). Not decoration: it is the thing that
+   stops a replayed payload reading as today's figures. Deliberately loud. */
+#cc-offline {
+  margin: 0 0 .6rem; padding: .45rem .7rem; border-radius: 8px;
+  font-size: .78rem; font-weight: 500;
+  color: var(--imp, #e0574a);
+  border: 1px solid currentColor; background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
 /* ---- snooze / dismiss (PRODUCT_IDEAS #34) --------------------------------
    Deliberately quiet until you go looking for it. An attention system needs
    to be tellable "handled", but the affordance for that must not compete with
