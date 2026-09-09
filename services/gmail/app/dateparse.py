@@ -35,8 +35,13 @@ _WEEKDAY_RE = re.compile(
     re.IGNORECASE,
 )
 _RELATIVE_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
+# `\b` cannot follow a pattern ending in "." — the boundary needs a word
+# character on one side, and "p.m." ends with punctuation, so the dotted forms
+# never matched at all. "2:00 p.m." silently lost its time and fell back to the
+# 9am default: not a missed parse, a WRONG time on a real calendar.
 _TIME_RE = re.compile(
-    r"\b(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm|a\.m\.|p\.m\.)\b", re.IGNORECASE
+    r"\b(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>a\.m\.|p\.m\.|am|pm)(?![a-z])",
+    re.IGNORECASE,
 )
 _VAGUE_TIME = re.compile(r"\b(morning|afternoon|evening|noon)\b", re.IGNORECASE)
 _VAGUE_DEFAULTS = {"morning": (9, 0), "afternoon": (14, 0), "evening": (18, 0), "noon": (12, 0)}
