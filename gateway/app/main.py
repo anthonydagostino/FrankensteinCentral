@@ -1,4 +1,6 @@
 import asyncio
+import ipaddress
+import os
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,61 @@ from .registry import load_registry
 app = FastAPI(title="FrankensteinCentral Gateway")
 REGISTRY = {s.key: s for s in load_registry()}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+# --- Host allowlist (SCRUM-115) ----------------------------------------------
+#
+# DNS REBINDING, and why an unauthenticated LAN service needs this even though
+# "it is only on my network". A page you visit — an ad iframe will do — can
+# re-resolve its OWN domain to this box's private address a moment after it
+# loads. The browser still believes it is talking to that domain, so the
+# request is SAME-ORIGIN, and same-origin means the attacker's script can READ
+# THE RESPONSE. The exposure is therefore not "devices on the LAN"; it is any
+# page in any browser on any device on the LAN.
+#
+# SCRUM-114 shut the two doors to /internal/token. This shuts the hallway: the
+# same attack reads net worth, the inbox, the calendar and every other
+# unauthenticated endpoint the gateway fronts.
+#
+# The defence is one header. In a rebinding attack the browser sends the
+# ATTACKER'S DOMAIN in `Host` — that is what it navigated to — while the packet
+# goes to this box. It cannot forge a Host it did not navigate to. So: accept
+# IP literals and localhost, refuse unknown names, and rebinding stops working.
+#
+# Why IP literals are accepted wholesale rather than pinned: the box's LAN
+# address is DHCP-assigned and not knowable from the repo, and a browser cannot
+# be made to send an IP literal it did not navigate to. Reaching the box by its
+# raw address already requires being on the network and knowing it — that is
+# SCRUM-98's problem (bind to Tailscale, add auth), not this one. This ticket
+# closes the remote path, not the local one.
+#
+# Names this box answers to (a Tailscale name, a hosts-file alias) go in
+# GATEWAY_ALLOWED_HOSTS, comma-separated.
+ALLOWED_HOSTS = [
+    h.strip().lower()
+    for h in os.environ.get("GATEWAY_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+]
+
+
+def host_is_allowed(host_header: str) -> bool:
+    """True when `Host` names something this box legitimately answers to."""
+    # A duplicated Host header arrives comma-joined. Judge the first, because
+    # that is the one an intermediary would act on.
+    host = host_header.split(",")[0].strip().lower()
+    if host.startswith("["):                      # [::1]:8080
+        host = host[1:host.index("]")] if "]" in host else host[1:]
+    elif host.count(":") == 1:                    # 192.168.1.50:8080
+        host = host.rsplit(":", 1)[0]
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    return host in ALLOWED_HOSTS
 
 
 @app.get("/api/apps")
@@ -51,6 +108,24 @@ async def aggregate_health():
 )
 async def proxy(app_key: str, path: str, request: Request):
     """Reverse-proxy /api/<app>/<path> to the matching sub-app service."""
+    # SCRUM-114. The proxy forwards ANY path to ANY registered service with no
+    # authentication, and gmail exposes /internal/token, which hands out a live
+    # OAuth access token carrying gmail.modify AND calendar.events. So
+    # `GET /api/gmail/internal/token` let any unauthenticated caller on the
+    # network read and modify the whole inbox and read and write the calendar.
+    #
+    # The docstring on that route said "internal docker network only". Nothing
+    # enforced it: `/internal/` was a naming convention and the proxy had never
+    # heard of it.
+    #
+    # 404, not 403: a 403 confirms the route exists and is worth attacking. To
+    # anything outside, an internal route is indistinguishable from a route
+    # that was never written. Matched per SEGMENT, so it cannot be slipped past
+    # with `x-internal` or `internalish`, and case-folded because the path
+    # arrives from the caller.
+    if any(seg.lower() == "internal" for seg in path.split("/")):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
     sub = REGISTRY.get(app_key)
     if sub is None:
         return JSONResponse({"error": f"unknown app '{app_key}'"}, status_code=404)
@@ -104,6 +179,24 @@ async def no_stale_static(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+@app.middleware("http")
+async def reject_unknown_hosts(request: Request, call_next):
+    """Refuse anything addressed to a name this box does not answer to.
+
+    Every http middleware runs ahead of every route handler, so this lands
+    before the proxy whatever order it is registered in — a refused request is
+    never forwarded upstream, and a test pins that. Registration order only
+    decides this against the OTHER middleware (cache headers), which has no
+    security bearing either way; an earlier version of this comment claimed the
+    ordering mattered and that a test held it, and neither was true.
+    """
+    if not host_is_allowed(request.headers.get("host", "")):
+        # 400, matching Starlette's TrustedHostMiddleware. No credential makes
+        # this request valid, so 401 and 403 would both be lies.
+        return JSONResponse({"error": "invalid host header"}, status_code=400)
+    return await call_next(request)
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

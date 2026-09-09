@@ -176,7 +176,12 @@ def ordinal(day):
 # language that invites you to wait. But a refresh token minted without the
 # calendar scope never heals on its own, so "wait" is advice that cannot work,
 # and the week grid quietly stays incomplete for as long as you take it.
-SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "needs_consent", "unknown")
+#   not_configured this deployment has no FC_INTERNAL_SECRET, so the schedule
+#                   service cannot borrow the Google credential at all. Fixed
+#                   by setting one value in .env — never by waiting, and never
+#                   by reconnecting Google (SCRUM-114)
+SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "needs_consent",
+                   "not_configured", "unknown")
 
 # The states where Google Calendar is definitely NOT syncing and a person has
 # to reconnect the account. Both render an action, not a shrug.
@@ -238,6 +243,12 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     # reported separately rather than being rounded to the nearest state.
     if evidence.get("state") == "needs_consent":
         return "needs_consent"
+
+    # A missing shared secret is a configuration fact, not a Google fact. It
+    # must not fold into `unknown`, whose caveat invites waiting for something
+    # that will never happen on its own.
+    if evidence.get("state") == "not_configured":
+        return "not_configured"
 
     # Everything else: a failed probe, no probe, or gmail reporting "live"
     # while its own sync_status is failed/never. None of those establish

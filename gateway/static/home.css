@@ -456,16 +456,27 @@ body.cc[data-mode="evening"] {
   border-radius: 999px; min-width: 17px; text-align: center; padding: 0 5px;
 }
 
-/* Month motif: a watermark in the card's bottom corner, behind everything.
-   It used to sit in the header's top-right, which is also where the event
-   count lives — so on any day with something scheduled the two were drawn on
-   top of each other. Down here it has the corner to itself, and on a clear
-   day it is the only thing in it. */
+/* Month motif: the month's own glyphs scattered low in each card, wearing
+   that card's rotation of the palette.
+
+   Two things were making the decoration invisible. It sat at opacity .1, and
+   half the months draw with EMOJI (🍁 🎃 🍂 🌾), which ignore `color`
+   entirely — so the palette rules below did nothing for exactly the months
+   whose decoration is most worth seeing. Emoji bring their own colour, so
+   they need opacity rather than a hue; text symbols (❄ ✿ ☘ ✺) take the hue.
+   Both routes are covered here, which is why the opacity is carried on the
+   element and the colour is set alongside it rather than instead of it.
+
+   Still z-index 0: decoration never sits above the events, and never over
+   anything you can click. */
 .wk-motif {
-  position: absolute; right: -2px; bottom: -8px; font-size: 34px; line-height: 1;
-  opacity: .1; pointer-events: none; z-index: 0; filter: saturate(1.1);
+  position: absolute; pointer-events: none; z-index: 0; line-height: 1;
+  filter: saturate(1.35);
 }
-.wk-day.is-today .wk-motif { opacity: .16; }
+.wk-motif[data-m="0"] { color: var(--sn-accent,   var(--accent-2)); opacity: .34; }
+.wk-motif[data-m="1"] { color: var(--sn-accent-2, var(--accent-2)); opacity: .26; }
+.wk-motif[data-m="2"] { color: var(--sn-accent-3, var(--accent-2)); opacity: .19; }
+.wk-day.is-today .wk-motif { opacity: .42; }
 
 /* ---- the events themselves: the point of the card -----------------------
    Each row carries its own colour in --ev, set inline from the event's title
@@ -610,7 +621,8 @@ body.cc[data-mode="evening"] {
   pointer-events: none; border-radius: 12px;
 }
 .wk-flake {
-  position: absolute; top: -8%; line-height: 1; opacity: .55;
+  position: absolute; top: -8%; line-height: 1; opacity: .9;
+  filter: saturate(1.3);
   color: var(--sn-accent, var(--accent-2));
   animation-name: wk-fall; animation-timing-function: linear;
   animation-iteration-count: infinite; will-change: transform;
@@ -663,7 +675,7 @@ body.cc[data-mode="evening"] {
   .wk-hd { margin-bottom: 0; }
   .wk-evs { min-width: 0; }
   .wk-clear { margin-top: 0; }
-  .wk-motif { right: 4px; bottom: -4px; font-size: 26px; opacity: .09; }
+  .wk-motif { font-size: 22px !important; }
   /* Falling decoration reads as clutter in a tall stacked list. */
   .wk-amb-layer { display: none; }
 }
