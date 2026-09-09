@@ -10,8 +10,11 @@ Security stance:
 Providers (VAULT_MODE):
   off        — not connected; the dashboard shows an empty "connect me" state.
   bitwarden  — reads from the Bitwarden CLI's local REST API (`bw serve`), set
-               BW_SERVE_URL to it (e.g. http://homelab-ip:8087). The CLI must be
-               unlocked. Wire this up when you're home.
+               BW_SERVE_URL to it (e.g. http://172.17.0.1:8200). The CLI must be
+               unlocked. Bind `bw serve` to the docker bridge, never 0.0.0.0:
+               unlocked, it answers with real secrets to anyone who reaches it.
+               Port 8200, not the CLI's default 8087 — Tasks holds 8087 on this
+               box. See docs/SETUP-VAULT.md.
 """
 import os
 import re
