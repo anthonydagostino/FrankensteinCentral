@@ -1385,12 +1385,19 @@
     const backup = s.backup_days == null
       ? `<span class="ds-x">Last backup <b>unknown</b></span>`
       : `<span class="ds-x${s.backup_stale ? " warn" : ""}">Last backup <b>${esch(days(s.backup_days))}</b></span>`;
+    // Disk free on the state volume — fact 1 of the ticket, the half that the
+    // bind mount exposes without host access. Omitted rather than invented
+    // when the mount is absent: a number about the container's own disk would
+    // be the wrong fact dressed as the right one.
+    const disk = d && d.disk && d.disk.state !== "unknown" && d.disk.free_pct != null
+      ? `<span class="ds-x${d.disk.state === "low" ? " warn" : ""}">Disk <b>${esch(String(d.disk.free_pct))}% free</b></span>`
+      : "";
 
     el.innerHTML = `<h3>Data safety</h3>
       <div class="ds-lead ${b.cls}">${esch(b.lead)}</div>
       <div class="ds-label">since the last verified restore</div>
       <p class="ds-sub">${b.sub}</p>
-      <div class="ds-row">${backup}</div>
+      <div class="ds-row">${backup}${disk}</div>
       ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
         Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
         the newest backup into a scratch database and never touches the live one.</p>` : ""}`;

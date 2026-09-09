@@ -308,6 +308,13 @@ owns the backups:
 41 4 * * 0  cd ~/FrankensteinCentral && bash scripts/restore.sh --drill >> ~/.frankenstein/drill.log  2>&1
 ```
 
+The **Data safety** card also shows disk free on the state volume. That
+needs no host agent: the state directory is a bind mount, and a `statvfs`
+through a bind mount reports the host filesystem, so the container is reading
+the OptiPlex's own data disk. It goes red under 10% free. When the mount is
+absent the line is omitted rather than filled in from the container's disk —
+a number about the wrong disk is worse than none.
+
 A restore proven once is a fact with an expiry date on it: the card turns
 amber-to-red again after 35 days, because a proof against a schema that has
 changed since is not evidence about today's backup.

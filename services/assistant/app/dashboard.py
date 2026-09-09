@@ -89,10 +89,22 @@ BACKUP_STALE_DAYS = 3
 
 
 def _days_since(stamp, now):
-    """Whole days from an ISO stamp to `now`, or None if unreadable.
+    """Whole LOCAL CALENDAR days from an ISO stamp to `now`, or None.
 
     None means unknown and never zero: "we could not read the date" rendered
     as "0 days ago" is the most reassuring possible version of no information.
+
+    Calendar days in the reader's zone, not elapsed_seconds // 86400. A drill
+    that ran at 23:00 last night is "1 day ago" at breakfast — a person does
+    not say "today" about yesterday evening because only nine hours passed —
+    and the elapsed form was also off by one across every DST change, since a
+    week of 23-hour-or-25-hour days is not 7 * 86400 seconds. Both sides are
+    moved into `now`'s zone before the date is taken, so a UTC stamp written
+    at 23:30 local cannot land on tomorrow's date and read as -1.
+
+    The future guard is kept, and kept in REAL time: a clock skewed forward on
+    the box must read as unknown, not as a restore that happens tomorrow and
+    is permanently green.
     """
     if not stamp:
         return None
@@ -102,11 +114,38 @@ def _days_since(stamp, now):
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=now.tzinfo)
-    delta = (now - when).total_seconds()
-    if delta < 0:
+    if (now.astimezone(timezone.utc) - when.astimezone(timezone.utc)).total_seconds() < 0:
         # A future stamp is a broken clock somewhere, not freshness.
         return None
-    return int(delta // 86400)
+    tz = now.tzinfo
+    return (now.astimezone(tz).date() - when.astimezone(tz).date()).days
+
+
+DISK_LOW_PCT = 10
+
+
+def disk_state(usage):
+    """Free space on the volume the state directory lives on — SCRUM-67 fact 1.
+
+    This needs no privileged host access: the state directory is a bind mount,
+    and statvfs through a bind mount reports the underlying host filesystem.
+    So `shutil.disk_usage("/var/frankenstein")` inside the container IS the
+    OptiPlex's data disk. It is only meaningful when that mount exists, which
+    is why main.py passes None rather than a number when the directory is
+    absent — the container's own filesystem is not the fact being asked for.
+
+    `usage` is {"total": bytes, "free": bytes} or None. Anything short of two
+    sane numbers is `unknown`, never `ok`.
+    """
+    u = usage if isinstance(usage, dict) else {}
+    total, free = u.get("total"), u.get("free")
+    if not (isinstance(total, (int, float)) and isinstance(free, (int, float))) \
+            or isinstance(total, bool) or isinstance(free, bool) \
+            or total <= 0 or free < 0 or free > total:
+        return {"state": "unknown", "free_pct": None, "free_bytes": None, "total_bytes": None}
+    pct = round(100.0 * free / total, 1)
+    return {"state": "low" if pct < DISK_LOW_PCT else "ok", "free_pct": pct,
+            "free_bytes": int(free), "total_bytes": int(total)}
 
 
 def data_safety(record, now):

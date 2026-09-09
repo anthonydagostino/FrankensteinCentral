@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -10,7 +11,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
-from .dashboard import (data_safety, deadline_rows, deploy_state, firefly_state,
+from .dashboard import (data_safety, deadline_rows, deploy_state, disk_state,
+                        firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
                         resale_brief, schedule_state, since_changes,
@@ -44,6 +46,10 @@ DEPLOY_RECORD = os.environ.get("FRANKENSTEIN_DEPLOY_RECORD",
 # directory and through the same read-only mount. SCRUM-67.
 DATA_SAFETY_RECORD = os.environ.get("FRANKENSTEIN_DATA_SAFETY_RECORD",
                                     "/var/frankenstein/data-safety.json")
+# The mount itself. Disk free is read from it: statvfs through a bind mount
+# reports the host filesystem, so this is the OptiPlex's data disk — but only
+# while the directory is actually there (SCRUM-67).
+STATE_DIR = os.path.dirname(DATA_SAFETY_RECORD) or "/var/frankenstein"
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
@@ -865,6 +871,19 @@ def _read_deploy_record(path=None):
     return rec if isinstance(rec, dict) else {}
 
 
+def _disk_usage():
+    """{"total", "free"} for the state volume, or None when the mount is not
+    there. None, not the container's own filesystem: that would be a number
+    about the wrong disk, which is worse than no number."""
+    if not os.path.isdir(STATE_DIR):
+        return None
+    try:
+        u = shutil.disk_usage(STATE_DIR)
+    except OSError:
+        return None
+    return {"total": u.total, "free": u.free}
+
+
 def _read_data_safety_record(path=None):
     """The host's backup/restore record, or {} when we cannot read it.
 
@@ -1075,6 +1094,8 @@ async def build_home(fresh: bool = False) -> dict:
         # Days since the last VERIFIED restore, and "never" until one happens.
         # A backup you have never restored is a belief, not a backup.
         "data_safety": data_safety(_read_data_safety_record(), now_local),
+        # Fact 1 of SCRUM-67, the half that needs no privileged access.
+        "disk": disk_state(_disk_usage()),
         "last_updated": t["now"],
     }
     # Computed against the payload we are ABOUT to return, so the fingerprint

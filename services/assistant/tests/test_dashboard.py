@@ -1762,10 +1762,76 @@ def test_a_stale_backup_is_flagged_without_guessing_when_unknown():
 
 def test_days_since_holds_across_a_calendar_sweep():
     """Per docs/TESTING.md. Month ends, year ends and the leap day are where an
-    off-by-one in a day count shows up."""
+    off-by-one in a day count shows up.
+
+    Rewritten from a UTC-anchored sweep that padded every stamp by one hour.
+    That shape can only ever agree with elapsed_seconds // 86400, and it did:
+    the first version of _days_since passed it while calling a drill at 23:00
+    last night "today" at breakfast. `now` here is LOCAL and the stamp is an
+    evening one, because that is how the number is actually read — the
+    assistant hands data_safety a New York `now`, not a UTC one.
+    """
+    start = datetime(2026, 1, 1, tzinfo=NY)
     for offset in range(0, 900, 7):
-        now = datetime(2026, 1, 1, tzinfo=_tz.utc) + timedelta(days=offset)
-        for ago in (0, 1, 29, 30, 31, 365):
-            stamp = (now - timedelta(days=ago, hours=1)).isoformat()
-            d = dash.data_safety({"last_restore_at": stamp}, now)
-            assert d["restore_days"] == ago, (now, ago, d["restore_days"])
+        for hour in (0, 6, 13, 23):
+            now = (start + timedelta(days=offset)).replace(hour=hour)
+            for ago in (0, 1, 29, 30, 31, 365):
+                stamp = (now - timedelta(days=ago)).replace(hour=22, minute=15)
+                if stamp > now:          # ago=0 at hour 0/6/13: 22:15 is later today
+                    continue
+                d = dash.data_safety({"last_restore_at": stamp.isoformat()}, now)
+                assert d["restore_days"] == ago, (now, ago, d["restore_days"])
+
+
+def test_an_evening_drill_is_yesterday_at_breakfast_not_today():
+    """The concrete case the elapsed-seconds count got wrong: 23:00 last
+    night, read at 08:00. Nine hours elapsed; a person says yesterday."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": "2026-09-08T23:00:00-04:00"}, now)
+    assert d["restore_days"] == 1
+
+
+def test_a_utc_stamp_late_at_night_does_not_land_on_tomorrow():
+    """23:30 local on the 8th is 03:30Z on the 9th. Taking the date in UTC
+    would call that -1 days ago at 08:00 on the 9th; taking it in the
+    reader's zone says 1."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": "2026-09-09T03:30:00+00:00"}, now)
+    assert d["restore_days"] == 1
+
+
+@pytest.mark.parametrize("anchor", ["2026-03-08", "2026-11-01", "2027-03-14", "2027-11-07"])
+def test_a_week_is_seven_days_across_a_dst_change(anchor):
+    """Seven local days spanning a clock change are 7*24 +/- 1 hours. An
+    elapsed count floors the short week to 6."""
+    now = (datetime.fromisoformat(anchor).replace(tzinfo=NY) + timedelta(days=4)).replace(hour=8)
+    then = (now - timedelta(days=7)).replace(hour=8)
+    d = dash.data_safety({"last_restore_at": then.isoformat()}, now)
+    assert d["restore_days"] == 7
+
+
+def test_the_future_guard_is_real_time_not_calendar():
+    """A stamp ten minutes ahead is a skewed clock and must be unknown, even
+    though it falls on today's date."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": (now + timedelta(minutes=10)).isoformat()}, now)
+    assert d["restore_days"] is None and d["state"] == "unknown"
+
+
+# --- disk free on the state volume (SCRUM-67 fact 1) --------------------------
+
+def test_disk_is_a_percentage_with_a_low_water_mark():
+    ok = dash.disk_state({"total": 1000, "free": 250})
+    assert ok["state"] == "ok" and ok["free_pct"] == 25.0 and ok["free_bytes"] == 250
+    low = dash.disk_state({"total": 1000, "free": 90})
+    assert low["state"] == "low"
+    assert dash.disk_state({"total": 1000, "free": 100})["state"] == "ok"   # exactly 10% is not low
+
+
+@pytest.mark.parametrize("bad", [None, {}, "x", {"total": 0, "free": 0}, {"total": "x", "free": 1},
+                                 {"total": 10, "free": -1}, {"total": 10, "free": 11},
+                                 {"total": True, "free": True}])
+def test_anything_short_of_two_sane_numbers_is_unknown_never_ok(bad):
+    d = dash.disk_state(bad)
+    assert d["state"] == "unknown", bad
+    assert d["free_pct"] is None

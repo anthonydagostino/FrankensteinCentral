@@ -219,3 +219,15 @@ test("the card names the command that fixes it", () => {
   const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
   assert.match(fn, /restore\.sh --drill/);
 });
+
+test("disk free is shown from the payload and never invented", () => {
+  /* Fact 1 of the ticket, the half a bind mount exposes without host access.
+   * When the mount is absent the assistant sends `unknown`, and the card must
+   * omit the line rather than print a number about the container's own disk. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /d\.disk\.state !== "unknown"/, "an unknown disk state must render nothing");
+  assert.match(fn, /d\.disk\.free_pct != null/, "a missing percentage must render nothing");
+  assert.match(fn, /% free/, "the line states the percentage");
+  assert.match(fn, /d\.disk\.state === "low" \? " warn"/, "a low disk is flagged, not just listed");
+});
