@@ -52,7 +52,11 @@ class FakeClient:
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(gw.httpx, "AsyncClient", FakeClient)
-    return TestClient(gw.app)
+    # The gateway refuses unknown Host headers (SCRUM-115) and TestClient
+    # defaults to Host: testserver. Point at localhost — a host the box
+    # genuinely answers to in production — rather than allowlisting a
+    # test-only name, which would be a hole that only tests can see.
+    return TestClient(gw.app, base_url="http://localhost")
 
 
 def test_a_redirect_keeps_the_only_thing_it_carries(client):
@@ -104,3 +108,92 @@ def test_html_from_a_sub_app_is_served_as_html(client):
         200, {"content-type": "text/html; charset=utf-8"}, b"<h2>Connect Google</h2>")
     r = client.get("/api/gmail/auth/login")
     assert r.headers["content-type"].startswith("text/html")
+
+
+# --- SCRUM-114: the proxy is not a hole into "internal" routes ----------------
+#
+# The proxy forwarded ANY path to ANY registered service with no authentication
+# anywhere in the chain, and gmail exposes /internal/token, which returns a live
+# OAuth access token carrying gmail.modify AND calendar.events. So a single
+# unauthenticated GET to the dashboard's own front door handed over read/write
+# access to the whole inbox and the calendar.
+#
+# What "guarded" it was a docstring on the gmail route saying "internal docker
+# network only". `/internal/` was a naming convention; the proxy had never
+# heard of it.
+
+def test_the_reported_exploit_is_closed(client):
+    """The exact request from the ticket:
+        GET http://<box>:8080/api/gmail/internal/token
+    """
+    FakeClient.response = FakeUpstream(
+        200, {"content-type": "application/json"},
+        b'{"access_token":"ya29.SECRET","scopes":"gmail.modify calendar.events"}')
+    r = client.get("/api/gmail/internal/token")
+    assert r.status_code == 404
+    assert b"ya29.SECRET" not in r.content
+    assert "access_token" not in r.text
+
+
+def test_it_is_404_and_not_403(client):
+    """403 confirms the route exists and is worth attacking. From outside, an
+    internal route should be indistinguishable from one never written — the
+    same answer an unknown app already gets."""
+    FakeClient.response = FakeUpstream(200, {}, b"{}")
+    internal = client.get("/api/gmail/internal/token")
+    unknown = client.get("/api/nosuchapp/whatever")
+    assert internal.status_code == unknown.status_code == 404
+
+
+def test_the_request_is_never_forwarded_at_all(client):
+    """Refused before the upstream call, not after. A gateway that asks gmail
+    for the token and then declines to pass it on has still caused the token
+    to be minted and put on the wire."""
+    FakeClient.response = FakeUpstream(200, {}, b'{"access_token":"ya29.X"}')
+    FakeClient.seen = None
+    client.get("/api/gmail/internal/token")
+    assert FakeClient.seen is None, "the proxy still called upstream"
+
+
+@pytest.mark.parametrize("path", [
+    "internal/token",
+    "internal",
+    "a/internal/b",
+    "deep/nested/internal/token",
+    "INTERNAL/token",          # case is the caller's to choose
+    "Internal/Token",
+    "internal/",
+])
+def test_every_shape_of_internal_segment_is_refused(client, path):
+    FakeClient.response = FakeUpstream(200, {}, b'{"access_token":"ya29.X"}')
+    assert client.get(f"/api/gmail/{path}").status_code == 404
+
+
+@pytest.mark.parametrize("path", [
+    "internal-ish/token",      # not the segment `internal`
+    "x-internal/token",
+    "internally/token",
+    "needs-reply",
+    "auth/login",
+])
+def test_ordinary_routes_are_untouched(client, path):
+    """The guard matches whole segments. Blocking anything merely containing
+    the substring would break real routes and teach people to work around it."""
+    FakeClient.response = FakeUpstream(200, {"content-type": "application/json"}, b"{}")
+    assert client.get(f"/api/gmail/{path}").status_code == 200
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+def test_no_verb_gets_through(client, method):
+    """The route is registered for five methods; a guard on GET alone would
+    leave four doors open."""
+    FakeClient.response = FakeUpstream(200, {}, b'{"access_token":"ya29.X"}')
+    assert client.request(method, "/api/gmail/internal/token").status_code == 404
+
+
+def test_no_registered_app_can_expose_an_internal_route_through_the_proxy(client):
+    """Not a gmail-specific patch. Any service that adds an /internal/ route
+    later is covered without anyone remembering this ticket."""
+    FakeClient.response = FakeUpstream(200, {}, b"{}")
+    for app_key in list(gw.REGISTRY)[:6]:
+        assert client.get(f"/api/{app_key}/internal/anything").status_code == 404
