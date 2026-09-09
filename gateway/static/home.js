@@ -344,14 +344,47 @@
     // beats a card full of zeroes.
     if (!wr) { el.hidden = true; return; }
     el.hidden = false;
-    el.classList.toggle("lead", wr.slot === "lead");
+    const lead = wr.slot === "lead";
+    el.classList.toggle("lead", lead);
+    // Sunday evening it takes the top of the page; the rest of the week it sits
+    // beside Health & Discipline, whose card already carries study-vs-goal and
+    // gym-vs-goal. Two cards restating the same two numbers, one of them above
+    // the calendar, is most of why the top of this page felt like noise.
+    //
+    // The card is MOVED rather than duplicated: a second copy with the same id
+    // is what made the earlier weekly card dead DOM (SCRUM/#45), and only one
+    // of them can ever be reachable by `q("#cc-weekly")`.
+    const grid = q("#cc-grid"), home = q("#cc-weekly-slot");
+    if (lead && el.parentElement !== grid) grid.insertBefore(el, grid.firstElementChild);
+    else if (!lead && home && el.parentElement !== home) home.appendChild(el);
 
     const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m`.replace(" 0m", "") : `${v}m`);
     const t = wr.study && wr.study.trend_min;
     const trend = (t === null || t === undefined || t === 0) ? ""
       : `<span class="wr-trend ${t > 0 ? "up" : "down"}">${t > 0 ? "▲" : "▼"} ${esch(mins(Math.abs(t)))} vs last week</span>`;
 
-    el.innerHTML = `<h3>${wr.slot === "lead" ? "Your week" : "This week so far"}</h3>
+    // Sunday evening: the full review, at the top of the page, which is what it
+    // was built for. Any other day: ONE line, and only the part Health &
+    // Discipline does not already carry.
+    //
+    // Its three bars are study-vs-goal, gym-vs-goal and water — and the card it
+    // now sits beside states all three, with today's figures as well as the
+    // week's. Two cards stacked saying the same two numbers is not twice the
+    // information. What it alone knows is the week-over-week trend: whether
+    // this week is better than the last one is the actual question "where did
+    // the week go" is asking, and no other card answers it.
+    if (!lead) {
+      const study = wr.study || {};
+      const done = study.value == null ? null : mins(study.value);
+      el.innerHTML = `<div class="wr-line">
+        <span class="wr-l">This week</span>
+        ${done ? `<b>${esch(done)}</b> studying` : `<span class="muted">not tracked</span>`}
+        ${trend || `<span class="wr-trend flat">level with last week</span>`}
+      </div>`;
+      return;
+    }
+
+    el.innerHTML = `<h3>Your week</h3>
       ${wrRow("Study", wr.study, "", mins)}
       ${wrRow("Gym", wr.gym, "")}
       ${wrRow("Water", wr.water, " days")}
@@ -727,6 +760,25 @@
   function renderDoNext(dn, d) {
     dn = dn || { title: "You're on track", reason: "Nothing urgent.", action: null };
     const el = q("#cc-donext");
+
+    // Do-Next and the attention feed share nudge keys deliberately, so the two
+    // are frequently the SAME item — and it was drawn twice: once as a 180px
+    // hero, then again as the first attention row a few pixels below, carrying
+    // the same title and the same button. Where they agree, the feed keeps it
+    // (it is the list you scan) and the hero stands down.
+    const duplicate = Attention.isDuplicate(dn, d && d.nudges);
+    const hiddenRow = renderHidden(d);
+    if (duplicate) {
+      // The way back to something you dismissed lives in this card, so it has
+      // to survive the hero standing down — otherwise clearing your last nudge
+      // would also take away the only control that brings it back.
+      el.className = "cc-card";
+      el.hidden = !hiddenRow;
+      el.innerHTML = hiddenRow;
+      return;
+    }
+
+    el.hidden = false;
     const calm = !dn.action;
     const btn = dn.action ? `<button class="big-btn" id="dn-go">${esch(actionLabel(dn.action))}</button>` : "";
     el.className = "cc-card hero";
@@ -737,7 +789,7 @@
         <div class="reason">${esch(dn.reason || "")}</div>
         <div class="cta">${btn}</div>
       </div>
-      ${renderHidden(d)}`;
+      ${hiddenRow}`;
     if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
   }
 
