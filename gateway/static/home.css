@@ -983,3 +983,12 @@ body.cc[data-mode="evening"] {
 #cc-health .score-of {
   display: block; margin-top: 8px; font-size: 11px; color: var(--muted);
 }
+/* Cash-runway account picker in Settings. The list is as long as the ledger,
+   so it scrolls rather than pushing Save off the modal. */
+.set-runway {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px 14px; margin-top: 6px; max-height: 220px; overflow-y: auto;
+  padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+}
+.set-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.set-check input { cursor: pointer; }
