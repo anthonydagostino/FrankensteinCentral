@@ -49,6 +49,12 @@ def box(tmp_path):
     sh("git", "config", "user.name", "t", cwd=seed)
     (seed / "scripts").mkdir()
     shutil.copy(DEPLOY, seed / "scripts" / "deploy.sh")
+    # deploy.sh calls this to verify the stack came up before recording
+    # success (SCRUM-107). It is a real dependency now, so the fake box has to
+    # carry it — without it deploy.sh fails closed, which is correct behaviour
+    # and would make every test here fail for the wrong reason.
+    shutil.copy(ROOT / "scripts" / "stack-health.sh",
+                seed / "scripts" / "stack-health.sh")
     (seed / "app.txt").write_text("v1\n")
     sh("git", "add", "-A", cwd=seed)
     sh("git", "commit", "-qm", "v1", cwd=seed)
@@ -58,11 +64,23 @@ def box(tmp_path):
 
     # docker, stubbed: `compose version` must succeed for deploy.sh to pick a
     # command, and everything else is recorded rather than run.
+    #
+    # `compose ps` answers with a SERVING stack. Since SCRUM-107 deploy.sh
+    # verifies the stack came up before recording success, and a stub that
+    # reported no containers would fail every deploy here — correctly, since
+    # "nothing is running" is not health. These tests are about self-update on
+    # a working box, so the stub models a working box.
     bindir = tmp_path / "bin"
     bindir.mkdir()
     dockerlog = tmp_path / "docker.log"
     docker = bindir / "docker"
-    docker.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{dockerlog}"\nexit 0\n')
+    docker.write_text(
+        '#!/usr/bin/env bash\n'
+        f'echo "$@" >> "{dockerlog}"\n'
+        'if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then\n'
+        '  echo \'{"Service":"gateway","State":"running","Health":""}\'\n'
+        'fi\n'
+        'exit 0\n')
     docker.chmod(0o755)
 
     state = tmp_path / "state"
