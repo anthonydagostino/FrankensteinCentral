@@ -17,6 +17,30 @@ Firefly never set is neither counted nor silently dropped: it is reported in
 `unclassified`, and while any exists the runway is a LOWER BOUND, because money
 we refused to count can only make it longer.
 
+**That guard was not enough, and the real ledger proved it.** It defends against
+a role that is MISSING. It cannot fire on a role that is WRONG. Anthony's
+Firefly reports `defaultAsset` for all eleven accounts — brokerages, TSP and
+three credit cards included — so `unclassified` stayed empty, `lower_bound`
+stayed false, and the card published **64.5 months** against a true figure of
+about 13.2. A 4.9x overstatement, with no hedge, in the direction this module's
+own comments call the expensive one. Absence is what I guarded; misclassifica-
+tion is what happens.
+
+So the role field is no longer taken on faith:
+
+  * **A role that never varies is not a classification.** If every asset
+    account carries the same role, that field is a default the ledger never
+    filled in, and it is treated as telling us nothing — everything becomes
+    unclassified and the figure is suppressed with a reason, rather than
+    divided by a number built from brokerages.
+  * **A negative balance is never spendable.** An "asset" carrying a debt
+    (a card entered as an asset account) cannot be part of a cash pot, whatever
+    role it claims.
+
+Both are refusals to trust a single unverified field, which is the same
+instinct as the rest of docs/BUDGETS.md: when the data cannot support the
+claim, say so rather than compute anyway.
+
 **It lies if the burn is wrong.** A burn computed from a truncated read is too
 small, which makes runway too long — the optimistic direction, which is the
 dangerous one. So a partial window yields None, never a number. Same for a
@@ -45,9 +69,30 @@ def _num(v, default=0.0) -> float:
         return default
 
 
+def roles_are_informative(accounts) -> bool:
+    """Whether the role field is actually distinguishing these accounts.
+
+    One role repeated across every asset account is a default the ledger never
+    filled in, not a statement that they are all cash. Anthony's Firefly
+    returns `defaultAsset` for a checking account, a brokerage, a TSP and three
+    credit cards alike — reading that as "all liquid" is how a 13-month runway
+    got published as 64.5.
+
+    Fewer than two asset accounts cannot demonstrate variety either way, so
+    the field is taken at face value there: with one account, "they're all the
+    same" carries no suspicion.
+    """
+    roles = [a.get("role") for a in accounts or []
+             if isinstance(a, dict) and a.get("kind") != "liability"]
+    if len(roles) < 2:
+        return True
+    return len(set(roles)) > 1
+
+
 def split_accounts(accounts) -> dict:
     """Sort accounts into what you can spend, what you can't, and what we
     can't tell. The third bucket is the one that must never be guessed."""
+    trust_roles = roles_are_informative(accounts)
     liquid, illiquid, unclassified, liabilities = [], [], [], []
     for a in accounts or []:
         if not isinstance(a, dict):
@@ -56,6 +101,12 @@ def split_accounts(accounts) -> dict:
                "role": a.get("role")}
         if a.get("kind") == "liability":
             liabilities.append(row)
+        elif row["balance"] < 0:
+            # A debt carried in an asset account. Whatever role it claims, a
+            # negative balance is not money you can spend.
+            liabilities.append(row)
+        elif not trust_roles:
+            unclassified.append(row)
         elif row["role"] in LIQUID_ROLES:
             liquid.append(row)
         elif row["role"] in ILLIQUID_ROLES:
@@ -63,7 +114,8 @@ def split_accounts(accounts) -> dict:
         else:
             unclassified.append(row)
     return {"liquid": liquid, "illiquid": illiquid,
-            "unclassified": unclassified, "liabilities": liabilities}
+            "unclassified": unclassified, "liabilities": liabilities,
+            "roles_informative": trust_roles}
 
 
 def monthly_burn(spend_total, window_days) -> float | None:
@@ -97,6 +149,12 @@ def cash_runway(accounts, spend_total, window_days, *, freshness=None,
         # A truncated read UNDERSTATES spending, so it OVERSTATES runway. Of the
         # two directions to be wrong in, that is the one that costs you money.
         reason = "the spending read was truncated, so the burn would be too low"
+    elif not buckets["roles_informative"]:
+        # The specific, actionable phrasing matters: this is a ledger fix, not
+        # a bug to wait out, and it names exactly what to change.
+        reason = ("Firefly gives every account the same role, so it isn't saying "
+                  "which are cash — set account roles (and enter credit cards as "
+                  "liabilities) and this becomes a real number")
     elif not buckets["liquid"]:
         reason = ("no account is marked as cash in Firefly, so there is nothing "
                   "to divide")
@@ -137,6 +195,9 @@ def cash_runway(accounts, spend_total, window_days, *, freshness=None,
         "lower_bound": bool(buckets["unclassified"]),
         "unclassified": [a["name"] for a in buckets["unclassified"]],
         "excluded": [a["name"] for a in buckets["illiquid"]],
+        # False => the role field was uniform and therefore ignored. Published
+        # so a consumer can explain the suppression rather than just show none.
+        "roles_informative": buckets["roles_informative"],
         "income_salary": salary,
         "income_resale": resale,
         "months_without_resale": without_resale,

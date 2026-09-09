@@ -274,8 +274,29 @@ At baseline this box carries ~2.6 GB of such orphans. See
 
 ### Backups
 
-`~/docker/backup.sh` runs nightly at 03:00 via crontab. What actually protects
-this stack:
+```bash
+bash scripts/backup.sh              # take one
+bash scripts/restore.sh --list      # what exists, and which are BROKEN
+bash scripts/restore.sh --dry-run <dir>   # prove it restores, change nothing
+bash scripts/restore.sh <dir>       # actually restore
+```
+
+This replaces `~/docker/backup.sh`, which was referenced here but lived
+outside the repository: nobody reviewing this code could read it, and its
+restore had never been run. A backup nobody has restored from is a belief, and
+the belief is the dangerous half — it is what stops you checking.
+
+`tests/test_backup_restore.py` runs these scripts against a real PostgreSQL:
+it writes rows, backs up, DROPS the tables, restores, and compares row for
+row. It also proves the refusals — a truncated or tampered archive is rejected
+BEFORE anything is dropped, because a restore that fails halfway has already
+destroyed what it was replacing.
+
+The Gmail token volume is backed up but **not** restored automatically;
+putting a credential back is a decision, not a step. `restore.sh` prints the
+command.
+
+What actually protects this stack:
 
 - **`.env`** — untracked and in exactly one place. Losing it means re-entering
   every credential by hand.

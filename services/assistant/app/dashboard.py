@@ -116,6 +116,27 @@ MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
 SEASON_KEYS = ("jan", "feb", "mar", "apr", "may", "jun",
                "jul", "aug", "sep", "oct", "nov", "dec")
 
+# Each month's theme is a palette of three colours, not one. `tint` says which
+# of the three a given day leads with, so a week reads as a progression across
+# the palette instead of the same swatch stamped seven times — that repetition
+# is what made a three-colour theme still look like a single colour.
+#
+# Taken from the date itself, so a given day always draws the same way: tying
+# it to the column index instead would repaint every card each time the window
+# scrolled, which is movement carrying no information.
+#
+# It counts from the proleptic ordinal, NOT the day of the month, because the
+# day of the month is not continuous. 31 % 3 and 1 % 3 are both 1, so the last
+# day of a 31-day month and the first of the next would lead with the same
+# colour — the one place in the year where the repetition this exists to break
+# would come back. The ordinal has no such seam at a month or a year boundary.
+#
+# Like `season`, this is decoration and says NOTHING about the data. It is
+# decided here rather than in the browser only because that is where every
+# other date decision on this card is made, which also puts it under the
+# calendar sweep in the tests.
+TINTS = 3
+
 WINDOW_DAYS = 7
 
 
@@ -405,6 +426,7 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
             "ordinal_suffix": ordinal_suffix(day.day),
             "year": day.year,
             "season": SEASON_KEYS[day.month - 1],
+            "tint": day.toordinal() % TINTS,
             "is_today": offset == 0,
             "is_tomorrow": offset == 1,
             "is_weekend": day.weekday() >= 5,
