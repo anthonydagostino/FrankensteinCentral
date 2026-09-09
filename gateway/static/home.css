@@ -73,9 +73,27 @@ body.cc[data-mode="evening"] {
    the week grid are what this page is opened for; everything below is what you
    read once you are already here. */
 .cc-money-row {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start;
+  display: grid; gap: 16px; align-items: start;
+  /* auto-fit rather than a fixed count: three money cards go 3-up on a wide
+     screen, 2-up in the middle and stack on a phone, without a breakpoint per
+     arrangement. */
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
 }
 @media (max-width: 900px) { .cc-money-row { grid-template-columns: 1fr; } }
+
+/* ---- resale (SCRUM-139) -------------------------------------------------
+   The figures PowerBuy already computed and the home screen could not reach.
+   `expiring` is the only one with a deadline attached, so it is the only one
+   allowed to shout — the rest are reference. */
+.rs-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rs-lead { font-size: 26px; font-weight: 800; letter-spacing: -.6px;
+  font-variant-numeric: tabular-nums; color: var(--text); }
+.rs-lead.urgent { color: var(--imp); }
+.rs-unit { font-size: 13px; color: var(--muted); }
+.rs-sub { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px;
+  font-size: 12.5px; color: var(--muted); }
+.rs-sub b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.rs-note { margin: 10px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .cc-cols { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start; }
 .cc-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
@@ -934,3 +952,34 @@ body.cc[data-mode="evening"] {
    second device does not re-report what the first already showed. */
 #cc-since .it.urgent { color: var(--imp, #e0574a); font-weight: 600; }
 #cc-since em { font-style: normal; opacity: .55; font-size: .74rem; }
+
+/* ---- the logging drawer (SCRUM-139) -------------------------------------
+   The health card's rows stay glanceable — label, figure, bar. Every control
+   that WRITES something lives in here, closed by default. A home screen
+   carries what you monitor; a form belongs on a drill-down. */
+.hx-log { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.hx-log > summary {
+  cursor: pointer; list-style: none; font-size: 11px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.hx-log > summary::-webkit-details-marker { display: none; }
+.hx-log > summary::before { content: "＋"; font-size: 13px; line-height: 1; }
+.hx-log[open] > summary::before { content: "－"; }
+.hx-log > summary:hover { color: var(--text); }
+.hx-log-grid { display: grid; gap: 12px; margin-top: 12px; }
+.hx-log-l {
+  display: block; margin-bottom: 5px; font-size: 11px; color: var(--muted);
+}
+
+
+/* The score bars and the detail rows are two views of the same four habits —
+   the bars as a share of goal, the rows with the actual figures. They are kept
+   apart rather than merged because only the bars can say "not tracked yet",
+   which is a different fact from a goal missed; but they need visible air
+   between them, or the "from 4 of 5 tracked" line reads as a label on the row
+   below it. */
+#cc-health .score-bars { margin-bottom: 14px; }
+#cc-health .score-of {
+  display: block; margin-top: 8px; font-size: 11px; color: var(--muted);
+}

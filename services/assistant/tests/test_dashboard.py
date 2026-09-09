@@ -1515,3 +1515,93 @@ def test_the_whole_cross_device_sequence():
     nextday = visit(home_payload(inbox={"items": [{"id": "m3", "important": True}]}),
                     t + timedelta(days=1))
     assert nextday["show"] is True and nextday["changes"]
+
+
+# --- the resale book (SCRUM-139) --------------------------------------------
+#
+# What replaced the habit-logging form on the home screen. PowerBuy already
+# computed every one of these figures; build_home simply never fetched it
+# (SCRUM-71), so none of them could reach a screen.
+#
+# The same three-states-not-two rule as firefly_state and portfolio_state, and
+# for the sharpest version of the reason: this is the card whose entire job is
+# to say when money is about to be lost, so rendering an outage as "$0 expected,
+# 0 expiring" would be the most reassuring possible account of something it
+# does not know.
+
+LIVE_RESALE = {"mode": "live", "summary": {
+    "total_purchases": 12, "expected_profit": 418.55, "unpaid_count": 3,
+    "not_delivered_count": 5, "expiring_soon_count": 2}}
+
+
+def test_an_unreachable_powerbuy_is_not_an_empty_book():
+    for payload in ({}, None):
+        assert dash.resale_state(payload) == "unreachable"
+        brief = dash.resale_brief(payload)
+        assert brief["state"] == "unreachable"
+        # Suppressed, never zeroed — docs/BUDGETS.md.
+        for key in ("profit", "unpaid", "expiring", "in_flight", "total"):
+            assert brief[key] is None, key
+        assert brief["urgent"] is False
+
+
+def test_a_disconnected_powerbuy_says_so_rather_than_reading_as_an_outage():
+    """No credentials is a setup problem you can fix; an outage is not. Telling
+    you to set POWERBUY_EMAIL every time a container blinks sends you to repair
+    configuration that is already correct."""
+    payload = {"mode": "disconnected", "summary": {"total_purchases": 0}}
+    assert dash.resale_state(payload) == "not_configured"
+    assert dash.resale_brief(payload)["state"] == "not_configured"
+
+
+def test_a_live_book_reports_what_powerbuy_computed():
+    brief = dash.resale_brief(LIVE_RESALE)
+    assert brief["state"] == "ok"
+    assert brief["profit"] == 418.55
+    assert brief["unpaid"] == 3
+    assert brief["expiring"] == 2
+    assert brief["in_flight"] == 5
+    assert brief["total"] == 12
+
+
+def test_expiring_buys_are_the_only_thing_allowed_to_shout():
+    """Of the four figures PowerBuy tracks, `expiring_soon_count` is the only
+    one with a deadline attached — and a deadline is the whole reason a number
+    earns a place on a screen you glance at."""
+    assert dash.resale_brief(LIVE_RESALE)["urgent"] is True
+    calm = {"mode": "live", "summary": dict(LIVE_RESALE["summary"], expiring_soon_count=0)}
+    assert dash.resale_brief(calm)["urgent"] is False
+    # Profit alone never makes it urgent, however large.
+    rich = {"mode": "live", "summary": {"expected_profit": 99999,
+                                        "expiring_soon_count": 0, "unpaid_count": 0}}
+    assert dash.resale_brief(rich)["urgent"] is False
+
+
+def test_a_live_but_empty_book_is_zero_and_not_unknown():
+    """Zero and unknown are different states. A connected account with nothing
+    in it genuinely HAS nothing expiring, and must not be hidden."""
+    brief = dash.resale_brief({"mode": "live", "summary": {
+        "total_purchases": 0, "expected_profit": 0, "unpaid_count": 0,
+        "not_delivered_count": 0, "expiring_soon_count": 0}})
+    assert brief["state"] == "ok"
+    assert brief["total"] == 0 and brief["expiring"] == 0
+    assert brief["urgent"] is False
+
+
+def test_a_missing_field_is_none_rather_than_zero():
+    """PowerBuy is an upstream this app does not own. A field it stops sending
+    is unknown, and drawing unknown as 0 is the bug docs/BUDGETS.md exists to
+    prevent."""
+    brief = dash.resale_brief({"mode": "live", "summary": {"expected_profit": 10}})
+    assert brief["profit"] == 10
+    assert brief["unpaid"] is None
+    assert brief["expiring"] is None
+    assert brief["urgent"] is False
+
+
+def test_resale_mirrors_the_firefly_contract():
+    """firefly_state is the pattern this repo already got right; every reader
+    of an optional upstream must answer with the same three states."""
+    for payload in ({}, None, {"mode": "disconnected"}, {"mode": "live"}):
+        assert dash.resale_state(payload) in ("ok", "unreachable", "not_configured")
+    assert dash.resale_state({}) == dash.firefly_state({}) == dash.portfolio_state({})

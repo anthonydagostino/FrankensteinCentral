@@ -13,8 +13,9 @@ from . import answers, notify, runway
 from .dashboard import (deadline_rows, deploy_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
-                        schedule_state, since_changes, since_snapshot,
-                        upcoming_events, week_window, weekly_review)
+                        resale_brief, schedule_state, since_changes,
+                        since_snapshot, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -890,7 +891,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, seen, emails_r, avail, finance, budget, firefly,
          spending, networth, schedule, cal_health, deals, stocks, vault,
-         captures, review, dismissals) = await asyncio.gather(
+         captures, review, dismissals, powerbuy_home) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             # The shared "already shown" baseline. Fetched here so the diff is
@@ -920,6 +921,11 @@ async def build_home(fresh: bool = False) -> dict:
             # yields NO active keys — so a core outage shows you everything
             # rather than silently hiding items it could not check.
             _get(client, f"{CORE_URL}/dismissals"),
+            # SCRUM-71: POWERBUY_URL is configured in docker-compose and used
+            # elsewhere in this service, and was missing from this fan-out — so
+            # the home screen was structurally incapable of showing an expiring
+            # unpaid resale buy, however loudly PowerBuy computed one.
+            _get(client, f"{POWERBUY_URL}/summary"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -1015,6 +1021,9 @@ async def build_home(fresh: bool = False) -> dict:
         # during any core outage.
         "score": (core or {}).get(
             "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
+        # The resale book: profit expected, money owed, and — the only figure
+        # here with a deadline — buys whose window closes within 7 days.
+        "resale": resale_brief(powerbuy_home),
         "captures": (captures.get("items", []) if captures else [])[:8],
         # What is hidden right now, so the UI can offer to bring it back
         # rather than leaving you wondering where something went.
