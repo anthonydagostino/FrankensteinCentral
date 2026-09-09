@@ -14,7 +14,13 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      # LOOPBACK, NOT REMOVED. SCRUM-116 proposed dropping this publish
+      # outright — "nothing outside compose needs it" — but scripts/backup.sh
+      # and scripts/restore.sh run `pg_dump -h localhost -p 5432` FROM THE HOST
+      # (backup.sh:89). Dropping it would have silently broken backup and
+      # restore while closing a security hole, which is a bad trade at any
+      # price. 127.0.0.1 removes the LAN exposure and keeps both working.
+      - "127.0.0.1:5432:5432"
 
   gateway:
     build: ./gateway
@@ -29,6 +35,14 @@ services:
       SCHEDULE_URL: http://schedule:8000
       ASSISTANT_URL: http://assistant:8000
     ports:
+      # THE ONLY PORT ON THE NETWORK, deliberately. Every other service binds
+      # 127.0.0.1 (SCRUM-116): they were all reachable from the LAN, which made
+      # the gateway's role as the single front door a diagram rather than a
+      # control — every "internal" contract was one direct request away.
+      #
+      # Worth knowing if you ever think a host firewall is covering this:
+      # Docker writes its published ports into its own iptables chain, which
+      # BYPASSES a ufw policy. The bind address is the control.
       - "8080:8000"
     depends_on:
       - powerbuy
@@ -46,7 +60,7 @@ services:
       POWERBUY_EMAIL: ${POWERBUY_EMAIL:-}
       POWERBUY_PASSWORD: ${POWERBUY_PASSWORD:-}
     ports:
-      - "8081:8000"
+      - "127.0.0.1:8081:8000"
 
   fitness:
     build: ./services/fitness
@@ -57,7 +71,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8082:8000"
+      - "127.0.0.1:8082:8000"
 
   finance:
     build: ./services/finance
@@ -68,7 +82,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8086:8000"
+      - "127.0.0.1:8086:8000"
 
   tasks:
     build: ./services/tasks
@@ -79,7 +93,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8087:8000"
+      - "127.0.0.1:8087:8000"
 
   # Time-aware budgets over Firefly (stateless; budget definitions live in
   # core settings, transactions come from the firefly service).
@@ -95,7 +109,7 @@ services:
       core:
         condition: service_started
     ports:
-      - "8088:8000"
+      - "127.0.0.1:8088:8000"
 
   deals:
     build: ./services/deals
@@ -106,7 +120,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8089:8000"
+      - "127.0.0.1:8089:8000"
 
   networth:
     build: ./services/networth
@@ -122,7 +136,7 @@ services:
       firefly:
         condition: service_started
     ports:
-      - "8090:8000"
+      - "127.0.0.1:8090:8000"
 
   vault:
     build: ./services/vault
@@ -133,7 +147,7 @@ services:
       VAULT_MODE: ${VAULT_MODE:-off}
       BW_SERVE_URL: ${BW_SERVE_URL:-}
     ports:
-      - "8091:8000"
+      - "127.0.0.1:8091:8000"
 
   # Read-only client for a Plex server SHARED with you (auto-discovered via
   # plex.tv using your own account token). Empty token = "not connected".
@@ -146,7 +160,7 @@ services:
       PLEX_SERVER_NAME: ${PLEX_SERVER_NAME:-}
       PLEX_URL: ${PLEX_URL:-}
     ports:
-      - "8092:8000"
+      - "127.0.0.1:8092:8000"
 
   # Read-only client that surfaces YOUR Firefly III (at FIREFLY_URL, e.g.
   # http://192.168.1.185:8093) on the hub — net worth, spend, accounts, and the
@@ -166,7 +180,7 @@ services:
     # reaches this service internally over the docker network, so this host
     # port is only for direct debugging.
     ports:
-      - "8097:8000"
+      - "127.0.0.1:8097:8000"
 
   # Personal state & daily-score engine (study/focus, water, nutrition, Big 3,
   # captures, history). Reads gym from fitness and open tasks from tasks.
@@ -186,7 +200,7 @@ services:
       tasks:
         condition: service_started
     ports:
-      - "8098:8000"
+      - "127.0.0.1:8098:8000"
 
   # Portfolio & watchlist quotes (keyless, via Stooq). Holdings/watchlist are
   # configured in core settings (market.holdings / market.watchlist).
@@ -199,7 +213,7 @@ services:
       core:
         condition: service_started
     ports:
-      - "8099:8000"
+      - "127.0.0.1:8099:8000"
 
   gmail:
     build: ./services/gmail
@@ -228,7 +242,7 @@ services:
       # the card until the next poll.
       - gmail_token:/data
     ports:
-      - "8083:8000"
+      - "127.0.0.1:8083:8000"
 
   schedule:
     build: ./services/schedule
@@ -252,7 +266,7 @@ services:
       gmail:
         condition: service_started
     ports:
-      - "8084:8000"
+      - "127.0.0.1:8084:8000"
 
   assistant:
     build: ./services/assistant
@@ -288,7 +302,7 @@ services:
       TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-}
       NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
     ports:
-      - "8085:8000"
+      - "127.0.0.1:8085:8000"
     volumes:
       # The host's deploy record, READ-ONLY. deploy.sh writes it outside
       # the repo so it survives the `git reset --hard` a deploy performs,
