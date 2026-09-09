@@ -62,6 +62,59 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
     return picked[:limit] if limit else picked
 
 
+def resale_state(resale):
+    """`ok`, `unreachable` or `not_configured` — the same three states, for the
+    same reason, as firefly_state and portfolio_state.
+
+    The PowerBuy service answers `mode: "disconnected"` when it holds no
+    credentials, and `_get` swallows a timeout into `{}`. Those are different
+    facts: one means "there is nothing to show you", the other means "we could
+    not look". A resale card that renders an outage as $0 expected and 0
+    expiring is telling you the most reassuring possible version of a thing it
+    does not know — and this is the card whose whole job is to say when money
+    is about to be lost.
+    """
+    if not resale:
+        return "unreachable"
+    if resale.get("mode") == "disconnected":
+        return "not_configured"
+    return "ok"
+
+
+def resale_brief(resale):
+    """What the home screen shows about the resale book.
+
+    `expiring` leads when it is non-zero: of the four figures PowerBuy tracks
+    it is the only one carrying a deadline, and a deadline is the only reason
+    a number belongs on a screen you glance at rather than in the sub-app.
+
+    Every figure is None rather than 0 when the service could not be reached,
+    per docs/BUDGETS.md: a suppressed value is null, never zero. Nothing here
+    is invented — the fields come straight from powerbuy.summarize().
+    """
+    state = resale_state(resale)
+    summary = (resale or {}).get("summary") or {}
+    if state != "ok":
+        return {"state": state, "profit": None, "unpaid": None,
+                "expiring": None, "in_flight": None, "total": None,
+                "urgent": False}
+    def _int(key):
+        value = summary.get(key)
+        return None if value is None else int(value)
+    expiring = _int("expiring_soon_count")
+    return {
+        "state": state,
+        "profit": summary.get("expected_profit"),
+        "unpaid": _int("unpaid_count"),
+        "expiring": expiring,
+        "in_flight": _int("not_delivered_count"),
+        "total": _int("total_purchases"),
+        # The one thing on this card that is time-critical, and so the one
+        # thing allowed to shout.
+        "urgent": bool(expiring),
+    }
+
+
 def portfolio_state(stocks):
     """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13, and the
     same three states `firefly_state` draws, for the same reason.

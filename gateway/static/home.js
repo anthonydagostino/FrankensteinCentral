@@ -206,6 +206,7 @@
     renderPortfolio(d.portfolio);
     renderToday(d);
     renderHealth(d);
+    renderResale(d.resale);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
@@ -1339,7 +1340,70 @@
       <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
   }
 
+  // ---- resale (SCRUM-139) ---------------------------------------------------
+  // What replaced the habit-logging form. PowerBuy already computed all of
+  // this; build_home simply never fetched it (SCRUM-71), so none of it could
+  // reach a screen.
+  function renderResale(r) {
+    const el = q("#cc-resale");
+    if (!el) return;
+    r = r || { state: "unreachable" };
+
+    // Three states, not two. An unreachable service is not an empty book, and
+    // this is the card whose entire job is to say when money is about to be
+    // lost — rendering an outage as "$0 expected, 0 expiring" would be the
+    // most reassuring possible version of something it does not know.
+    if (r.state === "unreachable") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">Couldn't reach PowerBuy just now — a connection
+        problem, not an empty book. Figures are hidden rather than guessed at.</p>`;
+      return;
+    }
+    if (r.state === "not_configured") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">PowerBuy isn't connected — set POWERBUY_EMAIL and
+        POWERBUY_PASSWORD to see your purchases here.</p>`;
+      return;
+    }
+
+    // The lead figure is whichever one is actually urgent. Expiring buys have
+    // a deadline and the profit number does not, so on any day something is
+    // expiring that is the headline; otherwise the money you expect to make is.
+    const money = (v) => "$" + Number(v || 0).toLocaleString(undefined,
+      { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    const lead = r.urgent
+      ? `<span class="rs-lead urgent">${r.expiring}</span>
+         <span class="rs-unit">expiring within 7 days</span>`
+      : `<span class="rs-lead">${esch(money(r.profit))}</span>
+         <span class="rs-unit">profit expected</span>`;
+    const sub = [
+      r.urgent && r.profit != null ? `<span>${esch(money(r.profit))} <b>expected</b></span>` : "",
+      r.unpaid ? `<span><b>${r.unpaid}</b> unpaid</span>` : "",
+      r.in_flight ? `<span><b>${r.in_flight}</b> not delivered</span>` : "",
+      r.total != null ? `<span><b>${r.total}</b> tracked</span>` : "",
+    ].filter(Boolean).join("");
+
+    el.innerHTML = `<h3>Resale</h3>
+      <div class="rs-row">${lead}</div>
+      <div class="rs-sub">${sub}</div>
+      ${r.urgent ? `<p class="rs-note">An expiring buy is the only figure here
+        with a deadline on it.</p>` : ""}
+      <div class="hx-btns" style="margin-top:12px">
+        <button class="hx-btn" id="rs-open">Open PowerBuy →</button>
+      </div>`;
+    const b = q("#rs-open");
+    if (b) b.onclick = () => openAppKey("powerbuy");
+  }
+
+  // Whether the logging drawer was left open. localStorage can throw in a
+  // private window, so every read is guarded and the default is closed.
+  const HX_LOG_KEY = "cc.hxlog";
+  const hxLogOpen = () => {
+    try { return localStorage.getItem(HX_LOG_KEY) === "open"; } catch (e) { return false; }
+  };
+
   function renderHealth(d) {
+    const logOpen = hxLogOpen();
     const h = d.health || {};
     const score = d.score || { score: null, parts: {}, tracked: 0, of: 0 };
     const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
@@ -1384,36 +1448,49 @@
       : "";
     q("#cc-health").innerHTML = `
       <h3>Health &amp; discipline · ${scoreHeading}</h3>
-      <div class="hx-score">
-        <div class="score-ring${hasScore ? "" : " untracked"}" style="--p:${hasScore ? score.score : 0}"><div class="hole">${hasScore ? score.score : "–"}</div></div>
-        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
-      </div>
+      <!-- The ring that used to sit here drew the same number as the score
+           pill in the page header, a few hundred pixels apart on one screen.
+           The heading above already names it. -->
+      <div class="score-bars">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
       <div class="hx">
         <div class="hx-row">
           <div class="hx-head"><span class="l">📚 Study${st.streak ? ` · ${st.streak}d streak` : ""}</span><span class="v">${fmtH(st.today_min)} / ${fmtH(st.goal_min)}</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${studyPct}%"></div></div>
           ${exam && exam.days_left != null ? `<div class="hx-head"><span class="l">${esch(exam.label)} in ${exam.days_left}d</span>${exam.remaining_hours != null ? `<span class="v">${exam.remaining_hours}h left · ${exam.weekly_needed_hours}h/wk</span>` : ""}</div>` : ""}
-          <div class="hx-btns">${focusBtns}</div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">🏋️ Gym${gym.last ? ` · last ${timeAgoShort(gym.last)}` : ""}</span><span class="v">${gym.week || 0} / ${gym.goal || 0} this week</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${gym.goal ? Math.min(100, (gym.week / gym.goal) * 100) : 0}%"></div></div>
-          <div class="hx-btns"><button class="hx-btn" data-gym="1">Log workout</button></div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">💧 Water</span><span class="v">${w.oz || 0} / ${w.goal || 0} oz</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${waterPct}%;background:var(--accent-2)"></div></div>
-          <div class="hx-btns">${waterBtns}</div>
         </div>
         <div class="hx-row">
-          <div class="hx-head"><span class="l">🍽️ Nutrition today</span></div>
-          <div class="hx-btns">${nutBtns}</div>
+          <div class="hx-head"><span class="l">🍽️ Nutrition today</span><span class="v">${rating ? esch(rating) : "not logged"}</span></div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">😴 Sleep</span><span class="v">${sleepHours == null ? "not logged" : sleepHours + "h"}</span></div>
-          <div class="hx-btns">${sleepBtnsHtml}</div>
         </div>
-      </div>`;
+      </div>
+      <!-- Logging is a FORM, and a home screen is for what you monitor at a
+           glance; entry belongs on a drill-down. Nothing is removed — it is one
+           click away, and the disclosure remembers whether you left it open, so
+           if you do log from here every day it simply stays open. -->
+      <details class="hx-log"${logOpen ? " open" : ""}>
+        <summary>Log something</summary>
+        <div class="hx-log-grid">
+          <div><span class="hx-log-l">Study</span><div class="hx-btns">${focusBtns}</div></div>
+          <div><span class="hx-log-l">Gym</span><div class="hx-btns"><button class="hx-btn" data-gym="1">Log workout</button></div></div>
+          <div><span class="hx-log-l">Water</span><div class="hx-btns">${waterBtns}</div></div>
+          <div><span class="hx-log-l">Nutrition</span><div class="hx-btns">${nutBtns}</div></div>
+          <div><span class="hx-log-l">Sleep</span><div class="hx-btns">${sleepBtnsHtml}</div></div>
+        </div>
+      </details>`;
+    const logEl = q("#cc-health").querySelector(".hx-log");
+    if (logEl) logEl.ontoggle = () => {
+      try { localStorage.setItem(HX_LOG_KEY, logEl.open ? "open" : "closed"); } catch (e) {}
+    };
     const focusLabel = () => (q("#hx-focus-label") && q("#hx-focus-label").value.trim()) || "Study";
     q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, focusLabel())));
     q("#cc-health").querySelectorAll("[data-water]").forEach((b) => (b.onclick = async () => { await post("/core/water", { oz: +b.dataset.water }); toast(`+${b.dataset.water} oz`); refresh(true); }));
@@ -1662,9 +1739,22 @@
   q("#launcher").onclick = (e) => { if (e.target.id === "launcher") closeLauncher(); };
 
   // ---- settings -------------------------------------------------------------
+  // Accounts as the ledger reports them, kept by index so a name never has to
+  // survive a round-trip through an HTML attribute — `esch` does not escape
+  // quotes and an account is named by the user.
+  let _runwayAccounts = [];
+  let _financeSettings = {};
   async function openSettings() {
     let s = {};
     try { s = await fetch("/api/core/settings").then((r) => r.json()); } catch {}
+    let nw = {};
+    try { nw = await fetch("/api/firefly/networth").then((r) => r.json()); } catch {}
+    // Only asset-side accounts can be candidates: a Firefly liability or a
+    // ccAsset card is already excluded by the engine and offering it here
+    // would imply the choice matters.
+    _runwayAccounts = ((nw || {}).accounts || []).filter(
+      (a) => a && a.kind !== "liability" && a.role !== "ccAsset");
+    _financeSettings = s.finance || {};
     const w = s.score_weights || {};
     const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
     const pc = s.paycheck || {};
@@ -1680,6 +1770,16 @@
         <div class="set-field"><label>Date (YYYY-MM-DD)</label><input id="s-ed" value="${esch(s.exam_date || "")}"></div>
         <div class="set-field"><label>Target study hours</label><input id="s-eh" type="number" value="${s.exam_target_hours ?? ""}"></div>
       </div></div>
+      <div class="set-group"><h4>Cash runway — which of these is not spendable cash?</h4>
+        <div class="set-field" style="grid-column:1/-1"><label>Firefly has no account type for a brokerage, so it cannot tell a current account from a retirement fund — both are "defaultAsset". Tick the ones that are NOT money you could spend this month. Until you do, the runway is shown as a range instead of a number.</label>
+        <div class="set-runway">${
+          _runwayAccounts.length
+            ? _runwayAccounts.map((a, i) => `<label class="set-check"><input type="checkbox" class="runway-x" data-i="${i}"${
+                (_financeSettings.not_spendable || []).includes(a.name) ? " checked" : ""
+              }> ${esch(a.name)}</label>`).join("")
+            : `<span class="muted">No accounts to show — Firefly did not answer.</span>`
+        }</div></div>
+      </div>
       <div class="set-group"><h4>Investments</h4><div class="set-grid">
         <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line (or comma-separated): SYMBOL shares cost — cost optional, fractional shares OK</label>
           <textarea id="s-hold" placeholder="NVDA 10 150&#10;AAPL 2.5&#10;VOO:1.25:380">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
@@ -1865,6 +1965,13 @@
       exam_date: q("#s-ed").value.trim() || null,
       exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
       important_senders: list("#s-imp"),
+      // Merged, not replaced: large_txn and low_balance are not editable here
+      // and a bare {not_spendable} would drop them on every save.
+      finance: { ..._financeSettings, not_spendable:
+        [...q("#settings-body").querySelectorAll(".runway-x")]
+          .filter((c) => c.checked)
+          .map((c) => (_runwayAccounts[Number(c.dataset.i)] || {}).name)
+          .filter(Boolean) },
       budgets: budgets,
       market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
       score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
