@@ -7,3 +7,10 @@ venv/
 .pytest_cache/
 node_modules/
 *.db
+
+# Personal Claude Code settings. Deliberately NOT committed: this file holds
+# permission grants, and a shared one would hand every agent working this repo
+# the same access -- including, as written today, promoting to production
+# without a prompt. Commit .claude/settings.json instead for anything the
+# whole team should have.
+.claude/settings.local.json
