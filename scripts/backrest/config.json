@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "Backrest config for the OptiPlex T1 backup (SCRUM-14 / SCRUM-34). Copy to",
+    "~/.config/backrest/config.json, chmod 600, replace every REPLACE_* token,",
+    "restart backrest. Field names and enum values are verified against",
+    "garethgeorge/backrest proto/v1/config.proto — not typed from memory.",
+    "Restic itself recommends B2's S3-compatible endpoint over the native b2:",
+    "backend (restic docs 030_preparing_a_new_repo), hence the s3: URI.",
+    "autoInitialize and guid are mutually exclusive: a fresh repo sets the",
+    "first and Backrest fills the second on first run."
+  ],
+  "modno": 0,
+  "version": 6,
+  "instance": "optiplex",
+  "repos": [
+    {
+      "id": "b2",
+      "uri": "s3:https://s3.REPLACE_WITH_B2_REGION.backblazeb2.com/REPLACE_WITH_B2_BUCKET/frankenstein",
+      "password": "REPLACE_WITH_RESTIC_PASSWORD",
+      "env": [
+        "AWS_ACCESS_KEY_ID=REPLACE_WITH_B2_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY=REPLACE_WITH_B2_APPLICATION_KEY"
+      ],
+      "flags": [],
+      "autoInitialize": true,
+      "autoUnlock": true,
+      "prunePolicy": {
+        "schedule": { "cron": "0 4 * * 0", "clock": "CLOCK_LOCAL" },
+        "maxUnusedPercent": 10
+      },
+      "checkPolicy": {
+        "schedule": { "cron": "0 5 1 * *", "clock": "CLOCK_LOCAL" },
+        "readDataSubsetPercent": 10
+      },
+      "hooks": [
+        {
+          "conditions": ["CONDITION_PRUNE_ERROR", "CONDITION_CHECK_ERROR", "CONDITION_FORGET_ERROR"],
+          "actionHealthchecks": { "webhookUrl": "https://hc-ping.com/REPLACE_WITH_HEALTHCHECKS_UUID" }
+        }
+      ]
+    }
+  ],
+  "plans": [
+    {
+      "id": "t1-optiplex",
+      "repo": "b2",
+      "paths": [
+        "/srv/dumps/current",
+        "/home/REPLACE_WITH_USER/FrankensteinCentral/docker-compose.yml",
+        "/home/REPLACE_WITH_USER/FrankensteinCentral/.env",
+        "/home/REPLACE_WITH_USER/docker"
+      ],
+      "schedule": { "cron": "30 3 * * *", "clock": "CLOCK_LOCAL" },
+      "retention": {
+        "policyTimeBucketed": { "daily": 14, "weekly": 8, "monthly": 12, "yearly": 2 }
+      },
+      "hooks": [
+        {
+          "conditions": ["CONDITION_SNAPSHOT_START"],
+          "onError": "ON_ERROR_FATAL",
+          "actionCommand": {
+            "command": "#!/bin/bash\nset -euo pipefail\nexec /home/REPLACE_WITH_USER/FrankensteinCentral/scripts/dump-all.sh\n"
+          }
+        },
+        {
+          "conditions": ["CONDITION_SNAPSHOT_START", "CONDITION_SNAPSHOT_SUCCESS", "CONDITION_SNAPSHOT_ERROR"],
+          "actionHealthchecks": { "webhookUrl": "https://hc-ping.com/REPLACE_WITH_HEALTHCHECKS_UUID" }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# Backrest — the restic orchestrator that takes the OptiPlex's T1 backups to
+# Backblaze B2 (SCRUM-14 / SCRUM-34). Install per docs/SETUP-BACKUP.md:
+#
+#   sed "s/REPLACE_WITH_USER/$USER/g" scripts/backrest/backrest.service \
+#     | sudo tee /etc/systemd/system/backrest.service >/dev/null
+#   sudo systemctl daemon-reload && sudo systemctl enable --now backrest
+#
+# NATIVE BINARY ON THE HOST, NOT A CONTAINER — on purpose. It has to keep
+# working when Docker itself is broken, and it runs `docker exec` for the
+# dumps as a member of the docker group rather than by mounting the socket
+# into yet another container.
+[Unit]
+Description=Backrest (restic) — FrankensteinCentral T1 backups to B2
+Documentation=https://github.com/garethgeorge/backrest
+# The pre-snapshot hook runs docker exec, so Docker must be up first.
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=REPLACE_WITH_USER
+# Pinned explicitly so nothing depends on which user's HOME systemd resolves.
+Environment=BACKREST_PORT=127.0.0.1:9898
+Environment=BACKREST_CONFIG=/home/REPLACE_WITH_USER/.config/backrest/config.json
+Environment=BACKREST_DATA=/home/REPLACE_WITH_USER/.local/share/backrest
+ExecStart=/usr/local/bin/backrest
+Restart=on-failure
+RestartSec=10
+
+# Never needs root. It does need: /srv/dumps (writable), the repo checkout
+# (readable), and the docker socket via group membership — so no
+# ProtectHome/ProtectSystem=strict here; they would break all three.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

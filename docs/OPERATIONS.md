@@ -274,6 +274,11 @@ At baseline this box carries ~2.6 GB of such orphans. See
 
 ### Backups
 
+Two layers. `scripts/backup.sh` (below) is the dashboard's own Postgres and
+Gmail token, restore-tested in CI. `scripts/dump-all.sh` wraps it and adds
+Firefly, Vaultwarden and Pi-hole, and Backrest ships the lot to Backblaze B2
+on a schedule — see [SETUP-BACKUP.md](SETUP-BACKUP.md).
+
 ```bash
 bash scripts/backup.sh              # take one
 bash scripts/restore.sh --list      # what exists, and which are BROKEN
