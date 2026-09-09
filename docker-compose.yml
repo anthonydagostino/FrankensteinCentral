@@ -215,6 +215,10 @@ services:
       # Gmail API calls.
       GMAIL_REFRESH_SECONDS: ${GMAIL_REFRESH_SECONDS:-21600}
       GMAIL_STATE_FILE: /data/gmail_state.json
+      # SCRUM-114. Shared secret required by /internal/token, which hands out
+      # a live OAuth token carrying gmail.modify and calendar.events. Empty
+      # means the route is DISABLED, not unguarded — see .env.example.
+      FC_INTERNAL_SECRET: ${FC_INTERNAL_SECRET:-}
     volumes:
       # Persists the Gmail refresh token so the one-time "Allow" survives
       # restarts, plus the last-known-good inbox so a restart doesn't blank
@@ -231,6 +235,8 @@ services:
       # Borrows the gmail service's connected Google account (via its
       # /internal/token endpoint) to push events to the real Google Calendar.
       GMAIL_URL: http://gmail:8000
+      # The same value gmail requires, from the same .env line (SCRUM-114).
+      FC_INTERNAL_SECRET: ${FC_INTERNAL_SECRET:-}
       GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
       # How often the schedule service pulls Google Calendar into Postgres.
       # It owns this now: the pull used to happen only inside the assistant's

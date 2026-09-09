@@ -40,6 +40,11 @@ def gcal_event_id(external_id: str) -> str:
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
+# SCRUM-114. gmail's /internal/token now requires this shared secret; compose
+# injects the same .env value into both containers. Empty here means every
+# call will 404, which is the correct and VISIBLE failure — see _credential.
+INTERNAL_SECRET = os.environ.get("FC_INTERNAL_SECRET", "")
+
 
 async def _credential() -> dict | None:
     """The borrowed Google credential, or None when there isn't one.
@@ -49,9 +54,12 @@ async def _credential() -> dict | None:
     "Calendar could not be reached" — and those two need different actions
     from the person reading the dashboard.
     """
+    if not INTERNAL_SECRET:
+        return None
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{GMAIL_URL}/internal/token", timeout=8)
+            r = await client.get(f"{GMAIL_URL}/internal/token", timeout=8,
+                                 headers={"X-Internal-Secret": INTERNAL_SECRET})
         if r.status_code != 200:
             return None
         payload = r.json()
@@ -257,6 +265,14 @@ async def probe() -> str:
     Deliberately NOT `POST /sync-from-calendar`: that imports events into
     Postgres, which makes it a mutation, not a probe.
     """
+    # SCRUM-114: gmail's /internal/token requires a shared secret and this
+    # deployment has not been given one, so the credential is unreachable for
+    # a reason no amount of waiting fixes and no amount of reconnecting fixes
+    # either. "unreachable" would invite waiting and "disconnected" would send
+    # you to re-consent Google, which would not help; both would be a wrong
+    # instruction rather than merely a vague one.
+    if not INTERNAL_SECRET:
+        return "not_configured"
     cred = await _credential()
     if not cred:
         return "disconnected"

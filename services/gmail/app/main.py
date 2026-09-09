@@ -4,12 +4,13 @@ import html
 import json
 import os
 import re
+import secrets
 import time
 import urllib.parse
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import dateparse
@@ -30,6 +31,21 @@ REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8083/auth
 # after this scope was added; a token minted with only gmail.modify can't
 # call the Calendar API and Google will 403 until re-consented.
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+
+# SCRUM-114. The shared secret that /internal/token requires, injected into
+# this container and into `schedule` by compose from one .env value.
+#
+# The docker network is a convenience, not a boundary — the ticket is explicit
+# about that, and it is right: a token carrying gmail.modify and
+# calendar.events should be asking for a credential no matter who is knocking.
+#
+# UNSET MEANS CLOSED. An empty secret disables the route rather than disabling
+# the check, because the alternative — treating "no secret configured" as
+# "no secret required" — is precisely the bug being fixed, reintroduced one
+# layer down. The cost is real and is stated in .env.example: until
+# FC_INTERNAL_SECRET is set, the schedule service cannot push to Google
+# Calendar, and the calendar card says so rather than going quiet.
+INTERNAL_SECRET = os.environ.get("FC_INTERNAL_SECRET", "")
 SCOPES = f"https://www.googleapis.com/auth/gmail.modify {CALENDAR_SCOPE}"
 
 # How much of the inbox to look at. category:primary drops promotions/social/
@@ -375,21 +391,32 @@ async def health():
 
 
 @app.get("/internal/token")
-async def internal_token():
-    """Access token for OTHER sub-apps on the internal docker network only —
-    lets the schedule service push to Google Calendar with the same
-    connected account, without a second OAuth flow.
+async def internal_token(x_internal_secret: str | None = Header(default=None)):
+    """Access token for OTHER sub-apps, and only for callers holding the
+    shared secret.
 
-    "Internal" is now enforced rather than described: the gateway refuses any
-    path with an `internal` segment (gateway/app/main.py PRIVATE_SEGMENTS,
-    guarded by tests/test_internal_not_proxyable.py). It used to be a claim in
-    this docstring and nothing more, and the proxy served the credential below
-    to anyone who asked for it — SCRUM-114.
+    This used to be guarded by a docstring. It said "internal docker network
+    only" and nothing enforced it, so `/api/gmail/internal/token` through the
+    gateway — no auth anywhere in that path — returned a live OAuth token with
+    gmail.modify and calendar.events to anyone who asked (SCRUM-114).
 
-    Still true, and not fixed here: this service publishes 8083:8000, so the
-    route is reachable at http://<box>:8083/internal/token without the gateway
-    in the path at all. That needs the port to stop being published (SCRUM-116),
-    which first needs the OAuth redirect URI moved off it."""
+    The gateway now 404s any `internal` segment, which closes the reported
+    route. This is the second lock, because one lock on the front door is not
+    a boundary: the service is also directly reachable on its published port,
+    and a future proxy, redirect or service could route here again without
+    anyone remembering that this endpoint was only ever safe by convention.
+
+    404 rather than 401/403 throughout, matching the gateway: an unauthorized
+    caller learns nothing about whether the route exists.
+    """
+    if not INTERNAL_SECRET:
+        # Fail closed. See INTERNAL_SECRET above for why this is not a warning.
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not x_internal_secret or not secrets.compare_digest(
+            x_internal_secret, INTERNAL_SECRET):
+        # Constant-time: a plain == leaks the secret's prefix through timing to
+        # anyone who can call this in a loop, which is everyone on the network.
+        return JSONResponse({"error": "not found"}, status_code=404)
     token = await _access_token()
     if not token:
         return JSONResponse({"error": "not connected"}, status_code=503)

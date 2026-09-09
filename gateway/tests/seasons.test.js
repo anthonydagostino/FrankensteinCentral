@@ -146,3 +146,62 @@ test("the rotation reads the source palette, never itself", () => {
       `tint ${n} references --sn-accent, which is what it is defining`);
   }
 });
+
+
+/* --- the decoration has to be able to wear the palette -------------------
+ *
+ * `color` does nothing to an emoji: 🍁 draws in its own colours whatever the
+ * theme says. So a month whose glyphs are ALL emoji can never show its
+ * palette in its decoration — which is how autumn, the season with the most
+ * to gain from it, ended up as grey specks. Every month keeps at least one
+ * text symbol, which `color` does reach. */
+
+const HOME_JS = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+
+function driftOf(mo) {
+  const m = HOME_JS.match(new RegExp(`${mo}:\\s*\\{[^}]*drift:\\s*\\[([^\\]]*)\\]`));
+  assert.ok(m, `no drift set for ${mo}`);
+  return m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+}
+
+/* Astral-plane codepoints are emoji and ignore `color`. A glyph made only of
+ * BMP codepoints is a text symbol the theme can tint. */
+const colourable = (g) => [...g].every((ch) => ch.codePointAt(0) <= 0xffff);
+
+test("every month can draw at least one glyph in its own colours", () => {
+  for (const mo of MONTHS) {
+    const drift = driftOf(mo);
+    assert.ok(drift.length, `${mo} has no decoration at all`);
+    assert.ok(drift.some(colourable),
+      `${mo} is drawn entirely in emoji (${drift.join(" ")}), so its ` +
+      `decoration can never show the month's palette`);
+  }
+});
+
+test("the autumn months keep real leaves as well", () => {
+  /* The tintable glyphs are an ADDITION, not a replacement — dropping the
+   * emoji would trade a palette for the actual pumpkins and leaves. */
+  for (const mo of ["sep", "oct", "nov"]) {
+    const drift = driftOf(mo);
+    assert.ok(drift.some((g) => !colourable(g)),
+      `${mo} lost its emoji: ${drift.join(" ")}`);
+  }
+});
+
+test("the scatter is derived from the date, never from Math.random", () => {
+  /* The grid re-renders on refresh and at midnight. Decoration that jumps to
+   * a new position each time reads as a glitch, not as ornament. */
+  const fn = HOME_JS.match(/function motifs\([^)]*\)\s*\{[\s\S]*?\n  \}/);
+  assert.ok(fn, "motifs() not found");
+  assert.ok(!/Math\.random/.test(fn[0]), "motifs() uses Math.random");
+  assert.ok(/day\.day/.test(fn[0]), "motifs() does not derive its scatter from the date");
+});
+
+test("decoration stays behind the events", () => {
+  /* It is ornament. It may sit behind a card's content and must never sit on
+   * top of something you are trying to read or click. */
+  const block = CSS.match(/\.wk-motif\s*\{([^}]*)\}/);
+  assert.ok(block, "no .wk-motif rule");
+  assert.match(block[1], /z-index:\s*0/);
+  assert.match(block[1], /pointer-events:\s*none/);
+});

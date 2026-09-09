@@ -146,6 +146,12 @@ def with_credential(monkeypatch, cred):
         return cred
     monkeypatch.setattr(gcal, "_credential", _credential)
     monkeypatch.setattr(gcal.httpx, "AsyncClient", FakeClient)
+    # A configured deployment. Every test using this helper is about what
+    # GOOGLE says, and since SCRUM-114 that question is only reachable once
+    # FC_INTERNAL_SECRET is set — probe() answers `not_configured` before it
+    # asks anything otherwise. The precondition was always implicit; it is
+    # stated here rather than left to the ambient environment.
+    monkeypatch.setattr(gcal, "INTERNAL_SECRET", "test-shared-secret")
 
 
 def test_no_credential_at_all_is_disconnected(monkeypatch):
@@ -234,3 +240,50 @@ def test_a_multi_day_all_day_event_survives_the_round_trip():
     assert body["end"] == {"date": "2026-11-01"}
     sent = {"start": body["start"], "end": body["end"]}
     assert gcal._event_end(sent, "2026-10-29") == "2026-10-31"
+
+
+# --- SCRUM-114: the borrowed credential now needs the shared secret ----------
+
+def test_the_token_request_carries_the_shared_secret(monkeypatch):
+    """gmail 404s a request without it, so omitting the header would silently
+    end Calendar sync."""
+    seen = {}
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"access_token": "ya29.x", "calendar_scope": True}
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, **kw):
+            seen.update(kw)
+            return FakeResp()
+
+    monkeypatch.setattr(gcal, "INTERNAL_SECRET", "shared-value")
+    monkeypatch.setattr(gcal.httpx, "AsyncClient", FakeClient)
+    cred = run(gcal._credential())
+    assert cred["access_token"] == "ya29.x"
+    assert seen["headers"]["X-Internal-Secret"] == "shared-value"
+
+
+def test_an_unconfigured_secret_is_its_own_state_not_unreachable(monkeypatch):
+    """A deployment with no FC_INTERNAL_SECRET cannot borrow the credential at
+    all. `unreachable` would invite waiting and `disconnected` would send you
+    to re-consent Google; neither fixes a missing .env line, so both would be
+    a wrong instruction rather than merely a vague one.
+    """
+    monkeypatch.setattr(gcal, "INTERNAL_SECRET", "")
+
+    called = {"n": 0}
+
+    class Boom:
+        async def __aenter__(self): called["n"] += 1; return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): raise AssertionError("should not be called")
+
+    monkeypatch.setattr(gcal.httpx, "AsyncClient", Boom)
+    state = run(gcal.probe())
+    assert state == "not_configured"
+    assert called["n"] == 0, "it asked gmail anyway"
