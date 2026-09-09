@@ -51,6 +51,24 @@ async def aggregate_health():
 )
 async def proxy(app_key: str, path: str, request: Request):
     """Reverse-proxy /api/<app>/<path> to the matching sub-app service."""
+    # SCRUM-114. The proxy forwards ANY path to ANY registered service with no
+    # authentication, and gmail exposes /internal/token, which hands out a live
+    # OAuth access token carrying gmail.modify AND calendar.events. So
+    # `GET /api/gmail/internal/token` let any unauthenticated caller on the
+    # network read and modify the whole inbox and read and write the calendar.
+    #
+    # The docstring on that route said "internal docker network only". Nothing
+    # enforced it: `/internal/` was a naming convention and the proxy had never
+    # heard of it.
+    #
+    # 404, not 403: a 403 confirms the route exists and is worth attacking. To
+    # anything outside, an internal route is indistinguishable from a route
+    # that was never written. Matched per SEGMENT, so it cannot be slipped past
+    # with `x-internal` or `internalish`, and case-folded because the path
+    # arrives from the caller.
+    if any(seg.lower() == "internal" for seg in path.split("/")):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
     sub = REGISTRY.get(app_key)
     if sub is None:
         return JSONResponse({"error": f"unknown app '{app_key}'"}, status_code=404)
