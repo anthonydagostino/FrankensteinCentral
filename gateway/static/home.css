@@ -527,48 +527,81 @@ body.cc[data-mode="evening"] {
 /* ---- seasonal decoration -------------------------------------------------
    Accent + motif only. These never touch --text, --panel or --line, so
    contrast is identical in every month of the year. */
-/* Derived once from the three colours above, so a month declares its palette
-   in exactly one place and its tints cannot drift out of step with it. */
+/* Each month declares its palette ONCE, as --sn-p1/p2/p3 above. Everything
+   below is derived from those three, so a month's tints cannot drift out of
+   step with the colours it named.
+
+   --sn-accent/-2/-3 are a ROTATION of that palette, not the palette itself.
+   Rotating is why the source has its own names: `--sn-accent: var(--sn-accent-2)`
+   would be a cycle, and CSS throws the whole set away when it finds one.
+
+   The default order is the palette's own. Each day card then rotates it by its
+   `tint` (see dashboard.week_window), so consecutive days lead with different
+   colours and a week reads as a progression across the theme. Without this the
+   grid drew the identical three-colour gradient seven times, which is exactly
+   how a three-colour theme still manages to look like one colour.
+
+   Rotating rather than picking one colour per day matters: every card still
+   carries the WHOLE palette, so the month reads as one thing from across the
+   room. Only the emphasis moves. */
+.wk-grid, .wk-day, .wk-top {
+  --sn-accent:   var(--sn-p1, var(--accent-2));
+  --sn-accent-2: var(--sn-p2, var(--accent-2));
+  --sn-accent-3: var(--sn-p3, var(--accent-2));
+}
+.wk-day[data-tint="1"] {
+  --sn-accent:   var(--sn-p2, var(--accent-2));
+  --sn-accent-2: var(--sn-p3, var(--accent-2));
+  --sn-accent-3: var(--sn-p1, var(--accent-2));
+}
+.wk-day[data-tint="2"] {
+  --sn-accent:   var(--sn-p3, var(--accent-2));
+  --sn-accent-2: var(--sn-p1, var(--accent-2));
+  --sn-accent-3: var(--sn-p2, var(--accent-2));
+}
+/* The washes follow whatever rotation the element ended up with: custom
+   properties are resolved per element after the cascade, so these read each
+   card's OWN --sn-accent, tinted or not. */
 .wk-grid, .wk-day, .wk-top {
   --sn-wash:   color-mix(in srgb, var(--sn-accent, var(--accent-2)) 24%, transparent);
   --sn-wash-2: color-mix(in srgb, var(--sn-accent-2, var(--accent-2)) 20%, transparent);
   --sn-wash-3: color-mix(in srgb, var(--sn-accent-3, var(--accent-2)) 15%, transparent);
 }
 .wk-grid[data-season="jan"], .wk-day[data-season="jan"], .wk-top[data-season="jan"] {
-  --sn-accent: #7dd3fc; --sn-accent-2: #c4b5fd; --sn-accent-3: #e0f2fe;
+  --sn-p1: #7dd3fc; --sn-p2: #c4b5fd; --sn-p3: #e0f2fe;
 }
 .wk-grid[data-season="feb"], .wk-day[data-season="feb"], .wk-top[data-season="feb"] {
-  --sn-accent: #fb7185; --sn-accent-2: #f9a8d4; --sn-accent-3: #fcd34d;
+  --sn-p1: #fb7185; --sn-p2: #f9a8d4; --sn-p3: #fcd34d;
 }
 .wk-grid[data-season="mar"], .wk-day[data-season="mar"], .wk-top[data-season="mar"] {
-  --sn-accent: #34d399; --sn-accent-2: #a3e635; --sn-accent-3: #fcd34d;
+  --sn-p1: #34d399; --sn-p2: #a3e635; --sn-p3: #fcd34d;
 }
 .wk-grid[data-season="apr"], .wk-day[data-season="apr"], .wk-top[data-season="apr"] {
-  --sn-accent: #60a5fa; --sn-accent-2: #5eead4; --sn-accent-3: #c4b5fd;
+  --sn-p1: #60a5fa; --sn-p2: #5eead4; --sn-p3: #c4b5fd;
 }
 .wk-grid[data-season="may"], .wk-day[data-season="may"], .wk-top[data-season="may"] {
-  --sn-accent: #f472b6; --sn-accent-2: #fb7185; --sn-accent-3: #86efac;
+  --sn-p1: #f472b6; --sn-p2: #fb7185; --sn-p3: #86efac;
 }
 .wk-grid[data-season="jun"], .wk-day[data-season="jun"], .wk-top[data-season="jun"] {
-  --sn-accent: #fbbf24; --sn-accent-2: #fb923c; --sn-accent-3: #38bdf8;
+  --sn-p1: #fbbf24; --sn-p2: #fb923c; --sn-p3: #38bdf8;
 }
 .wk-grid[data-season="jul"], .wk-day[data-season="jul"], .wk-top[data-season="jul"] {
-  --sn-accent: #f87171; --sn-accent-2: #60a5fa; --sn-accent-3: #fde047;
+  --sn-p1: #f87171; --sn-p2: #60a5fa; --sn-p3: #fde047;
 }
 .wk-grid[data-season="aug"], .wk-day[data-season="aug"], .wk-top[data-season="aug"] {
-  --sn-accent: #22d3ee; --sn-accent-2: #5eead4; --sn-accent-3: #fcd34d;
+  --sn-p1: #22d3ee; --sn-p2: #5eead4; --sn-p3: #fcd34d;
 }
 .wk-grid[data-season="sep"], .wk-day[data-season="sep"], .wk-top[data-season="sep"] {
-  --sn-accent: #f59e0b; --sn-accent-2: #fde047; --sn-accent-3: #fb923c;
+  --sn-p1: #f59e0b; --sn-p2: #fde047; --sn-p3: #fb923c;
 }
 .wk-grid[data-season="oct"], .wk-day[data-season="oct"], .wk-top[data-season="oct"] {
-  --sn-accent: #fb923c; --sn-accent-2: #a855f7; --sn-accent-3: #ef4444;
+  --sn-p1: #fb923c; --sn-p2: #a855f7; --sn-p3: #ef4444;
 }
 .wk-grid[data-season="nov"], .wk-day[data-season="nov"], .wk-top[data-season="nov"] {
-  --sn-accent: #f97316; --sn-accent-2: #f59e0b; --sn-accent-3: #dc2626;
+  --sn-p1: #f97316; --sn-p2: #f59e0b; --sn-p3: #dc2626;
 }
 .wk-grid[data-season="dec"], .wk-day[data-season="dec"], .wk-top[data-season="dec"] {
-  --sn-accent: #7dd3fc; --sn-accent-2: #e2e8f0; --sn-accent-3: #34d399;
+  --sn-p1: #7dd3fc; --sn-p2: #e2e8f0; --sn-p3: #34d399;
 }
 
 /* Drifting glyphs, behind every card and non-interactive. */
