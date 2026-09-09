@@ -179,3 +179,43 @@ test("the drawer remembers whether it was left open", () => {
   assert.match(js, /localStorage\.getItem\(HX_LOG_KEY\)/);
   assert.match(js, /catch\s*\(e\)\s*\{\s*return false;\s*\}/);
 });
+
+
+/* --- data safety (SCRUM-67) ---------------------------------------------- */
+
+test("the home screen has a data-safety card", () => {
+  /* Acceptance signal: "the home screen states how many days since the last
+   * verified restore, and says 'never' until one happens." */
+  assert.ok(at('id="cc-safety"') > -1, "no data-safety card on the home screen");
+});
+
+test("never and stale are loud; ok is not", () => {
+  /* The asymmetry is the design. An infra card that looks the same whether or
+   * not you are protected is one you stop reading. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/);
+  assert.ok(fn, "renderSafety not found");
+  const body = fn[0];
+  assert.match(body, /never:\s*\{[^}]*cls:\s*"bad"/);
+  assert.match(body, /stale:\s*\{[^}]*cls:\s*"bad"/);
+  assert.match(body, /ok:\s*\{[^}]*cls:\s*"good"/);
+  assert.match(body, /unknown:\s*\{[^}]*cls:\s*"muted"/);
+  assert.match(CSS, /\.ds-lead\.bad\s*\{[^}]*var\(--imp\)/);
+});
+
+test("an unreadable record never renders as safe", () => {
+  /* The assistant runs in a container and the record is written on the host,
+   * so an absent mount is a normal failure. It must not read as protected. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /BODY\[s\.state\]\s*\|\|\s*BODY\.unknown/,
+    "an unrecognised state must fall back to unknown, not to ok");
+  assert.match(fn, /state:\s*"unknown"/, "a missing payload must default to unknown");
+});
+
+test("the card names the command that fixes it", () => {
+  /* "Never" with no way out is a complaint. The drill is the way out. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /restore\.sh --drill/);
+});

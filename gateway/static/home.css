@@ -992,3 +992,25 @@ body.cc[data-mode="evening"] {
 }
 .set-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .set-check input { cursor: pointer; }
+
+/* ---- data safety (SCRUM-67) ---------------------------------------------
+   Loud when nothing proves the data is recoverable, quiet when something
+   does. An infra card that looks identical whether or not you are protected
+   is one you stop reading, and this is the card you cannot afford to stop
+   reading. */
+.ds-lead { font-size: 26px; font-weight: 800; letter-spacing: -.6px; line-height: 1.1; }
+.ds-lead.bad { color: var(--imp); }
+.ds-lead.good { color: var(--accent); }
+.ds-lead.muted { color: var(--muted); }
+.ds-label { margin-top: 2px; font-size: 12px; color: var(--muted); }
+.ds-sub { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.ds-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; }
+.ds-x { color: var(--muted); }
+.ds-x b { color: var(--text); font-weight: 700; }
+.ds-x.warn b { color: var(--imp); }
+.ds-how {
+  margin: 10px 0 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.55;
+  color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.ds-how code { color: var(--text); overflow-wrap: anywhere; }

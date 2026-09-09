@@ -10,7 +10,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
-from .dashboard import (deadline_rows, deploy_state, firefly_state,
+from .dashboard import (data_safety, deadline_rows, deploy_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
                         resale_brief, schedule_state, since_changes,
@@ -40,6 +40,10 @@ STOCKS_URL = os.environ.get("STOCKS_URL", "http://stocks:8000")
 # running after a deploy that failed. Absent mount reads as "unknown".
 DEPLOY_RECORD = os.environ.get("FRANKENSTEIN_DEPLOY_RECORD",
                                "/var/frankenstein/deployed.json")
+# Written by scripts/backup.sh and scripts/restore.sh, in the same host state
+# directory and through the same read-only mount. SCRUM-67.
+DATA_SAFETY_RECORD = os.environ.get("FRANKENSTEIN_DATA_SAFETY_RECORD",
+                                    "/var/frankenstein/data-safety.json")
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
@@ -860,6 +864,21 @@ def _read_deploy_record(path=None):
         return {}
     return rec if isinstance(rec, dict) else {}
 
+
+def _read_data_safety_record(path=None):
+    """The host's backup/restore record, or {} when we cannot read it.
+
+    Same contract as _read_deploy_record for the same reason: every failure
+    collapses to {}, which `data_safety` reads as `unknown`. It must not be
+    possible for a read that did not happen to produce a safe-looking answer.
+    """
+    try:
+        with open(path or DATA_SAFETY_RECORD) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
 def _since_block(seen, data, now):
     """The "since you last checked" block, plus the fingerprint to store."""
     seen = seen if isinstance(seen, dict) else {}
@@ -1053,6 +1072,9 @@ async def build_home(fresh: bool = False) -> dict:
         # PREVIOUS build serving and is otherwise completely silent from
         # the UI, so this is the only place a stale build announces itself.
         "deploy": deploy_state(_read_deploy_record(), now_local),
+        # Days since the last VERIFIED restore, and "never" until one happens.
+        # A backup you have never restored is a belief, not a backup.
+        "data_safety": data_safety(_read_data_safety_record(), now_local),
         "last_updated": t["now"],
     }
     # Computed against the payload we are ABOUT to return, so the fingerprint

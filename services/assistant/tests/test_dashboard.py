@@ -1663,3 +1663,109 @@ def test_a_failed_attempt_reports_the_gate_of_what_is_still_serving():
         NOW_FOR_DEPLOY)
     assert d["state"] == "failed"
     assert d["untested"] is True
+
+
+# --- data safety (SCRUM-67) --------------------------------------------------
+#
+# "A backup you have never restored is a belief, not a backup." The acceptance
+# signal is that the home screen says how many days since the last verified
+# restore, and says "never" until one happens.
+#
+# Every state here exists because it was previously indistinguishable from
+# safety. Per docs/TESTING.md `now` is injected, never read.
+
+from datetime import timezone as _tz  # noqa: E402
+
+NOW_DS = datetime(2026, 9, 9, 12, 0, tzinfo=_tz.utc)
+
+
+def _iso(days_ago):
+    return (NOW_DS - timedelta(days=days_ago)).isoformat()
+
+
+def test_no_readable_record_is_unknown_and_never_reassuring():
+    """The assistant runs in a container and the record is written on the
+    host, so an absent mount lands here. "We cannot see the box" and "the box
+    is safe" must never render the same."""
+    for record in ({}, None, "nonsense", []):
+        d = dash.data_safety(record, NOW_DS)
+        assert d["state"] == "unknown", record
+        assert d["restore_days"] is None
+        assert d["backup_days"] is None
+
+
+def test_a_record_with_no_restore_says_never():
+    """The state every installation starts in, and the one the ticket names."""
+    d = dash.data_safety({"last_backup_at": _iso(1), "last_backup_result": "ok"}, NOW_DS)
+    assert d["state"] == "never"
+    assert d["restore_days"] is None
+    assert d["backup_days"] == 1
+
+
+def test_a_recent_verified_restore_is_ok_and_counts_the_days():
+    d = dash.data_safety({"last_restore_at": _iso(3), "restore_kind": "drill",
+                          "restore_rows": "412", "last_restore_result": "ok"}, NOW_DS)
+    assert d["state"] == "ok"
+    assert d["restore_days"] == 3
+    assert d["restore_kind"] == "drill"
+    assert d["rows"] == "412"
+
+
+def test_a_proof_has_an_expiry_date():
+    """A restore proven two years ago, against a schema that has changed
+    since, is not evidence about today's backup — but it looks like it."""
+    assert dash.data_safety({"last_restore_at": _iso(dash.RESTORE_STALE_DAYS)},
+                            NOW_DS)["state"] == "ok"
+    assert dash.data_safety({"last_restore_at": _iso(dash.RESTORE_STALE_DAYS + 1)},
+                            NOW_DS)["state"] == "stale"
+    assert dash.data_safety({"last_restore_at": _iso(400)}, NOW_DS)["state"] == "stale"
+
+
+def test_an_unreadable_date_is_unknown_rather_than_today():
+    """"We could not read the date" rendered as "0 days ago" is the most
+    reassuring possible version of no information."""
+    for bad in ("not-a-date", "", 12345, None):
+        record = {"last_restore_at": bad}
+        d = dash.data_safety(record, NOW_DS)
+        assert d["restore_days"] is None, bad
+        assert d["state"] in ("never", "unknown"), bad
+
+
+def test_a_future_timestamp_is_not_freshness():
+    """A clock skewed forward on the box would otherwise read as a restore
+    that happens tomorrow, permanently green."""
+    ahead = (NOW_DS + timedelta(days=2)).isoformat()
+    d = dash.data_safety({"last_restore_at": ahead}, NOW_DS)
+    assert d["restore_days"] is None
+    assert d["state"] == "unknown"
+
+
+def test_backup_and_restore_are_reported_separately():
+    """Having one says nothing about the other. A nightly backup nobody has
+    ever restored is exactly the belief this ticket is about."""
+    d = dash.data_safety({"last_backup_at": _iso(0), "last_backup_result": "ok"}, NOW_DS)
+    assert d["backup_days"] == 0 and d["backup_stale"] is False
+    assert d["state"] == "never", "a fresh backup must not imply a verified restore"
+
+    d = dash.data_safety({"last_restore_at": _iso(1)}, NOW_DS)
+    assert d["state"] == "ok"
+    assert d["backup_days"] is None and d["backup_stale"] is None
+
+
+def test_a_stale_backup_is_flagged_without_guessing_when_unknown():
+    assert dash.data_safety({"last_backup_at": _iso(dash.BACKUP_STALE_DAYS + 1)},
+                            NOW_DS)["backup_stale"] is True
+    assert dash.data_safety({"last_backup_at": _iso(0)}, NOW_DS)["backup_stale"] is False
+    # Unknown stays None — never False, which would read as "not stale".
+    assert dash.data_safety({"last_restore_at": _iso(1)}, NOW_DS)["backup_stale"] is None
+
+
+def test_days_since_holds_across_a_calendar_sweep():
+    """Per docs/TESTING.md. Month ends, year ends and the leap day are where an
+    off-by-one in a day count shows up."""
+    for offset in range(0, 900, 7):
+        now = datetime(2026, 1, 1, tzinfo=_tz.utc) + timedelta(days=offset)
+        for ago in (0, 1, 29, 30, 31, 365):
+            stamp = (now - timedelta(days=ago, hours=1)).isoformat()
+            d = dash.data_safety({"last_restore_at": stamp}, now)
+            assert d["restore_days"] == ago, (now, ago, d["restore_days"])

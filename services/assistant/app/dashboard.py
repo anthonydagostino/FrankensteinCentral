@@ -62,6 +62,91 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
     return picked[:limit] if limit else picked
 
 
+# --- data safety (SCRUM-67) --------------------------------------------------
+#
+# "A backup you have never restored is a belief, not a backup."
+#
+# The number this exists to put on screen is DAYS SINCE THE LAST VERIFIED
+# RESTORE, and the states below exist because three different things were
+# previously indistinguishable from safety:
+#
+#   unknown  no record is readable. The assistant runs in a container and the
+#            record is written on the host, so an absent mount lands here. It
+#            must never read as "fine" — "we cannot see the box" and "the box
+#            is safe" are different facts.
+#   never    a record exists and no restore has ever succeeded. This is the
+#            state the ticket asks for by name, in red, and it is the state
+#            every installation starts in.
+#   stale    a restore succeeded, but long enough ago that it is a belief
+#            again. A proof has an expiry date.
+#   ok       verified recently.
+#
+# `stale` is why this is not just a date. A restore proven once, two years
+# ago, against a schema that has changed since, is not evidence about today's
+# backup — but it looks like evidence, which is worse than nothing.
+RESTORE_STALE_DAYS = 35
+BACKUP_STALE_DAYS = 3
+
+
+def _days_since(stamp, now):
+    """Whole days from an ISO stamp to `now`, or None if unreadable.
+
+    None means unknown and never zero: "we could not read the date" rendered
+    as "0 days ago" is the most reassuring possible version of no information.
+    """
+    if not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=now.tzinfo)
+    delta = (now - when).total_seconds()
+    if delta < 0:
+        # A future stamp is a broken clock somewhere, not freshness.
+        return None
+    return int(delta // 86400)
+
+
+def data_safety(record, now):
+    """What the home screen may claim about whether this data is recoverable.
+
+    `record` is the host's data-safety.json, written by scripts/backup.sh and
+    scripts/restore.sh. `{}` means it could not be read.
+    """
+    if not isinstance(record, dict) or not record:
+        return {"state": "unknown", "restore_days": None, "backup_days": None,
+                "restore_kind": None, "backup_stale": None, "rows": None}
+
+    restore_days = _days_since(record.get("last_restore_at"), now)
+    backup_days = _days_since(record.get("last_backup_at"), now)
+
+    if record.get("last_restore_at") is None:
+        state = "never"
+    elif restore_days is None:
+        # A record that names a restore but carries an unreadable date tells
+        # us nothing about when, which is the only thing being asked.
+        state = "unknown"
+    elif restore_days > RESTORE_STALE_DAYS:
+        state = "stale"
+    else:
+        state = "ok"
+
+    return {
+        "state": state,
+        "restore_days": restore_days,
+        "restore_kind": record.get("restore_kind"),
+        "rows": record.get("restore_rows"),
+        "backup_days": backup_days,
+        # Reported separately: a fresh backup and a proven restore are two
+        # different assurances, and having one says nothing about the other.
+        "backup_stale": None if backup_days is None else backup_days > BACKUP_STALE_DAYS,
+        "last_backup_result": record.get("last_backup_result"),
+        "last_restore_result": record.get("last_restore_result"),
+    }
+
+
 def resale_state(resale):
     """`ok`, `unreachable` or `not_configured` — the same three states, for the
     same reason, as firefly_state and portfolio_state.

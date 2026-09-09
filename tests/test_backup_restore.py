@@ -395,3 +395,145 @@ def test_an_archive_whose_dump_is_empty_does_not_verify(pg, tmp_path):
     r2 = sh("bash", str(RESTORE), str(d), cwd=str(ROOT), env=env, check=False)
     assert r2.returncode != 0
     assert contents(pg)[0] == "3:165", "an empty archive reached the database"
+
+
+# --- the drill (SCRUM-67) ----------------------------------------------------
+#
+# "A backup you have never restored is a belief, not a backup." The dashboard
+# is meant to state how many days since the last VERIFIED restore, and until
+# `--drill` existed there was nothing that could ever make that number
+# anything but "never": restore.sh recorded nothing, and the only other
+# restore path overwrites your live database, which is not something you run
+# on a timer.
+#
+# These run the real scripts against a real PostgreSQL. Nothing is mocked.
+
+import json  # noqa: E402
+
+
+def _record(state_dir):
+    path = Path(state_dir) / "data-safety.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+@needs_pg
+def test_a_drill_proves_the_backup_restores_without_touching_the_live_database(pg, tmp_path):
+    """The whole feature. It must verify, and it must be safe to run on a
+    timer against a live stack — those two together are what make the number
+    on the dashboard maintainable rather than a one-off."""
+    seed(pg)
+    before = contents(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+
+    r = sh("bash", str(RESTORE), "--drill", cwd=str(ROOT), env=env)
+    assert "Drill passed" in r.stdout, r.stdout + r.stderr
+    assert "matching the backup's record" in r.stdout, r.stdout
+
+    # The live database is untouched — that is the difference between a drill
+    # and a restore.
+    assert contents(pg) == before
+
+    rec = _record(tmp_path / "state")
+    assert rec["last_restore_result"] == "ok"
+    assert rec["restore_kind"] == "drill"
+    assert rec["last_restore_at"]
+
+
+@needs_pg
+def test_the_scratch_database_is_always_dropped(pg, tmp_path):
+    """A drill that leaves debris behind stops being something you run
+    unattended."""
+    seed(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+    sh("bash", str(RESTORE), "--drill", cwd=str(ROOT), env=env)
+    left = pg.psql("SELECT datname FROM pg_database WHERE datname LIKE '%_drill_%'")
+    assert left.stdout.strip() == "", f"scratch databases left behind: {left.stdout}"
+
+
+@needs_pg
+def test_an_empty_dump_fails_the_drill_even_though_it_restores_cleanly(pg, tmp_path):
+    """The reason the drill compares counts instead of trusting pg_restore's
+    exit code. A dump of zero rows restores perfectly — right checksums, right
+    table of contents, exit 0 — and is worthless. Only the comparison against
+    what was recorded at dump time catches it."""
+    seed(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+    made = sorted((tmp_path / "backups").iterdir())[0]
+
+    # Re-dump with the tables emptied, but keep the ORIGINAL rowcounts.txt —
+    # exactly the shape of a backup that silently stopped capturing data.
+    rows = (made / "rowcounts.txt").read_text()
+    pg.psql("DELETE FROM focus_sessions; DELETE FROM big3; ANALYZE;")
+    sh(str(PGBIN / "pg_dump"), "-h", str(pg.sock), "-p", pg.port, "-U", pg.user,
+       "-d", pg.db, "--format=custom", "--file", str(made / "database.dump"))
+    (made / "rowcounts.txt").write_text(rows)
+    sh("bash", "-c", f"cd {made} && sha256sum database.dump gmail_token.tgz "
+       f"rowcounts.txt 2>/dev/null || sha256sum database.dump rowcounts.txt "
+       f"> SHA256SUMS", check=False)
+    sh("bash", "-c", f"cd {made} && sha256sum database.dump rowcounts.txt > SHA256SUMS")
+
+    r = sh("bash", str(RESTORE), "--drill", str(made), cwd=str(ROOT), env=env, check=False)
+    assert r.returncode != 0, "an empty dump passed the drill"
+    assert "does not match" in (r.stdout + r.stderr), r.stdout + r.stderr
+    assert _record(tmp_path / "state")["last_restore_result"] == "failed"
+
+
+@needs_pg
+def test_a_failed_drill_never_advances_the_last_success_date(pg, tmp_path):
+    """The number on the dashboard is "days since the last VERIFIED restore".
+    A run of failures must not make it look freshly safe."""
+    seed(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+    sh("bash", str(RESTORE), "--drill", cwd=str(ROOT), env=env)
+    good = _record(tmp_path / "state")["last_restore_at"]
+
+    # Now drill against a backup that does not exist.
+    r = sh("bash", str(RESTORE), "--drill", str(tmp_path / "nope"),
+           cwd=str(ROOT), env=env, check=False)
+    assert r.returncode != 0
+    rec = _record(tmp_path / "state")
+    assert rec["last_restore_result"] == "failed"
+    assert rec["last_restore_at"] == good, "a failure moved the last-success date"
+
+
+@needs_pg
+def test_with_no_backups_at_all_the_drill_refuses_rather_than_passing(tmp_path):
+    env = {**os.environ, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    r = sh("bash", str(RESTORE), "--drill", cwd=str(ROOT), env=env, check=False)
+    assert r.returncode != 0
+    assert "no verified backup" in (r.stdout + r.stderr)
+
+
+@needs_pg
+def test_a_backup_records_itself_only_after_it_verifies(pg, tmp_path):
+    seed(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+    rec = _record(tmp_path / "state")
+    assert rec["last_backup_result"] == "ok"
+    assert rec["last_backup_at"]
+    # ...and a backup must never claim a restore happened.
+    assert "last_restore_at" not in rec
+
+
+@needs_pg
+def test_the_record_never_contains_a_secret(pg, tmp_path):
+    """Same rule as the backup itself: counts, timestamps and verdicts only."""
+    seed(pg)
+    env = {**pg.env, "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "backups"),
+           "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    sh("bash", str(BACKUP), cwd=str(ROOT), env=env)
+    sh("bash", str(RESTORE), "--drill", cwd=str(ROOT), env=env)
+    raw = (tmp_path / "state" / "data-safety.json").read_text().lower()
+    for forbidden in ("password", "token", "secret", pg.env["POSTGRES_PASSWORD"].lower()):
+        assert forbidden not in raw, f"{forbidden!r} appears in the record"

@@ -207,6 +207,7 @@
     renderToday(d);
     renderHealth(d);
     renderResale(d.resale);
+    renderSafety(d);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
@@ -1344,6 +1345,57 @@
   // What replaced the habit-logging form. PowerBuy already computed all of
   // this; build_home simply never fetched it (SCRUM-71), so none of it could
   // reach a screen.
+  // ---- data safety (SCRUM-67) ----------------------------------------------
+  // "A backup you have never restored is a belief, not a backup." The one
+  // number: days since the last VERIFIED restore, and "never" until one
+  // happens.
+  //
+  // Loud when there is nothing proving the data is recoverable, quiet when
+  // there is. That asymmetry is the whole design — an infra card that looks
+  // the same whether or not you are protected is one you stop reading.
+  function renderSafety(d) {
+    const el = q("#cc-safety");
+    if (!el) return;
+    const s = (d && d.data_safety) || { state: "unknown" };
+    const days = (n) => (n === 0 ? "today" : n === 1 ? "1 day ago" : n + " days ago");
+
+    const BODY = {
+      never: {
+        cls: "bad", lead: "Never",
+        sub: "No restore has ever been verified. Until one is, these backups are a belief.",
+      },
+      stale: {
+        cls: "bad", lead: s.restore_days == null ? "Stale" : days(s.restore_days),
+        sub: "Long enough ago that the schema has probably moved since. A proof has an expiry date.",
+      },
+      unknown: {
+        cls: "muted", lead: "Unknown",
+        sub: "Can't read the backup record from here — that is not the same as being safe.",
+      },
+      ok: {
+        cls: "good", lead: s.restore_days == null ? "Verified" : days(s.restore_days),
+        sub: s.rows ? `Last drill restored ${esch(String(s.rows))} rows and compared them against the backup's own record.`
+                    : "Last restore drill passed.",
+      },
+    };
+    const b = BODY[s.state] || BODY.unknown;
+
+    // Reported separately on purpose: a fresh backup says nothing about
+    // whether it can be restored, and that gap is this card's whole subject.
+    const backup = s.backup_days == null
+      ? `<span class="ds-x">Last backup <b>unknown</b></span>`
+      : `<span class="ds-x${s.backup_stale ? " warn" : ""}">Last backup <b>${esch(days(s.backup_days))}</b></span>`;
+
+    el.innerHTML = `<h3>Data safety</h3>
+      <div class="ds-lead ${b.cls}">${esch(b.lead)}</div>
+      <div class="ds-label">since the last verified restore</div>
+      <p class="ds-sub">${b.sub}</p>
+      <div class="ds-row">${backup}</div>
+      ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
+        Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
+        the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
+  }
+
   function renderResale(r) {
     const el = q("#cc-resale");
     if (!el) return;
