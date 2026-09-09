@@ -202,6 +202,26 @@
     pending:   { label: "offered — awaiting reply" },
     countered: { label: "they countered — needs your yes" },
   };
+  // ---- the backlog lives in Jira (PRODUCT_IDEAS #6) --------------------------
+  // The tasks service is retired: two backlogs meant trusting neither. Big 3
+  // (today's commitment) and quick capture (the scratchpad) have distinct jobs
+  // and stay. No URL is invented -- unset sends you to Settings rather than
+  // somewhere wrong, because a link to the wrong board is worse than no link.
+  async function jiraUrl() {
+    try {
+      const s = await fetch("/api/core/settings").then((r) => r.json());
+      return ((s.links || {}).jira) || "";
+    } catch { return ""; }
+  }
+  async function openJira() {
+    const u = await jiraUrl();
+    if (!u) {
+      toast("Set your Jira board URL in Settings");
+      return openSettings();
+    }
+    window.open(u, "_blank", "noopener");
+  }
+
   // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
   // The footer used to compute its claim from `d.systems`, which the assistant
   // builds from core and gmail alone — so eleven other services could be down
@@ -1223,7 +1243,7 @@
       { ic: "💧", label: "Add 24 oz water", hint: "water", run: async () => { await post("/core/water", { oz: 24 }); toast("+24 oz"); refresh(true); } },
       { ic: "🏋️", label: "Log a workout", hint: "gym", run: async () => { await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); } },
       { ic: "🍽️", label: "Nutrition: good", hint: "food", run: async () => { await post("/core/nutrition", { rating: "good" }); refresh(true); } },
-      { ic: "📝", label: "Add a task", hint: "task", run: () => quickCapturePrompt("Add task", (t) => post("/tasks/tasks", { title: t })) },
+      { ic: "📝", label: "Open the backlog (Jira)", hint: "task todo backlog jira", run: () => openJira() },
       { ic: "💭", label: "Quick capture a note", hint: "capture", run: () => q("#cap-input") && q("#cap-input").focus() },
       { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
       { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
@@ -1337,9 +1357,20 @@
     // lounge, so demoting that page took the job-hunt board offline with it.
     // A static page rather than a registered service, so it gets a tile of its
     // own rather than a registry entry.
+    // The backlog moved to Jira, so the launcher still has a door to it even
+    // though there is no longer a `tasks` sub-app behind one.
+    const jira = await jiraUrl();
+    tiles.push(jira
+      ? `<a class="launch-tile" href="${esch(jira)}" target="_blank" rel="noopener" title="Your Jira backlog">
+          <span class="ic">🗂️</span><span class="nm">Backlog</span><span class="dot"></span><span class="ext">↗</span></a>`
+      : `<div class="launch-tile" data-open-settings="1" title="Set your Jira board URL in Settings">
+          <span class="ic">🗂️</span><span class="nm">Backlog</span><span class="dot"></span></div>`);
     tiles.push(`<a class="launch-tile" href="/jobs.html" title="Job hunt board">
       <span class="ic">💼</span><span class="nm">Job hunt</span><span class="dot"></span></a>`);
     grid.innerHTML = tiles.join("") || '<p class="att-empty">No apps registered.</p>';
+    grid.querySelectorAll("[data-open-settings]").forEach((el) => {
+      el.onclick = () => { closeLauncher(); openSettings(); };
+    });
     grid.querySelectorAll(".launch-tile[data-key]").forEach((el) => {
       el.onclick = (e) => {
         if (e.target.closest(".ext")) return;  // let the deep link navigate
@@ -1365,6 +1396,7 @@
         <div class="set-field"><label>Study/week (min)</label><input id="s-sw" type="number" value="${s.study_weekly_min ?? 600}"></div>
         <div class="set-field"><label>Workouts/week</label><input id="s-gw" type="number" value="${s.gym_weekly ?? 4}"></div>
         <div class="set-field"><label>Water goal (oz)</label><input id="s-wg" type="number" value="${s.water_goal_oz ?? 80}"></div>
+        <div class="set-field"><label>Jira board URL</label><input id="s-jira" type="url" placeholder="https://you.atlassian.net/jira/..." value="${esch(((s.links || {}).jira) || "")}"></div>
       </div></div>
       <div class="set-group"><h4>Exam / deadline (optional)</h4><div class="set-grid">
         <div class="set-field"><label>Label</label><input id="s-el" value="${esch(s.exam_label || "")}"></div>
@@ -1409,7 +1441,7 @@
       <div class="set-group"><h4>Daily-score weights (0 disables a component)</h4><div class="set-grid">
         <div class="set-field"><label>Study</label><input id="w-study" type="number" value="${w.study ?? 30}"></div>
         <div class="set-field"><label>Fitness</label><input id="w-fitness" type="number" value="${w.fitness ?? 20}"></div>
-        <div class="set-field"><label>Tasks/Big3</label><input id="w-tasks" type="number" value="${w.tasks ?? 20}"></div>
+        <div class="set-field"><label>Big 3</label><input id="w-tasks" type="number" value="${w.tasks ?? 20}"></div>
         <div class="set-field"><label>Hydration</label><input id="w-hydration" type="number" value="${w.hydration ?? 10}"></div>
         <div class="set-field"><label>Nutrition</label><input id="w-nutrition" type="number" value="${w.nutrition ?? 10}"></div>
         <div class="set-field"><label>Sleep</label><input id="w-sleep" type="number" value="${w.sleep ?? 0}"></div>
@@ -1558,6 +1590,7 @@
       important_senders: list("#s-imp"),
       budgets: budgets,
       market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
+      links: { jira: (q("#s-jira") ? q("#s-jira").value.trim() : "") },
       score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
     };
     status.style.color = "";

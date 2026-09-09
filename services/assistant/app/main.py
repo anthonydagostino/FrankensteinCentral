@@ -23,7 +23,6 @@ FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000")
 GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
 SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
-TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
@@ -67,8 +66,6 @@ AGENTS = [
      "color": "#c58cff", "blurb": "Gym & food — today's plan and groceries."},
     {"id": "penny", "name": "Penny", "role": "worker", "station": "finance",
      "color": "#5bd6c0", "blurb": "Money desk — bills, subscriptions, what's due."},
-    {"id": "tess", "name": "Tess", "role": "worker", "station": "tasks",
-     "color": "#f2b8d0", "blurb": "To-do runner — tracks what's still open."},
     {"id": "buck", "name": "Buck", "role": "worker", "station": "budget",
      "color": "#f5c542", "blurb": "Budget desk — spending by category, what's left."},
     {"id": "scout", "name": "Scout", "role": "worker", "station": "deals",
@@ -304,7 +301,6 @@ async def build_overview() -> dict:
         cal = await _get(client, f"{SCHEDULE_URL}/events")
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         finance = await _get(client, f"{FINANCE_URL}/summary")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
         budget = await _get(client, f"{BUDGET_URL}/summary")
         deals = await _get(client, f"{DEALS_URL}/summary")
         networth = await _get(client, f"{NETWORTH_URL}/summary")
@@ -321,7 +317,6 @@ async def build_overview() -> dict:
         "unpaid": pb.get("unpaid_count", 0),
         "bills_due": len(finance.get("upcoming", [])),
         "monthly_bills": finance.get("monthly_total", 0),
-        "open_tasks": tasks.get("open", 0),
         "budget_left": budget.get("remaining", 0),
         "budget_over": len(budget.get("over_budget", [])),
         "deals_count": deals.get("count", 0),
@@ -956,8 +951,6 @@ async def compose_digest() -> str:
     bits = []
     if o.get("emails_to_reply"):
         bits.append(f"{o['emails_to_reply']} emails to reply")
-    if o.get("open_tasks"):
-        bits.append(f"{o['open_tasks']} open tasks")
     if o.get("bills_due"):
         bits.append(f"{o['bills_due']} bills due soon")
     if o.get("budget_over"):
@@ -999,7 +992,7 @@ async def ask(q: str = ""):
     ql = q.lower().strip()
     async with httpx.AsyncClient() as client:
         emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
+        settings = await _get(client, f"{CORE_URL}/settings")
         finance = await _get(client, f"{FINANCE_URL}/summary")
         fitness = await _get(client, f"{FITNESS_URL}/plan")
         pb = await _get(client, f"{POWERBUY_URL}/summary")
@@ -1033,9 +1026,15 @@ async def ask(q: str = ""):
         return {"answer": "\n".join(lines)}
 
     if has("task", "todo", "to-do", "to do"):
-        top = ", ".join(tasks.get("top", []))
-        n = tasks.get("open", 0)
-        return {"answer": f"You have {n} open task(s)" + (f": {top}." if top else ".")}
+        # The tasks service is retired (PRODUCT_IDEAS #6): the backlog lives in
+        # Jira, which this box has no credential to read. So it says where to
+        # look rather than answering with a count it cannot know -- "0 open
+        # tasks" would be a claim, and a false one.
+        jira = ((settings or {}).get("links", {}) or {}).get("jira")
+        where = jira if jira else "Jira (set its URL in Settings to link it here)"
+        return {"answer": "Your backlog lives in " + where
+                          + ". Today's commitments are your Big 3 on the home "
+                            "screen, and quick capture is the scratchpad."}
 
     if has("bill", "due", "subscription", "finance", "money", "spend", "budget"):
         up = finance.get("upcoming", [])
@@ -1095,8 +1094,6 @@ async def ask(q: str = ""):
     parts = []
     if ov["emails_to_reply"]:
         parts.append(f"{ov['emails_to_reply']} emails to reply")
-    if ov["open_tasks"]:
-        parts.append(f"{ov['open_tasks']} open tasks")
     if ov["bills_due"]:
         parts.append(f"{ov['bills_due']} bills due soon")
     if ov["unpaid"]:
@@ -1339,31 +1336,6 @@ async def sync():
             for b in due:
                 await _add_deadline(conn, f"{b['name']} bill (${b['amount']})", None,
                                     "finance", f"bill:{b['id']}")
-
-            # Tess -> Tasks (turn deadline emails into real, checkable to-dos)
-            tess = _BY_STATION["tasks"]
-            new_task_titles = []
-            for e in mails:
-                if e.get("category") != "deadline":
-                    continue
-                resp = await client.post(
-                    f"{TASKS_URL}/tasks",
-                    json={"title": e["subject"], "external_id": f"mail:{e['id']}"},
-                    timeout=8,
-                )
-                if resp.status_code < 300 and resp.json().get("created"):
-                    new_task_titles.append(e["subject"])
-            tsk = await _get(client, f"{TASKS_URL}/summary")
-            tess_summary = f"{tsk.get('open', 0)} open" if tsk else "no tasks"
-            if new_task_titles:
-                tess_summary += f" ({len(new_task_titles)} new from email)"
-            await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
-            jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
-                         "summary": tess_summary})
-            for t in new_task_titles[:3]:
-                notable.append(f"✅ New to-do: {_short(t)}")
-            if len(new_task_titles) > 3:
-                notable.append(f"✅ +{len(new_task_titles) - 3} more to-dos from email")
 
             # Buck -> Budget
             bud = await _get(client, f"{BUDGET_URL}/summary")

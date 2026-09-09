@@ -32,7 +32,6 @@ from .daymath import (  # noqa: E402 - the clock seam and score arithmetic
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000").rstrip("/")
-TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000").rstrip("/")
 
 pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
 
@@ -88,6 +87,10 @@ DEFAULT_SETTINGS = {
     # are renormalised to 100, so the score is always out of 100.
     "score_weights": {"study": 30, "fitness": 20, "tasks": 20,
                       "hydration": 10, "nutrition": 10, "sleep": 0},
+    # Where the real backlog lives, now that the tasks service is retired
+    # (PRODUCT_IDEAS #6). Empty by default: an invented URL would be worse
+    # than none, and the UI says "set it" rather than linking somewhere wrong.
+    "links": {"jira": ""},
     "morning_end_hour": 12,      # local hour before which = morning mode
     "evening_start_hour": 18,    # local hour at/after which = evening mode
     "important_senders": [],     # emails/domains the attention feed prioritises
@@ -218,22 +221,6 @@ async def _gym() -> dict:
     return {"week": week, "last": last.isoformat() if last else None, "available": True}
 
 
-async def _open_tasks() -> int | None:
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(f"{TASKS_URL}/summary", timeout=5)
-            r.raise_for_status()
-            return r.json().get("open")
-    except Exception:  # noqa: BLE001
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"{TASKS_URL}/tasks", timeout=5)
-                r.raise_for_status()
-                return sum(1 for t in r.json().get("tasks", []) if not t.get("done"))
-        except Exception:  # noqa: BLE001
-            return None
-
-
 # ---- study metrics ----------------------------------------------------------
 async def _study() -> dict:
     today = _today()
@@ -309,7 +296,6 @@ async def _daily_state() -> dict:
 
     study = await _study()
     gym = await _gym()
-    open_tasks = await _open_tasks()
     exam = await _exam_pace(s, study["week_min"])
 
     water_oz = int(log["water_oz"] or 0)
@@ -343,14 +329,13 @@ async def _daily_state() -> dict:
         "water": {"oz": water_oz, "goal": s["water_goal_oz"], "presets": s["water_presets"]},
         "nutrition": {"rating": nutrition},
         "sleep": {"hours": sleep_hours},
-        "tasks": {"open": open_tasks},
         "big3": [dict(b) for b in big3],
         "score": score,
-        "nudges": _nudges(s, study, gym, water_oz, nutrition, big3_done, big3_total, open_tasks),
+        "nudges": _nudges(s, study, gym, water_oz, nutrition, big3_done, big3_total),
     }
 
 
-def _nudges(s, study, gym, water_oz, nutrition, big3_done, big3_total, open_tasks) -> list[dict]:
+def _nudges(s, study, gym, water_oz, nutrition, big3_done, big3_total) -> list[dict]:
     """Personal, explainable attention items the assistant folds into the feed."""
     out = []
     now = datetime.now(EASTERN)

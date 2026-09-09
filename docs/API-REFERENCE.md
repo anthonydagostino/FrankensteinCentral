@@ -215,16 +215,6 @@ settings (`market.holdings` / `market.watchlist`), not here.
 
 ---
 
-## tasks — `:8087`
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/tasks` | All tasks. |
-| `POST` | `/tasks` | Add a task. |
-| `POST` | `/tasks/{task_id}/toggle` | Check on/off. |
-| `DELETE` | `/tasks/{task_id}` | Delete. |
-| `GET` | `/summary` | Open/done counts. Read by `core` for the daily score. |
-
 ## finance — `:8086` — bills & subscriptions
 
 | Method | Path | Description |

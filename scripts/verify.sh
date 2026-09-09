@@ -436,7 +436,7 @@ else:
     add("WARN", "firefly audit", f"{err or 'not connected'}")
 
 print()
-print("-- stocks / tasks / schedule / fitness --")
+print("-- stocks / schedule / fitness --")
 st, pq, errq = get(8099, "/quotes?symbols=NVDA", timeout=30)
 if st == 200 and pq is not None:
     got = (pq.get("quotes") or [])
@@ -464,9 +464,6 @@ if st == 200 and pf:
 else:
     add("FAIL", "stocks svc", f"{err}")
 
-st, ts, err = get(8087, "/summary")
-add("PASS" if st == 200 else "FAIL", "tasks",
-    f"{(ts or {}).get('open')} open task(s)" if st == 200 else f"{err}")
 st, ev, err = get(8084, "/events")
 add("PASS" if st == 200 else "FAIL", "schedule",
     f"{len((ev or {}).get('events', []))} event(s)" if st == 200 else f"{err}")

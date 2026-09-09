@@ -97,7 +97,7 @@ through the gateway's health fan-out, verified live at baseline time.
 | schedule | `frankensteincentral-schedule` | 8084 | 3 weeks |
 | assistant | `frankensteincentral-assistant` | 8085 | 2 days |
 | finance | `frankensteincentral-finance` | 8086 | 3 weeks |
-| tasks | `frankensteincentral-tasks` | 8087 | 3 weeks |
+| tasks | `frankensteincentral-tasks` | 8087 | 3 weeks | *(retired — PRODUCT_IDEAS #6; the container is gone, the `tasks` table remains in the shared database)* |
 | budget | `frankensteincentral-budget` | 8088 | 2 days |
 | deals | `frankensteincentral-deals` | 8089 | 3 weeks |
 | networth | `frankensteincentral-networth` | 8090 | 3 weeks |

@@ -82,7 +82,6 @@ most important column when judging whether a card can be trusted.
 | `gmail` | Gmail Checker | 8083 | Google Gmail API (own OAuth) | volume `gmail_token` |
 | `schedule` | Schedule | 8084 | user + assistant + Google Calendar | Postgres |
 | `finance` | Finance | 8086 | user input | Postgres |
-| `tasks` | Tasks | 8087 | user input | Postgres |
 | `budget` | Budget | 8088 | firefly service + core settings | stateless |
 | `deals` | Deals | 8089 | parsed from gmail | Postgres |
 | `networth` | Net Worth | 8090 | firefly service, manual fallback | Postgres |
@@ -121,6 +120,33 @@ only service that writes across app boundaries. It is the last thing to
 suspect and the first thing to check when *everything* looks stale.
 
 ---
+
+### Retired: the `tasks` service
+
+Removed 2026-09-08 (`docs/PRODUCT_IDEAS.md` #6). Four things answered "what's
+open": Jira, the `tasks` service, core's Big 3, and quick capture. Big 3 is
+today's commitment and capture is the scratchpad — different jobs, both kept.
+`tasks` and Jira were the same tool twice, and Jira is the one actually
+maintained. The failure mode of four inboxes is that you trust none of them.
+
+**Nothing was deleted.** The `tasks` table lives in the shared
+`frankensteincentral` database, so removing the container left every row in
+place: readable with SQL, and restorable by reinstating the service from git
+history. Only the container, the registry entry and the callers went.
+
+Two consequences worth knowing:
+
+- The dashboard no longer reports an open-task count anywhere. It cannot know
+  one — this box has no Jira credential — and `0 open tasks` would be a claim
+  rather than a blank.
+- `score_weights.tasks` is **not** this service and never was: it scores Big 3
+  (`comp["tasks"] = big3_done / big3_total`). The key is deliberately left
+  alone, because renaming it would silently reset every saved weight. Only the
+  Settings label changed, from "Tasks/Big3" to "Big 3".
+
+The backlog gets a door rather than a copy: `links.jira` in core settings, a
+launcher tile, and a command-palette action. No default URL is invented — unset
+sends you to Settings, because a link to the wrong board is worse than no link.
 
 ## 3. The Gmail → Assistant → Calendar pipeline
 

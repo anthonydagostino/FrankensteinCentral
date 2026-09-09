@@ -67,17 +67,6 @@ services:
     ports:
       - "8086:8000"
 
-  tasks:
-    build: ./services/tasks
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "8087:8000"
-
   # Time-aware budgets over Firefly (stateless; budget definitions live in
   # core settings, transactions come from the firefly service).
   budget:
@@ -166,21 +155,18 @@ services:
       - "8097:8000"
 
   # Personal state & daily-score engine (study/focus, water, nutrition, Big 3,
-  # captures, history). Reads gym from fitness and open tasks from tasks.
+  # captures, history). Reads gym from fitness.
   core:
     build: ./services/core
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       FITNESS_URL: http://fitness:8000
-      TASKS_URL: http://tasks:8000
       LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
     depends_on:
       db:
         condition: service_healthy
       fitness:
-        condition: service_started
-      tasks:
         condition: service_started
     ports:
       - "8098:8000"
@@ -254,7 +240,6 @@ services:
       GMAIL_URL: http://gmail:8000
       SCHEDULE_URL: http://schedule:8000
       FINANCE_URL: http://finance:8000
-      TASKS_URL: http://tasks:8000
       BUDGET_URL: http://budget:8000
       DEALS_URL: http://deals:8000
       NETWORTH_URL: http://networth:8000
@@ -300,8 +285,6 @@ services:
       schedule:
         condition: service_started
       finance:
-        condition: service_started
-      tasks:
         condition: service_started
       budget:
         condition: service_started

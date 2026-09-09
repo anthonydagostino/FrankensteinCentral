@@ -66,7 +66,6 @@ endpoints at `/` and `/health`. Full port map in
 | Budget     | 8088 | Time-aware budgets over Firefly. Definitions live in core settings |
 | Net Worth  | 8090 | Balances from Firefly, with manual accounts as fallback     |
 | Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon      |
-| Tasks      | 8087 | Your to-do list — quick capture, check things off           |
 | Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition              |
 | Stocks     | 8099 | Portfolio & watchlist. Keyless quotes via Stooq             |
 | Deals      | 8089 | Real discounts spotted in your inbox                        |

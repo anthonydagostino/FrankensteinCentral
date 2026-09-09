@@ -13,21 +13,25 @@ function agg(list) {
   return out;
 }
 
-const FIFTEEN = ["core", "gmail", "firefly", "budget", "schedule", "stocks",
-  "finance", "tasks", "networth", "vault", "deals", "plex", "powerbuy",
+// Derived, not hardcoded: the count used to be written out as a literal in
+// three places, so retiring one service (PRODUCT_IDEAS #6) failed these tests
+// on the number rather than on the behaviour they exist to check.
+const SERVICES = ["core", "gmail", "firefly", "budget", "schedule", "stocks",
+  "finance", "networth", "vault", "deals", "plex", "powerbuy",
   "assistant", "fitness"];
+const N = SERVICES.length;
 
 test("all up is healthy, and says how many", () => {
-  const s = summarize(agg(FIFTEEN.map(up)));
+  const s = summarize(agg(SERVICES.map(up)));
   assert.strictEqual(s.state, "healthy");
-  assert.strictEqual(s.total, 15);
-  assert.strictEqual(s.up, 15);
+  assert.strictEqual(s.total, N);
+  assert.strictEqual(s.up, N);
   assert.deepStrictEqual(s.down, []);
-  assert.strictEqual(line(s), "● All 15 systems healthy");
+  assert.strictEqual(line(s), `● All ${N} systems healthy`);
 });
 
 test("a stopped container is named — idea #14's acceptance signal", () => {
-  const s = summarize(agg([...FIFTEEN.filter((k) => k !== "firefly").map(up),
+  const s = summarize(agg([...SERVICES.filter((k) => k !== "firefly").map(up),
                            down("firefly")]));
   assert.strictEqual(s.state, "degraded");
   assert.deepStrictEqual(s.down, ["firefly"]);
@@ -35,12 +39,12 @@ test("a stopped container is named — idea #14's acceptance signal", () => {
 });
 
 test("THE BUG: services other than core and gmail must count", () => {
-  // Exactly the case the old footer got wrong: core and gmail fine, eleven
-  // others down, footer said "Systems healthy".
-  const others = FIFTEEN.filter((k) => k !== "core" && k !== "gmail");
+  // Exactly the case the old footer got wrong: core and gmail fine, every
+  // other service down, footer said "Systems healthy".
+  const others = SERVICES.filter((k) => k !== "core" && k !== "gmail");
   const s = summarize(agg([up("core"), up("gmail"), ...others.map(down)]));
   assert.strictEqual(s.state, "degraded");
-  assert.strictEqual(s.down.length, 13);
+  assert.strictEqual(s.down.length, N - 2);   // all but core and gmail
   assert.ok(!line(s).includes("healthy"), line(s));
 });
 

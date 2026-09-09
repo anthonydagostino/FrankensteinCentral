@@ -76,13 +76,6 @@ def load_registry() -> list[SubApp]:
             url=os.environ.get("FINANCE_URL", "http://finance:8000"),
         ),
         SubApp(
-            key="tasks",
-            name="Tasks",
-            description="Your to-do list. Quick capture, check things off, track what's open.",
-            icon="✅",
-            url=os.environ.get("TASKS_URL", "http://tasks:8000"),
-        ),
-        SubApp(
             key="budget",
             name="Budget",
             description="Monthly spending by category. What's left and what's over.",
