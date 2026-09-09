@@ -22,7 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from conftest import load_service_module  # noqa: E402
 
 gw = load_service_module("gateway_main", "gateway/app/main.py")
-client = TestClient(gw.app)
+# The gateway refuses unknown Host headers (SCRUM-115) and TestClient
+# defaults to Host: testserver. Point at localhost — a host the box
+# genuinely answers to in production — rather than allowlisting a
+# test-only name, which would be a hole that only tests can see.
+client = TestClient(gw.app, base_url="http://localhost")
 STATIC = Path(__file__).resolve().parents[1] / "static"
 
 
