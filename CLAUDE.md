@@ -48,14 +48,23 @@ it is Anthony's actual priority order, and it is not short.
 Every ticket is currently **unassigned**, which makes collisions the default
 failure rather than an unlikely one. So, before you start:
 
-1. Pick from the board, highest priority first, rather than from your own idea
-   of what matters. Security and data-loss tickets outrank features.
-2. Check nobody is already on it — `git branch -r`, the recent commits, and
-   the ticket's own comments.
-3. Assign the ticket to yourself and move it to In Progress **before** writing
-   code. An unassigned ticket is an invitation for a second agent to do the
-   same work.
-4. When it ships, comment the production SHA on the ticket and close it. A
+1. **Take code tickets in this repo only.** The board is Anthony's whole life,
+   not just this project: it also holds hardware, resale and move-admin work
+   ("buy a NAS", "set up the 2019 MacBook", "laptop stands"). Those are his to
+   do, not yours — you cannot buy a NAS, and a ticket you cannot finish is
+   worse held than untouched. If a ticket's outcome is not a commit to this
+   repository, leave it alone.
+2. Within what is left, pick highest priority first rather than by your own
+   idea of what matters. Security and data-loss tickets outrank features.
+3. Check nobody is already on it — `git branch -r`, the recent commits, and
+   **the ticket's status and comments**. In Progress means taken.
+4. Assign the ticket to yourself and move it to In Progress **before** writing
+   code, then say so in a comment. An unassigned ticket is an invitation for a
+   second agent to do the same work — and moving it is not enough on its own:
+   SCRUM-114 was independently fixed twice, in parallel, after it had already
+   been moved to In Progress. Check immediately before you start, not once at
+   the beginning of a long session.
+5. When it ships, comment the production SHA on the ticket and close it. A
    ticket that is fixed but still open sends the next agent to redo it — that
    has already happened here (SCRUM-102 was fixed and promoted while the
    ticket stayed To Do).

@@ -52,7 +52,11 @@ class FakeClient:
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(gw.httpx, "AsyncClient", FakeClient)
-    return TestClient(gw.app)
+    # The gateway refuses unknown Host headers (SCRUM-115) and TestClient
+    # defaults to Host: testserver. Point at localhost — a host the box
+    # genuinely answers to in production — rather than allowlisting a
+    # test-only name, which would be a hole that only tests can see.
+    return TestClient(gw.app, base_url="http://localhost")
 
 
 def test_a_redirect_keeps_the_only_thing_it_carries(client):

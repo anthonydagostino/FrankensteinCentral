@@ -20,6 +20,9 @@ services:
     build: ./gateway
     restart: unless-stopped
     environment:
+      # Extra NAMES this box answers to (Tailscale, hosts alias). IP literals
+      # and localhost are always allowed. See SCRUM-115 / .env.example.
+      GATEWAY_ALLOWED_HOSTS: ${GATEWAY_ALLOWED_HOSTS:-}
       POWERBUY_URL: http://powerbuy:8000
       FITNESS_URL: http://fitness:8000
       GMAIL_URL: http://gmail:8000
