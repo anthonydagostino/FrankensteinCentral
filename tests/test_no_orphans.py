@@ -166,6 +166,39 @@ def test_the_weekly_review_reaches_the_home_screen():
     assert "renderWeeklyReview" in HOME_JS
 
 
+def test_the_since_block_reaches_the_home_screen():
+    """PRODUCT_IDEAS #4. `since_changes` is fully unit-tested and core exposes
+    /seen, so BOTH ends look consumed to the generic check above -- the
+    assistant calls /seen in its gather and home.js PUTs to it. What no grep
+    could see is the one line in the middle: if build_home stops assigning
+    data["since"], every unit test still passes, both endpoints still have
+    callers, and the feature renders nothing forever. Verified by deleting
+    that assignment: 643 passed. That is the hole this closes."""
+    assert 'data["since"]' in ASSISTANT, (
+        "build_home no longer puts the block on the payload, so the client "
+        "has nothing to render and nothing to mark seen")
+    assert "renderSince" in HOME_JS, "nothing renders the block"
+    assert "d.since" in HOME_JS, "the renderer reads it from somewhere else now"
+
+
+def test_showing_and_storing_stay_separate_decisions():
+    """The design bug that made the feature unable to start at all: the client
+    recorded the baseline only when it had shown something, but nothing can be
+    shown without a baseline. If home.js ever calls markSeen only on the shown
+    path again, the deadlock is back -- and no assertion about since_changes
+    can catch it, because the server side is correct in both worlds."""
+    body = HOME_JS[HOME_JS.index("function renderSince"):]
+    body = body[:body.index("function deviceLabel")]
+    early, shown = body.split("return;", 1)
+    assert "markSeen" in early, (
+        "the not-shown path no longer records a baseline, so a first-ever "
+        "load never creates one and the feature can never start")
+    assert "since.store" in early, (
+        "the not-shown path stores unconditionally, so an idle background tab "
+        "consumes this morning's changes without showing them")
+    assert "markSeen" in shown, "the shown path no longer advances the baseline"
+
+
 def test_sleep_has_a_control():
     assert "data-sleep" in HOME_JS, "no way to log sleep, so the column stays null"
     assert "/core/sleep" in HOME_JS
