@@ -483,44 +483,54 @@ st, home, err = get(8085, "/home", timeout=60)
 rw = ((home or {}).get("money") or {}).get("runway") or {} if st == 200 else {}
 if not rw:
     add("WARN", "runway", f"{err or 'no runway block'} — OLD build? redeploy needed")
-elif rw.get("available"):
-    add("PASS", "runway", f"{'at least ' if rw.get('lower_bound') else ''}"
-        f"{rw.get('months')} months = ${rw.get('liquid')} liquid / "
+elif rw.get("available") and rw.get("certain"):
+    add("PASS", "runway", f"{rw.get('months')} months = ${rw.get('liquid')} cash / "
         f"${rw.get('burn_monthly')}/mo over {rw.get('burn_window_days')}d")
     add("PASS", "  counted", ", ".join(rw.get("liquid_accounts") or []) or "(none)")
-    if rw.get("excluded"):
-        add("PASS", "  excluded", ", ".join(rw["excluded"]) + " (not spendable this month)")
-    if rw.get("unstated"):
-        add("WARN", "  unstated", ", ".join(rw["unstated"]) +
-            " — sitting at Firefly's DEFAULT role, which says nothing about "
-            "whether they are spendable, so the figure is a LOWER BOUND")
-    if rw.get("unclassified"):
-        add("WARN", "  unclassified", ", ".join(rw["unclassified"]) +
-            " — no account_role in Firefly, so the figure is a LOWER BOUND")
-    if rw.get("debts"):
-        add("PASS", "  debts", ", ".join(rw["debts"]) + " (carrying a debt, not in the pot)")
+elif rw.get("available"):
+    # An OPEN range. Not a failure: Firefly's account_role vocabulary
+    # (defaultAsset/sharedAsset/savingAsset/ccAsset/cashWalletAsset) has no
+    # value meaning brokerage, so a TSP and a current account are
+    # indistinguishable to it. WARN because the fix is a setting, not a bug.
+    add("WARN", "runway", f"at least {rw.get('months_low')} months, possibly "
+        f"{rw.get('months_high')} — range is open")
+    add("PASS", "  confirmed cash", ", ".join(rw.get("liquid_accounts") or []) or "(none)")
+    add("WARN", "  ambiguous", ", ".join(rw.get("ambiguous") or []) +
+        " — Firefly cannot say if these are spendable; set finance.not_spendable")
 else:
     # Suppressed on purpose. The reason is the actionable part, not the absence.
     add("WARN", "runway", f"unavailable — {rw.get('reason')}")
-    if rw.get("unstated"):
-        add("WARN", "  account roles",
-            "nothing is marked savingAsset/cashWalletAsset; set roles on the "
-            "real accounts and enter credit cards as liabilities")
+
+if rw:
+    if rw.get("unknown_role"):
+        # Firefly emitted a role this service does not know. `sharesAsset` was
+        # carried here for a day as a role that does not exist, so an unknown
+        # value is worth shouting about rather than absorbing.
+        add("FAIL", "  unknown role", ", ".join(rw["unknown_role"]) +
+            " — Firefly returned an account_role this build does not handle")
+    if rw.get("excluded"):
+        add("PASS", "  excluded", ", ".join(rw["excluded"]) + " (declared not spendable)")
+    if rw.get("debts"):
+        add("PASS", "  debts", ", ".join(rw["debts"]) + " (carrying a debt, not in the pot)")
 
 # SCRUM-137: the classification itself, which is where 64.7 months came from.
-# A card in `liquid_accounts` is the specific failure that shipped — three of
-# them are entered as asset accounts, so only the ROLE keeps them out.
+# A card in the numerator is the specific failure that shipped — the three
+# cards are entered as asset accounts, so nothing structural keeps them out
+# until they are marked ccAsset.
+#
+# This is NAME MATCHING, and it lives here on purpose. It is a diagnostic that
+# can shout and cannot move a number: verify.sh is not importable, so no
+# service can ever come to depend on this word list. test_verify_tripwire.py
+# pins that boundary. It is also blind in one direction — it catches a card
+# wrongly INSIDE the pot, never a real cash account wrongly outside.
 if rw.get("liquid_accounts"):
     suspect = [n for n in rw["liquid_accounts"]
                if any(w in n.lower() for w in ("card", "amex", "visa", "discover",
                                                "platinum", "credit"))]
-    # Name-shaped, and deliberately ONLY a diagnostic: this heuristic must
-    # never move a number. It is here to shout on the box if a card ever
-    # reaches the numerator again, which is exactly what unit tests cannot see.
     if suspect:
         add("FAIL", "  runway inputs",
             f"{', '.join(suspect)} counted as spendable cash — a credit card is "
-            "in the runway numerator")
+            "in the runway numerator; mark it account_role=ccAsset in Firefly")
 
 print()
 print("-- Firefly data-quality audit (last 12 months) --")

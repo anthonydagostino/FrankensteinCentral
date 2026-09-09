@@ -108,7 +108,15 @@ DEFAULT_SETTINGS = {
     "evening_start_hour": 18,    # local hour at/after which = evening mode
     "important_senders": [],     # emails/domains the attention feed prioritises
     "market": {"holdings": [], "watchlist": [], "move_threshold_pct": 3.0},
-    "finance": {"large_txn": 200, "low_balance": 100},
+    # `not_spendable` names the accounts that are NOT part of the cash pot,
+    # for cash runway. It exists because Firefly cannot express the fact: its
+    # whole account_role vocabulary is defaultAsset/sharedAsset/savingAsset/
+    # ccAsset/cashWalletAsset — four cash-like values and a credit card, with
+    # NO role meaning brokerage, investment or retirement. So a TSP and a
+    # checking account are both defaultAsset and no rule can separate them.
+    # Empty means "nobody has said", which the runway reports as a range
+    # rather than resolving by guesswork. See docs/BUDGETS.md (SCRUM-137).
+    "finance": {"large_txn": 200, "low_balance": 100, "not_spendable": []},
     # Monthly budgets over Firefly categories. Each: {id, name, limit,
     # categories: [firefly category names]}. The budget service computes
     # spend/pace/warnings from these; nothing else is stored.
