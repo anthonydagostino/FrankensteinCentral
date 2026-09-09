@@ -375,9 +375,15 @@
     jun: { name: "Solstice", glyph: "☀", drift: ["☀", "✺"] },
     jul: { name: "Fireworks", glyph: "✺", drift: ["✺", "✹"] },
     aug: { name: "High Summer", glyph: "⛱", drift: ["⛱", "≋"] },
-    sep: { name: "Harvest", glyph: "✾", drift: ["🌾", "🍃"] },
-    oct: { name: "Pumpkin Season", glyph: "🎃", drift: ["🎃", "🦇", "🍁"] },
-    nov: { name: "Late Autumn", glyph: "🍂", drift: ["🍂", "🍁", "🌰"] },
+    // The autumn months mix emoji with text symbols on purpose. Emoji carry
+    // their own colour and cannot take the theme's (`color` does nothing to
+    // 🍁), so a month drawn only in emoji can never wear its palette — and
+    // these are the months whose palette is most worth seeing. The ❦/❧ are
+    // leaf-shaped and DO take it, so each card gets both: real leaves, and
+    // leaves in that day's rotation of the month's colours.
+    sep: { name: "Harvest", glyph: "✾", drift: ["🌾", "❦", "🍃", "❧"] },
+    oct: { name: "Pumpkin Season", glyph: "🎃", drift: ["🎃", "❦", "🍁", "❧"] },
+    nov: { name: "Late Autumn", glyph: "🍂", drift: ["🍂", "❦", "🍁", "❧"] },
     dec: { name: "Snowfall", glyph: "❄", drift: ["❄", "❅", "❆", "✻"] },
   };
 
@@ -477,10 +483,36 @@
           ${rel ? "" : `<span class="wk-dow">${esch(day.weekday_short)}</span>`}
           ${month}${rel}${count}
         </div>
-        ${ambienceOn() ? `<span class="wk-motif" aria-hidden="true">${season.glyph}</span>` : ""}
       </header>
-      ${body}
+      ${body}${motifs(day, season)}
     </article>`;
+  }
+
+  // A few of the month's own glyphs scattered in each card, in the colours
+  // that card is already wearing. One glyph at opacity .1 in a corner was
+  // decoration you had to be told about; this is what the "Decor" toggle is
+  // actually for.
+  //
+  // The scatter is derived from the DATE, not from Math.random: the grid
+  // re-renders on every refresh and at midnight, and decoration that leaps to
+  // a new position each time reads as a glitch rather than as ornament.
+  //
+  // They live in the card (not its header) so they can use its full height,
+  // and stay at z-index 0 behind the events — `.wk-day` clips them, so a leaf
+  // can sit half off the edge without escaping into the grid.
+  function motifs(day, season) {
+    if (!ambienceOn()) return "";
+    const set = season.drift;
+    let html = "";
+    for (let i = 0; i < 3; i++) {
+      const seed = day.day * 7 + i * 13;
+      const glyph = set[(day.day + i) % set.length];
+      html += `<span class="wk-motif" data-m="${i}" aria-hidden="true" style="
+        right:${1 + (seed % 62)}%; bottom:${-8 + (seed % 34)}px;
+        font-size:${19 + (seed % 17)}px;
+        transform:rotate(${(seed % 54) - 27}deg)">${glyph}</span>`;
+    }
+    return html;
   }
 
   function renderWeek(d) {
