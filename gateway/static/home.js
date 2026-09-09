@@ -899,6 +899,32 @@
         ? ` · ${rec.event_count - bits.length} more` : "";
       recLine = `<p class="mny-sub mny-rec">🔁 ${bits.join(" · ")}${more}</p>`;
     }
+    // ---- cash runway: the only forward-looking number on this card -------
+    // Everything else here is a rear-view mirror. This one answers "how long
+    // do I last", so it gets stated plainly or not at all — an optimistic
+    // runway is worse than no runway, which is why the engine returns null
+    // with a reason rather than a cheerful guess.
+    const rw = m.runway || {};
+    let runLine = "";
+    if (rw.available && rw.months != null) {
+      const at = rw.lower_bound ? "at least " : "";
+      const cls = rw.months < 3 ? "warn" : "";
+      const excl = (rw.excluded || []).length
+        ? ` · ${(rw.excluded || []).join(", ")} not counted` : "";
+      const unk = rw.lower_bound
+        ? `<br><span class="sub">${(rw.unclassified || []).join(", ")} ${
+             (rw.unclassified || []).length === 1 ? "isn't" : "aren't"
+           } marked as cash in Firefly, so it's left out — counting it could only make this longer.</span>`
+        : "";
+      const alt = rw.months_without_resale != null
+        ? ` · ${rw.months_without_resale} without resale` : "";
+      runLine = `<p class="mny-run ${cls}">🧭 <b>${at}${rw.months} months</b> of runway${alt}
+        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${unk}</p>`;
+    } else if (rw.reason) {
+      // Named, not blank: a missing runway with no explanation reads as a bug.
+      runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;
+    }
+
     // Secondary context: a rolling window and remaining budget capacity.
     // Neither is a bank balance and neither is "left to spend".
     const subBits = [];
@@ -957,7 +983,7 @@
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
-      ${payLine}${budLine}${recLine}${subLine}
+      ${payLine}${runLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>

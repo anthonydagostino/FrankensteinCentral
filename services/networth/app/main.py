@@ -230,7 +230,12 @@ async def apply_recurring():
 async def summary():
     ff = await _firefly_networth()
     if ff:
-        accts = [{"name": a["name"], "balance": a["balance"]} for a in ff.get("accounts", [])]
+        # `kind` and `role` pass straight through. Cash runway needs to know
+        # which of these is spendable this month; dropping them here is what
+        # would force a consumer to guess from the account NAME.
+        accts = [{"name": a["name"], "balance": a["balance"],
+                  "kind": a.get("kind"), "role": a.get("role")}
+                 for a in ff.get("accounts", [])]
         return {
             "total": ff.get("total"),
             "total_display": ff.get("total_display"),

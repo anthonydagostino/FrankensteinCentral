@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from . import notify
+from . import answers, notify, runway
 from .dashboard import (deadline_rows, deploy_state, firefly_state,
                         low_balance_accounts, parse_event_dt,
                         portfolio_alerts, portfolio_state, schedule_state,
@@ -196,6 +196,22 @@ async def _add_deadline(conn, title: str, due_at, source: str, external_id: str)
 @app.get("/health")
 async def health():
     return {"service": "assistant", "briefing_items": len(STATE["items"])}
+
+
+async def _get_or_none(client: httpx.AsyncClient, url: str):
+    """Like _get, but returns None when the service did not answer.
+
+    _get() returns {} for a failure so a down sub-app just contributes nothing
+    to the dashboard — right for a tile that can render less, wrong for /ask,
+    which would then state the {} as a confident zero. Prose has no em dash to
+    hide behind, so /ask needs to tell the two apart.
+    """
+    try:
+        r = await client.get(url, timeout=8)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def _get(client: httpx.AsyncClient, url: str) -> dict:
@@ -673,6 +689,16 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         # What's left of the current paycheck after the savings that come out
         # of it — the homepage's "left to spend". Never a bank balance.
         "paycheck": _paycheck_brief(pay),
+        # Cash runway: the one forward-looking money figure on the card.
+        # Fed the trailing 30-day window it is already computing, and the
+        # SAME completeness flag every other figure here respects — a
+        # truncated read understates burn, which overstates runway.
+        "runway": runway.cash_runway(
+            (networth or {}).get("accounts") or [],
+            last_30, 30,
+            freshness={"window_complete": month_complete,
+                       "ingest_days": days_stale},
+        ),
         "last_30": last_30,
         "last_30_trend_pct": last_30_trend,
         "last_30_note": sp.get("last_30_note"),
@@ -995,118 +1021,23 @@ def _short(text: str, limit: int = 48) -> str:
 
 @app.get("/ask")
 async def ask(q: str = ""):
-    """A lightweight, offline Q&A over your apps — intent-matched, no LLM needed."""
-    ql = q.lower().strip()
+    """A lightweight, offline Q&A over your apps — intent-matched, no LLM.
+
+    The wording and every figure come from answers.py, which is pure and
+    refuses to state anything sourced from a service that did not answer. See
+    that module for why: this endpoint used to render a down service as $0.
+    """
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        fitness = await _get(client, f"{FITNESS_URL}/plan")
-        pb = await _get(client, f"{POWERBUY_URL}/summary")
-        cal = await _get(client, f"{SCHEDULE_URL}/events")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        networth = await _get(client, f"{NETWORTH_URL}/summary")
-        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
-
-    def has(*words):
-        return any(w in ql for w in words)
-
-    if has("budget", "spending", "spent", "over budget", "left to spend"):
-        over = budget.get("over_budget", [])
-        base = (f"You've spent ${budget.get('total_spent', 0)} of "
-                f"${budget.get('total_budget', 0)} ({budget.get('percent_used', 0)}%), "
-                f"${budget.get('remaining', 0)} left.")
-        if over:
-            base += f" Over budget on: {', '.join(over)}."
-        return {"answer": base}
-
-    if has("email", "reply", "inbox", "mail"):
-        ems = emails.get("emails", [])
-        if not ems:
-            return {"answer": "Inbox's clear — nothing needs a reply."}
-        shown = ems[:5]
-        lines = [f"{len(ems)} email(s) need a reply:"]
-        lines += [f"• {_short(e['subject'])} — {_sender_name(e['from'])}" for e in shown]
-        if len(ems) > len(shown):
-            lines.append(f"…and {len(ems) - len(shown)} more.")
-        return {"answer": "\n".join(lines)}
-
-    if has("task", "todo", "to-do", "to do"):
-        top = ", ".join(tasks.get("top", []))
-        n = tasks.get("open", 0)
-        return {"answer": f"You have {n} open task(s)" + (f": {top}." if top else ".")}
-
-    if has("bill", "due", "subscription", "finance", "money", "spend", "budget"):
-        up = finance.get("upcoming", [])
-        if not up:
-            return {"answer": f"No bills due in the next week. You spend "
-                              f"${finance.get('monthly_total', 0)}/month total."}
-        names = ", ".join(f"{b['name']} (${b['amount']}, in {b['days_until']}d)" for b in up)
-        return {"answer": f"Coming up: {names}."}
-
-    if has("profit", "powerbuy", "arbitrage", "purchase", "unpaid"):
-        s = pb.get("summary", {})
-        return {"answer": f"Expected profit is ${s.get('expected_profit', 0)}, with "
-                          f"{s.get('unpaid_count', 0)} unpaid and "
-                          f"{s.get('expiring_soon_count', 0)} expiring soon."}
-
-    if has("workout", "gym", "lift", "train", "exercise", "today"):
-        tp = fitness.get("today_plan") or {}
-        lifts = ", ".join(tp.get("lifts", [])) or "recovery"
-        return {"answer": f"Today is {tp.get('focus', 'rest')} day: {lifts}."}
-
-    if has("pending", "awaiting", "waiting on", "proposed", "did they reply", "confirm"):
-        threads = availability.get("threads", [])
-        pend = [t for t in threads if t.get("status") in ("pending", "countered")]
-        if not pend:
-            return {"answer": "Nothing awaiting a reply — every proposed time has been "
-                              "confirmed or fell through."}
-        lines = [f"{len(pend)} thread(s) awaiting a reply:"]
-        for t in pend:
-            who = _sender_name(t.get("counterparty", ""))
-            tag = "they countered" if t.get("status") == "countered" else "awaiting them"
-            lines.append(f"• {_short(t.get('subject', ''))} — {who} ({tag})")
-        return {"answer": "\n".join(lines)}
-
-    if has("schedule", "calendar", "next", "event", "interview", "meeting", "coming up"):
-        events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
-        if not events:
-            return {"answer": "Nothing confirmed on your calendar yet."}
-        nxt = events[0]
-        return {"answer": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
-
-    if has("deal", "discount", "coupon", "promo", "sale", "offer"):
-        top = deals.get("top", [])
-        if not top:
-            return {"answer": "No real deals spotted in your inbox lately."}
-        return {"answer": f"Deals spotted: {'; '.join(top)}."}
-
-    if has("net worth", "worth", "balance", "chase", "marcus", "robinhood", "fidelity", "tsp", "savings"):
-        accts = networth.get("accounts", [])
-        if not accts:
-            return {"answer": "No accounts set up yet."}
-        lines = [f"Net worth: ${networth.get('total', 0):,.2f}"]
-        lines += [f"• {a['name']}: ${a['balance']:,.2f}" for a in accts]
-        return {"answer": "\n".join(lines)}
-
-    # default: a full rundown
-    ov = await build_overview()
-    parts = []
-    if ov["emails_to_reply"]:
-        parts.append(f"{ov['emails_to_reply']} emails to reply")
-    if ov["open_tasks"]:
-        parts.append(f"{ov['open_tasks']} open tasks")
-    if ov["bills_due"]:
-        parts.append(f"{ov['bills_due']} bills due soon")
-    if ov["unpaid"]:
-        parts.append(f"{ov['unpaid']} unpaid buys")
-    if ov.get("deals_count"):
-        parts.append(f"{ov['deals_count']} deals spotted")
-    rundown = "; ".join(parts) if parts else "nothing urgent"
-    nxt = f" Next up: {ov['next_event']}." if ov["next_event"] else ""
-    return {"answer": f"Here's your plate: {rundown}. Today is "
-                      f"{ov.get('today_focus') or 'rest'} day.{nxt}"}
+        names = ["emails", "tasks", "finance", "fitness", "powerbuy",
+                 "budget", "deals", "networth", "availability"]
+        urls = [f"{GMAIL_URL}/needs-reply", f"{TASKS_URL}/summary",
+                f"{FINANCE_URL}/summary", f"{FITNESS_URL}/plan",
+                f"{POWERBUY_URL}/summary", f"{BUDGET_URL}/summary",
+                f"{DEALS_URL}/summary", f"{NETWORTH_URL}/summary",
+                f"{GMAIL_URL}/thread-availability"]
+        payloads = await asyncio.gather(*(_get_or_none(client, u) for u in urls))
+    sources = dict(zip(names, payloads))
+    return answers.answer(q, sources, short=_short, sender=_sender_name)
 
 
 @app.get("/agents")
