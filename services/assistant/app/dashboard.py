@@ -721,3 +721,35 @@ def low_balance_accounts(accounts, floor):
             out.append({"name": a.get("name") or "account", "balance": balance})
     out.sort(key=lambda a: a["balance"])
     return out
+
+
+# --- choosing what to recommend (PRODUCT_IDEAS #34) --------------------------
+
+def first_undismissed(candidates, hidden=None, fallback=None):
+    """The best recommendation you have not waved off.
+
+    Lives here rather than in `main.py` for this file's founding reason: the
+    module that generates the candidates imports psycopg and so cannot be
+    imported by a test at all, and "which suggestion do you actually get" is
+    precisely the decision that needs covering.
+
+    Falling THROUGH is the whole point. A first-match-wins chain that returns
+    the top rule can only hide it and show nothing in its place, and "I have
+    handled that, tell me the next thing" is the entire reason to be able to
+    say handled.
+
+    The fallback is deliberately not dismissible: "You're on track" is the
+    absence of a recommendation, and there is nothing behind it to reveal.
+    """
+    hide = hidden or set()
+    for rec in candidates or []:
+        if not isinstance(rec, dict):
+            continue
+        key = rec.get("key")
+        # No key means it cannot be identified, so it cannot have been
+        # dismissed — showing it is the only safe reading.
+        if not key or key not in hide:
+            return rec
+    return fallback if fallback is not None else {
+        "key": None, "title": "You're on track",
+        "reason": "Nothing urgent right now — nice.", "action": None}

@@ -11,9 +11,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
 from .dashboard import (deadline_rows, deploy_state, firefly_state,
-                        low_balance_accounts, parse_event_dt,
-                        portfolio_alerts, portfolio_state, schedule_state,
-                        upcoming_events, week_window, weekly_review)
+                        first_undismissed, low_balance_accounts,
+                        parse_event_dt, portfolio_alerts, portfolio_state,
+                        schedule_state, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -424,9 +425,18 @@ def _study_pace_behind(study, hour) -> int:
     return int(max(0, expected - done))
 
 
-def _do_next(core, inbox, money, events, settings, t) -> dict:
-    """ONE explainable recommendation, considering time, email, calendar,
-    study pace, gym, hydration and the Big 3. First matching rule wins."""
+def _do_next_candidates(core, inbox, money, events, settings, t):
+    """Every recommendation that applies right now, best first.
+
+    This was one `return`-per-rule chain. It is a generator now for one
+    reason: dismissing the top suggestion has to fall through to the NEXT one.
+    "I have handled that, tell me the next thing" is the whole point of being
+    able to say handled — a chain that returns the first match can only ever
+    hide the answer and show nothing in its place.
+
+    Every candidate carries a stable `key` identifying the THING, not the
+    moment, so a snooze survives the recompute that happens on every load.
+    """
     now = datetime.now(LOCAL_TZ)
     hour = t["hour"]
     study = (core or {}).get("study", {})
@@ -438,26 +448,28 @@ def _do_next(core, inbox, money, events, settings, t) -> dict:
 
     # 1) A calendar event that's imminent beats everything
     if ev and 0 <= ev[0] <= 30:
-        return {"title": f"Head to {_short(ev[1].get('title',''), 40)}",
-                "reason": f"It starts in {int(ev[0])} min.",
-                "action": {"type": "open", "app": "schedule"}}
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Head to {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
 
     # 2) An important email that needs a response
     needs = [i for i in inbox.get("items", []) if i.get("needs_reply") and i.get("important")]
-    if needs:
-        e = sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True)[0]
+    for e in sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True):
         aged = f" — it's been sitting {e['age'].replace(' ago', '')}" if e.get("age") else ""
-        return {"title": f"Reply to {e['from']}",
-                "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
-                "action": {"type": "gmail"}}
+        yield {"key": f"email:{e.get('id') or e.get('subject','')}",
+               "title": f"Reply to {e['from']}",
+               "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
+               "action": {"type": "gmail"}}
 
     # 3) A calendar event starting soon
     if ev and 0 <= ev[0] <= 75:
-        return {"title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
-                "reason": f"It starts in {int(ev[0])} min.",
-                "action": {"type": "open", "app": "schedule"}}
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
 
-    # 3) Study, if you're behind pace
+    # 4) Study, if you're behind pace
     behind = _study_pace_behind(study, hour)
     goal = study.get("goal_min", 0); done = study.get("today_min", 0)
     if goal and done < goal and (behind >= 15 or hour >= 18):
@@ -465,34 +477,44 @@ def _do_next(core, inbox, money, events, settings, t) -> dict:
         mins = min(60, rem) or 25
         why = (f"you're {behind} min behind today's pace" if behind >= 15
                else f"{done//60}h {done%60}m / {goal//60}h done and the day's almost over")
-        return {"title": f"Start a {mins}-minute study session",
-                "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
+        yield {"key": "study", "title": f"Start a {mins}-minute study session",
+               "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
 
-    # 4) Gym, if the week is slipping
+    # 5) Gym, if the week is slipping
     if gym.get("available") and gym.get("week", 0) < gym.get("goal", 0):
         rem = gym["goal"] - gym["week"]
         days_left = 7 - now.weekday()
         if rem >= days_left or hour >= settings.get("evening_start_hour", 18):
-            return {"title": "Go to the gym",
-                    "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
-                    "action": {"type": "gym"}}
+            yield {"key": "gym", "title": "Go to the gym",
+                   "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
+                   "action": {"type": "gym"}}
 
-    # 5) A Big 3 item
-    undone = [b for b in big3 if not b.get("done")]
-    if undone and hour >= 10:
-        return {"title": f"Knock out: {_short(undone[0]['text'], 40)}",
-                "reason": "It's one of your Big 3 for today.",
-                "action": {"type": "big3", "id": undone[0]["id"]}}
+    # 6) A Big 3 item
+    for b in [b for b in big3 if not b.get("done")]:
+        if hour >= 10:
+            yield {"key": f"big3:{b['id']}",
+                   "title": f"Knock out: {_short(b['text'], 40)}",
+                   "reason": "It's one of your Big 3 for today.",
+                   "action": {"type": "big3", "id": b["id"]}}
 
-    # 6) Hydration, late in the day
+    # 7) Hydration, late in the day
     if water.get("goal") and water.get("oz", 0) < water["goal"] and hour >= 16:
         gap = water["goal"] - water["oz"]
-        return {"title": "Drink some water",
-                "reason": f"{gap} oz short of your {water['goal']} oz goal.",
-                "action": {"type": "water", "oz": 16}}
+        yield {"key": "water", "title": "Drink some water",
+               "reason": f"{gap} oz short of your {water['goal']} oz goal.",
+               "action": {"type": "water", "oz": 16}}
 
-    return {"title": "You're on track", "reason": "Nothing urgent right now — nice.",
-            "action": None}
+
+def _do_next(core, inbox, money, events, settings, t, dismissed=None) -> dict:
+    """ONE explainable recommendation — the best one you have not waved off.
+
+    `dismissed` is a set of currently-active dismissal keys. The fallback is
+    NOT dismissible: "You're on track" is the absence of a recommendation, and
+    there is nothing behind it to fall through to.
+    """
+    return first_undismissed(
+        _do_next_candidates(core, inbox, money, events, settings, t),
+        dismissed or set())
 
 
 def _briefing_line(core, inbox, stocks, money, events) -> list[str]:
@@ -536,7 +558,8 @@ def _is_important_sender(addr: str, important: list) -> bool:
     return any(s and s.lower() in a for s in (important or []))
 
 
-def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) -> dict:
+def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None,
+           dismissed=None) -> dict:
     """The email signal: which messages actually matter, with sender/subject/
     age — not a count of 40 unread."""
     important = settings.get("important_senders", [])
@@ -555,11 +578,21 @@ def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) ->
         scored.append((rank, e))
     scored.sort(key=lambda x: x[0], reverse=True)
 
+    # Dismissed messages are dropped BEFORE the top-5 slice, so waving one off
+    # promotes the sixth rather than leaving a gap. Filtering after the slice
+    # would shrink the card every time you handled something.
+    hidden = dismissed or set()
+    scored = [(r, e) for r, e in scored
+              if f"email:{e.get('id') or e.get('subject','')}" not in hidden]
+
     items = []
     for rank, e in scored[:5]:
         age = e.get("age_hours")
         items.append({
             "id": e.get("id"), "thread_id": e.get("thread_id"),
+            # Stable across the recompute that happens on every page load —
+            # it names the message, not this render of it.
+            "key": f"email:{e.get('id') or e.get('subject','')}",
             "from": _sender_name(e.get("from", "")),
             "subject": _short(e.get("subject", ""), 60),
             "snippet": _short(e.get("snippet", ""), 90),
@@ -839,7 +872,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, emails_r, avail, finance, budget, firefly, spending,
          networth, schedule, cal_health, deals, stocks, vault,
-         captures, review) = await asyncio.gather(
+         captures, review, dismissals) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
@@ -861,6 +894,10 @@ async def build_home(fresh: bool = False) -> dict:
             # PRODUCT_IDEAS #5: core has exposed this since it was written and
             # nothing ever rendered it.
             _get(client, f"{CORE_URL}/weekly-review"),
+            # PRODUCT_IDEAS #34. `_get` swallows a failure into {}, which
+            # yields NO active keys — so a core outage shows you everything
+            # rather than silently hiding items it could not check.
+            _get(client, f"{CORE_URL}/dismissals"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -894,9 +931,14 @@ async def build_home(fresh: bool = False) -> dict:
     week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
     settings = settings or {}
 
+    # Which attention items you have waved off. An unreachable core yields an
+    # empty set, and showing you something you had hidden is the safe
+    # direction — hiding something because we could not check is not.
+    hidden = set((dismissals or {}).get("active_keys") or [])
+
     t = _home_time(settings)
     inbox = _inbox(gmail_emails, avail, settings, gmail_mode,
-                   (emails_r or {}).get("sync"))
+                   (emails_r or {}).get("sync"), hidden)
     money = _money(firefly, spending, finance, budget, networth, settings)
 
     data = {
@@ -908,7 +950,11 @@ async def build_home(fresh: bool = False) -> dict:
         # item -- on every /today, which this function already fetches, and it
         # was dropped on the floor here while the home screen rendered a single
         # do_next instead. The feed existed the whole time; nothing asked for it.
-        "nudges": (core or {}).get("nudges", []),
+        # Nudges already carry stable keys ("study", "gym"), and they are the
+        # SAME keys Do-Next uses on purpose: waving off study should quiet it
+        # on both surfaces, because it is one thing, not two.
+        "nudges": [n for n in (core or {}).get("nudges", [])
+                   if n.get("key") not in hidden],
         # Written on every sync since the pipeline was built, readable only
         # from the demoted lounge until now.
         "deadlines": deadline_rows(await _deadline_rows(), now_local, LOCAL_TZ),
@@ -919,7 +965,7 @@ async def build_home(fresh: bool = False) -> dict:
                 ((firefly or {}).get("accounts") or []),
                 (settings.get("finance", {}) or {}).get("low_balance")),
         },
-        "do_next": _do_next(core, inbox, money, events, settings, t),
+        "do_next": _do_next(core, inbox, money, events, settings, t, hidden),
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
@@ -948,6 +994,9 @@ async def build_home(fresh: bool = False) -> dict:
         "score": (core or {}).get(
             "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
         "captures": (captures.get("items", []) if captures else [])[:8],
+        # What is hidden right now, so the UI can offer to bring it back
+        # rather than leaving you wondering where something went.
+        "dismissed": sorted(hidden),
         "next_event": events[0] if events else None,
         "calendar": calendar,
         "week": week,

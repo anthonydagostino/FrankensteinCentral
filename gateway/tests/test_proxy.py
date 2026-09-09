@@ -45,6 +45,7 @@ class FakeClient:
         return False
 
     async def request(self, *args, **kwargs):
+        FakeClient.seen = kwargs
         return FakeClient.response
 
 
@@ -82,3 +83,24 @@ def test_an_ordinary_response_is_unchanged(client):
 def test_an_unknown_app_is_still_rejected_before_any_call(client):
     r = client.get("/api/nosuchapp/health")
     assert r.status_code == 404
+
+
+def test_a_form_post_reaches_the_sub_app_intact(client):
+    """The "Finish connecting" button on the Gmail connect page posts through
+    here. If the body or its content-type were dropped, the paste would arrive
+    empty and the rescue flow would fail in the one situation it exists for."""
+    FakeClient.response = FakeUpstream(200, {"content-type": "text/html"}, b"<h2>ok</h2>")
+    r = client.post("/api/gmail/auth/finish", data={"pasted": "4/some-code"})
+    assert r.status_code == 200
+    assert FakeClient.seen["content"] == b"pasted=4%2Fsome-code"
+    sent = {k.lower(): v for k, v in FakeClient.seen["headers"].items()}
+    assert sent["content-type"] == "application/x-www-form-urlencoded"
+
+
+def test_html_from_a_sub_app_is_served_as_html(client):
+    """The connect page is HTML, not JSON. A dropped content-type would render
+    it as plain text — every tag visible, no form to submit."""
+    FakeClient.response = FakeUpstream(
+        200, {"content-type": "text/html; charset=utf-8"}, b"<h2>Connect Google</h2>")
+    r = client.get("/api/gmail/auth/login")
+    assert r.headers["content-type"].startswith("text/html")

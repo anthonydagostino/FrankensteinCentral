@@ -1161,3 +1161,92 @@ def test_low_balance_reports_the_worst_first():
 @pytest.mark.parametrize("floor", [None, "abc"])
 def test_an_unusable_low_balance_floor_flags_nothing(floor):
     assert dash.low_balance_accounts([{"name": "A", "balance": 0}], floor) == []
+
+
+# --- choosing what to recommend (PRODUCT_IDEAS #34) --------------------------
+#
+# The acceptance signal in the idea is "snooze the top item, refresh, and it's
+# still gone". The half that is easy to get wrong is the other half: what
+# takes its place. A first-match-wins chain that only skips the dismissed rule
+# shows you nothing, which is worse than what it replaced.
+
+def cand(key, title):
+    return {"key": key, "title": title, "reason": "", "action": {"type": "x"}}
+
+
+def test_the_best_candidate_wins_when_nothing_is_dismissed():
+    got = dash.first_undismissed([cand("email:a", "Reply"), cand("gym", "Gym")], set())
+    assert got["key"] == "email:a"
+
+
+def test_dismissing_the_top_item_reveals_the_NEXT_one_not_nothing():
+    """The whole reason to be able to say handled."""
+    cands = [cand("email:a", "Reply"), cand("gym", "Gym"), cand("water", "Drink")]
+    assert dash.first_undismissed(cands, {"email:a"})["key"] == "gym"
+    assert dash.first_undismissed(cands, {"email:a", "gym"})["key"] == "water"
+
+
+def test_dismissing_everything_falls_back_to_on_track():
+    cands = [cand("email:a", "Reply"), cand("gym", "Gym")]
+    got = dash.first_undismissed(cands, {"email:a", "gym"})
+    assert got["title"] == "You're on track"
+    assert got["action"] is None
+    assert got["key"] is None, "the fallback must not itself be dismissible"
+
+
+def test_the_fallback_cannot_be_dismissed_away():
+    """It is the absence of a recommendation — there is nothing behind it."""
+    got = dash.first_undismissed([], {None, "", "You're on track"})
+    assert got["title"] == "You're on track"
+
+
+def test_a_candidate_with_no_key_is_always_shown():
+    """Unidentifiable means undismissable. Hiding it would remove something
+    with no way to name it again and bring it back."""
+    cands = [{"key": None, "title": "keyless"}, cand("gym", "Gym")]
+    assert dash.first_undismissed(cands, {"gym"})["title"] == "keyless"
+    assert dash.first_undismissed(cands, set())["title"] == "keyless"
+    # The set must be able to CONTAIN the empty key without that hiding
+    # anything: `None not in {"gym"}` is true however the check is written, so
+    # a hidden set that does not contain None cannot test this at all.
+    for poisoned in ({None}, {""}, {None, "", "gym"}):
+        got = dash.first_undismissed(cands, poisoned)
+        assert got["title"] == "keyless", f"hidden by {poisoned}"
+    assert dash.first_undismissed(
+        [{"key": "", "title": "empty-key"}], {""})["title"] == "empty-key"
+
+
+@pytest.mark.parametrize("junk", [None, [], ["nope"], [7], [None]])
+def test_junk_candidates_do_not_crash_the_card(junk):
+    got = dash.first_undismissed(junk, set())
+    assert got["title"] == "You're on track"
+
+
+def test_an_empty_dismissal_set_changes_nothing():
+    """A core outage yields no keys, and must show everything rather than
+    hide what it could not check."""
+    cands = [cand("email:a", "Reply")]
+    for empty in (None, set(), frozenset()):
+        assert dash.first_undismissed(cands, empty)["key"] == "email:a"
+
+
+def test_dismissals_do_not_reorder_what_is_left():
+    cands = [cand("a", "A"), cand("b", "B"), cand("c", "C")]
+    assert dash.first_undismissed(cands, {"b"})["key"] == "a"
+    assert dash.first_undismissed(cands, {"a"})["key"] == "b"
+
+
+def test_a_generator_of_candidates_is_consumed_lazily_and_correctly():
+    """main.py hands this a generator, not a list — the rules build their own
+    strings and some of that work should not happen for suggestions that are
+    never reached."""
+    built = []
+
+    def gen():
+        for k in ("a", "b", "c"):
+            built.append(k)
+            yield cand(k, k.upper())
+
+    got = dash.first_undismissed(gen(), {"a"})
+    assert got["key"] == "b"
+    assert built == ["a", "b"], f"evaluated too much: {built}"
