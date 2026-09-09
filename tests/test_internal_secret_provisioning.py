@@ -13,13 +13,15 @@ anyone — so `deploy.sh` generates it. Asking an operator to paste
 `openssl rand -hex 32` buys no security and costs a working calendar every time
 the step is missed.
 
-Three properties, and all three matter:
+Four properties, and all four matter:
 
   * it appears when it is missing, or the feature stays dead;
   * it is never rewritten when it is already there, because rotating it
     mid-deploy breaks the running pair until both containers restart —
     rotation is a deliberate act, not a side effect of deploying;
-  * it is never printed, because deploy output is pasted into tickets.
+  * it is never printed, because deploy output is pasted into tickets;
+  * it is written before the containers start, or it reaches them a whole
+    deploy late.
 
 These run the REAL deploy.sh against a throwaway box, like its siblings: a grep
 for the generating line would pass just as happily on a block that never
@@ -81,8 +83,12 @@ def deploy(box):
                DEPLOY_SKIP_TESTS="1",
                PATH=f"{box['bindir']}:{os.environ['PATH']}")
     env.pop("FRANKENSTEIN_DEPLOY_REEXEC", None)
+    # check=False on purpose: with docker stubbed there is no stack to serve,
+    # so deploy.sh correctly exits 1 at the health verdict it added in
+    # SCRUM-107. The secret is written well before that, and it has to be —
+    # see test_the_secret_is_written_before_the_containers_start.
     return sh("bash", str(box["clone"] / "scripts" / "deploy.sh"), "production",
-              env=env)
+              env=env, check=False)
 
 
 def secret_of(env_file: Path) -> str | None:
@@ -155,3 +161,15 @@ def test_the_generated_value_is_not_predictable(box, tmp_path):
         seen.add(secret_of(box["env_file"]))
     assert len(seen) == 3, "the secret repeats across boxes"
     assert all(re.fullmatch(r"[0-9a-f]{64}", s) for s in seen), seen
+
+
+def test_the_secret_is_written_before_the_containers_start():
+    """Ordering, not just presence. Generated after `up -d` it would reach the
+    containers a whole deploy late — the same one-cycle lag the
+    FRANKENSTEIN_STATE_DIR export shipped with."""
+    script = DEPLOY.read_text()
+    generated = script.index('NEW_SECRET="$(head -c 32')
+    compose_up = script.index("$DC up -d")
+    assert generated < compose_up, (
+        "the secret is generated after the containers are started, so they "
+        "would come up with the previous value")
