@@ -54,18 +54,29 @@ def _reads_as_private(path: str) -> bool:
                for seg in path.split("/") if seg)
 
 
+def _client() -> TestClient:
+    """A client the Host allowlist accepts (SCRUM-115), so what is asserted
+    below is the internal-route refusal and not a 400 standing in front of it.
+    TestClient's default `Host: testserver` is refused before the proxy runs,
+    which would make these pass for the wrong reason."""
+    return TestClient(gw.app, base_url="http://localhost")
+
+
 def test_the_scan_actually_finds_routes():
     """A scan that matches nothing passes vacuously and reads like coverage.
     Anchor it on the route this whole ticket was about."""
     routes = _declared_routes()
     assert len(routes) > 50, "the route regex stopped matching — fix it"
     assert ("services/gmail/app/main.py", "/internal/token") in routes
+    # And the client really does get past the Host check, or every assertion
+    # below is a 400 wearing a refusal's clothes.
+    assert _client().get("/api/gmail/health").status_code != 400
 
 
 def test_the_gateway_refuses_every_container_only_route_in_the_repo():
     """Add `/private/whatever` to a service tomorrow and this goes red until
     the gateway knows to refuse it."""
-    client = TestClient(gw.app)
+    client = _client()
     exposed = []
     for source, path in _declared_routes():
         if not _reads_as_private(path):
@@ -83,7 +94,7 @@ def test_the_refusal_is_not_gmail_specific():
     """The guard belongs to the proxy, not to one service. Whichever sub-app
     adds the next container-only route is covered without anyone remembering
     this ticket existed."""
-    client = TestClient(gw.app)
+    client = _client()
     for app_key in gw.REGISTRY:
         r = client.get(f"/api/{app_key}/internal/token")
         assert r.status_code == 404, app_key
