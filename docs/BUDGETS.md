@@ -318,41 +318,68 @@ one, and the only one that changes a decision. The arithmetic is one division;
 all the care is in the two ways it lies, **both of which fail optimistically**,
 which is the direction that costs money.
 
-**"Liquid" must be right.** Only Firefly's cash-like `account_role` values
-count — `defaultAsset`, `savingAsset`, `cashWalletAsset`. A brokerage
-(`sharesAsset`) is real money and is *not* spendable this month; counting it
-turns four months into forty. Liabilities never join the pot. The whitelist is
-deliberate: a role the list has not heard of is **unclassified**, not liquid.
+**"Liquid" must be right.** Getting it wrong turns thirteen months into sixty,
+and this section is mostly the record of getting it wrong twice.
 
-An unclassified account is neither counted nor silently dropped — it is named,
-and while any exists the figure is published as a **lower bound**
-(`lower_bound: true`, rendered "at least N months"), because money we refused
-to count can only make the runway longer, never shorter.
+Only a **deliberate** `account_role` puts money in the pot — `savingAsset` or
+`cashWalletAsset`. `sharesAsset` and `ccAsset` are equally deliberate in the
+other direction and are excluded and named. Anything else is withheld: not
+counted, not dropped, but published, so the figure is a **lower bound**
+(`lower_bound: true`, rendered "at least N months") because money we refused to
+count can only make the runway longer.
+
+**`defaultAsset` is silence (SCRUM-137).** It is Firefly's *unset* value — what
+a new asset account gets when nobody chooses — so it is never counted. On
+Anthony's ledger nine accounts sit there at once: two checking accounts, two
+brokerages, a TSP, a crypto account and three credit cards. That is not a
+ledger asserting they are all cash; it is a ledger that has not been asked.
 
 This is why `firefly /networth` publishes `kind` and `role` per account, and
 why `networth /summary` passes them through. The list used to be flat, so a
 consumer could not tell a debt from an asset, let alone cash from retirement,
 and would have had to guess from the account *name*.
 
-**A role is evidence, not a fact (SCRUM-93).** The guard above defends against
-a role that is *missing*. It cannot fire on one that is *wrong*, and wrong is
-what a real ledger produces. Anthony's Firefly returned `defaultAsset` for all
-eleven accounts — two brokerages, a TSP, a crypto account and three credit
-cards included — so nothing landed in `unclassified`, `lower_bound` stayed
-false, and the card published **64.5 months** against a true figure near 13.2.
-A 4.9x overstatement with no hedge, in the optimistic direction. Absence was
-guarded; misclassification was what happened.
+### Two guards that shipped and were wrong
 
-Two refusals close it, and both are refusals to trust one unverified field:
+Worth keeping, because a third attempt of the same shape is the obvious next
+mistake.
 
-- **A role that never varies is not a classification.** If every asset account
-  reports the same role, that field is a default the ledger never filled in.
-  It is then ignored entirely — everything becomes unclassified and the figure
-  is suppressed with a reason that names the ledger fix, rather than divided by
-  a "liquid" pot built from brokerages. A single asset account is exempt: one
-  account cannot demonstrate variety either way.
-- **A negative balance is never spendable.** A card entered as an asset account
-  is a debt whatever role it claims, and cannot join a cash pot.
+**SCRUM-93 — "a role that never varies is not a classification."** If every
+asset account reported the same role, the field was treated as unfilled and the
+figure suppressed. It was written against a docstring claim that Anthony's
+Firefly "reports `defaultAsset` for all eleven accounts". Nobody checked. The
+ledger has **three** distinct roles — `defaultAsset` x9, `savingAsset`
+(Marcus), `cashWalletAsset` (Cash wallet) — so the guard could never fire, and
+the card kept publishing **64.7 months** against a true ~13.2.
+
+**Variety is not correctness.** The role field here is neither missing nor
+uniform; it is *filled in wrongly*, and no heuristic keyed on the *shape* of the
+role distribution can see that, because the distribution looks healthy. Nine
+accounts agreeing on a wrong answer is not a signal of doubt.
+
+**The rule that sounds better and is inverted.** "Count the accounts spending
+actually flows out of" reads like behaviour beating metadata. Checked against 60
+days of the live ledger: all 112 withdrawals have a **credit card** as their
+source, and every cash account has zero. Anthony spends on cards. That rule
+would select exactly the three cards as the numerator and exclude every real
+account — strictly worse than the bug. Firefly is not hiding a better field
+either: `credit_card_type`, `liability_type`, `liability_direction`,
+`current_debt` and `monthly_payment_date` are null on all eleven accounts, and
+all eleven are type `asset`.
+
+**A negative balance is never spendable** — but be exact about what that
+catches. It is a backstop for debts, not a card detector. The cards were entered
+as assets whose opening balance is a *statement* figure, and charges decrement
+it like a cash pot, so each crosses zero at a different moment (Discover already
+has). A rule that admits an account until its spending happens to exceed its
+opening balance is a definition that moves silently as the month goes on.
+Treating `defaultAsset` as silence is what actually keeps cards out of the
+numerator.
+
+**Every account lands in exactly one visible bucket** — `liquid_accounts`,
+`unstated`, `unclassified`, `excluded`, `debts`. Discover was once correctly
+dropped and then appeared in *no* list at all. An input that vanishes cannot be
+argued with, and being argued with is the whole point.
 
 The card also names the accounts it *counted*, not only the ones it excluded.
 `64.5` passed unexamined for a day; `Counting: Santander, Marcus, Fidelity,

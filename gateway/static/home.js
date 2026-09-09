@@ -1059,15 +1059,31 @@
       // silently dividing by brokerages and credit-card balances.
       const counted = (rw.liquid_accounts || []).length
         ? `<br><span class="sub">Counting: ${esch((rw.liquid_accounts || []).join(", "))}.</span>` : "";
-      const unk = rw.lower_bound
-        ? `<br><span class="sub">${(rw.unclassified || []).join(", ")} ${
-             (rw.unclassified || []).length === 1 ? "isn't" : "aren't"
-           } marked as cash in Firefly, so it's left out — counting it could only make this longer.</span>`
+      // Everything the ledger has not vouched for. `unstated` is the big one
+      // and the actionable one: accounts sitting at Firefly's default role,
+      // which says nothing about whether they are spendable. Naming them is
+      // what turns a pessimistic-looking floor into a five-minute Firefly fix.
+      const held = [...(rw.unstated || []), ...(rw.unclassified || [])];
+      const unk = held.length
+        ? `<br><span class="sub">${esch(held.join(", "))} ${
+             held.length === 1 ? "isn't" : "aren't"
+           } marked as savings or cash in Firefly, so ${
+             held.length === 1 ? "it's" : "they're"
+           } left out — counting ${
+             held.length === 1 ? "it" : "them"
+           } could only make this longer.</span>`
+        : "";
+      // An account that is dropped must still be SEEN to be dropped. Discover
+      // fell out of this card entirely once, into no list at all.
+      const owed = (rw.debts || []).length
+        ? `<br><span class="sub">${esch((rw.debts || []).join(", "))} ${
+             (rw.debts || []).length === 1 ? "carries a debt" : "carry debts"
+           }, so ${(rw.debts || []).length === 1 ? "it is" : "they are"} not part of the pot.</span>`
         : "";
       const alt = rw.months_without_resale != null
         ? ` · ${rw.months_without_resale} without resale` : "";
       runLine = `<p class="mny-run ${cls}">🧭 <b>${at}${rw.months} months</b> of runway${alt}
-        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${counted}${unk}</p>`;
+        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${counted}${unk}${owed}</p>`;
     } else if (rw.reason) {
       // Named, not blank: a missing runway with no explanation reads as a bug.
       runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;

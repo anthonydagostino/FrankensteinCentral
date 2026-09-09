@@ -490,16 +490,37 @@ elif rw.get("available"):
     add("PASS", "  counted", ", ".join(rw.get("liquid_accounts") or []) or "(none)")
     if rw.get("excluded"):
         add("PASS", "  excluded", ", ".join(rw["excluded"]) + " (not spendable this month)")
+    if rw.get("unstated"):
+        add("WARN", "  unstated", ", ".join(rw["unstated"]) +
+            " — sitting at Firefly's DEFAULT role, which says nothing about "
+            "whether they are spendable, so the figure is a LOWER BOUND")
     if rw.get("unclassified"):
         add("WARN", "  unclassified", ", ".join(rw["unclassified"]) +
             " — no account_role in Firefly, so the figure is a LOWER BOUND")
+    if rw.get("debts"):
+        add("PASS", "  debts", ", ".join(rw["debts"]) + " (carrying a debt, not in the pot)")
 else:
     # Suppressed on purpose. The reason is the actionable part, not the absence.
     add("WARN", "runway", f"unavailable — {rw.get('reason')}")
-    if rw.get("roles_informative") is False:
+    if rw.get("unstated"):
         add("WARN", "  account roles",
-            "every account reports the same role, so Firefly is not classifying "
-            "them; set roles and enter credit cards as liabilities")
+            "nothing is marked savingAsset/cashWalletAsset; set roles on the "
+            "real accounts and enter credit cards as liabilities")
+
+# SCRUM-137: the classification itself, which is where 64.7 months came from.
+# A card in `liquid_accounts` is the specific failure that shipped — three of
+# them are entered as asset accounts, so only the ROLE keeps them out.
+if rw.get("liquid_accounts"):
+    suspect = [n for n in rw["liquid_accounts"]
+               if any(w in n.lower() for w in ("card", "amex", "visa", "discover",
+                                               "platinum", "credit"))]
+    # Name-shaped, and deliberately ONLY a diagnostic: this heuristic must
+    # never move a number. It is here to shout on the box if a card ever
+    # reaches the numerator again, which is exactly what unit tests cannot see.
+    if suspect:
+        add("FAIL", "  runway inputs",
+            f"{', '.join(suspect)} counted as spendable cash — a credit card is "
+            "in the runway numerator")
 
 print()
 print("-- Firefly data-quality audit (last 12 months) --")
@@ -594,8 +615,17 @@ if st == 200 and home:
         f"mode={inbox.get('mode')}, {len(inbox.get('items', []))} surfaced, "
         f"{inbox.get('need_reply')} need reply")
     sysh = home.get("systems", {})
-    add("PASS" if sysh.get("healthy") else "FAIL", "home systems",
-        "healthy" if sysh.get("healthy") else f"down: {sysh.get('down')}")
+    # `healthy` was deliberately REMOVED from this payload: it meant "core and
+    # gmail answered" while thirteen other services could be down, so it was
+    # replaced by what was actually checked. This read was never updated, so it
+    # was None every time — a permanent FAIL whose own message said "down: []",
+    # i.e. nothing is down. A diagnostic that contradicts itself in one line
+    # trains you to ignore it, which is worse than not having it.
+    down = sysh.get("down")
+    checked = ", ".join(sysh.get("checked") or []) or "nothing"
+    add("FAIL" if down else "PASS", "home systems",
+        f"down: {down}" if down
+        else f"{checked} answered (NOT the whole stack — see gateway /api/health)")
     # cache check
     st2, cached, _ = get(8085, "/home")
     if st2 == 200 and cached:

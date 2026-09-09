@@ -241,8 +241,11 @@ def test_cadence_is_rendered_as_a_unit_not_a_chopped_adjective():
 
 # ---- cash runway, through the real _money() and the real renderer -------
 
+# Chase carries a DELIBERATE cash role. `defaultAsset` would mean the ledger
+# has said nothing about it (SCRUM-137), which is a different fixture — see
+# test_a_default_role_account_is_withheld_and_the_card_says_so.
 NW = {"total": 168396.5, "accounts": [
-    {"name": "Chase", "balance": 4200.0, "kind": "asset", "role": "defaultAsset"},
+    {"name": "Chase", "balance": 4200.0, "kind": "asset", "role": "cashWalletAsset"},
     {"name": "Marcus", "balance": 8000.0, "kind": "asset", "role": "savingAsset"},
     {"name": "Fidelity", "balance": 90000.0, "kind": "asset", "role": "sharesAsset"},
 ]}
@@ -297,3 +300,31 @@ def test_unclassified_money_makes_the_card_say_at_least():
     assert "at least" in html
     assert "Mystery" in html
     assert "could only make this longer" in html
+
+
+@needs_node
+def test_a_default_role_account_is_withheld_and_the_card_says_so():
+    """SCRUM-137 end to end. An account at Firefly's default role is not cash;
+    the card must withhold it, say "at least", and name it so the reader knows
+    which account to go and classify."""
+    nw = {**NW, "accounts": NW["accounts"] + [
+        {"name": "Robinhood", "balance": 20700.0, "kind": "asset",
+         "role": "defaultAsset"}]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
+    assert "at least" in html
+    assert "Robinhood" in html
+    assert "aren't marked as savings or cash" in html or \
+           "isn't marked as savings or cash" in html
+    assert "$32,900" not in html, "a default-role account reached the numerator"
+
+
+@needs_node
+def test_an_account_dropped_for_carrying_a_debt_is_still_named():
+    """Discover was correctly dropped and then appeared nowhere on the card.
+    An input that vanishes cannot be argued with."""
+    nw = {**NW, "accounts": NW["accounts"] + [
+        {"name": "Discover", "balance": -636.68, "kind": "asset",
+         "role": "defaultAsset"}]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
+    assert "Discover" in html
+    assert "carries a debt" in html
