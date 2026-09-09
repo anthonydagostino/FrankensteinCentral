@@ -1771,6 +1771,229 @@ saying how to report something, because people will find things.
 
 ---
 
+# Wave 8 — the money layer, read properly at last
+
+I have cited `docs/BUDGETS.md` as doctrine in six waves without reading it. Now
+I have, along with `paycheck.py`, `recurring.py`, `engine.py` and `runway.py`,
+against production `e918f7e`.
+
+It is the best document in the repository and better than most production
+financial software. Direction inferred from which account money left rather
+than from a description that says "Savings" both ways; a truncated window that
+nulls every derived figure but keeps month-to-date as "at least $X" because
+that one *is* a floor; `window_complete` spelled one way with a test enforcing
+it; refusals stated as refusals. Cash runway (wave 1 #20) and recurring-charge
+detection (#12) both shipped, and shipped better than I specified them.
+
+So this wave is not corrections. It is the shape of what the doctrine does not
+cover — and the gap has a pattern: **every honesty rule addresses data that is
+missing, partial or old. None addresses data that is present, complete, fresh,
+and about a situation that has changed.**
+
+## 58. The paycheck engine has no state for "the income stopped"
+
+`paycheck.py` always computes a next payday:
+
+```python
+cadence = observed_gap if plausible else configured
+next_payday = last_date + timedelta(days=cadence)
+days_to_next = (next_payday - today).days
+overdue = days_to_next < -OVERDUE_GRACE_DAYS
+```
+
+`overdue` produces *"A paycheck was expected around 2026-09-15 and isn't in the
+ledger"*, and `left` goes `null` with the reason. That is exactly right for the
+case the doctrine names — **"a ledger that is behind is not a user who is
+$2,000 in the hole."**
+
+But it is the only case it names, and the converse is unhandled: a user whose
+income actually stopped is told their ledger is behind. Those are opposite
+situations that want opposite words and opposite arithmetic, and the engine
+cannot tell them apart because it has no concept of income ending — only of a
+paycheck being late.
+
+For you this is not an edge case. You are job hunting. Between roles, or after
+a start date shifts, the card keeps projecting a payday from a cadence that no
+longer applies, keeps anchoring `per_day` to it, and keeps describing a missing
+deposit as an import problem.
+
+**And the right number already exists.** `runway.py` answers precisely the
+question that replaces "how much of this paycheck is left" when there is no
+paycheck: how long you last. It is built, tested, and splits salary from
+resale.
+
+**Proposal.** After N consecutive missed cadences (2 is plenty), stop asserting
+a next payday. Switch the card's headline from pay-cycle framing to runway,
+and say so: *"No paycheck in 34 days — showing runway instead of cycle."* The
+existing `unavailable` path already carries a `reason`; this is a second reason
+with a different consequence, not new machinery.
+
+**Effort:** S · **Acceptance signal:** with no deposit for three cadences, the
+card leads with runway and stops naming a next payday.
+
+## 59. Resale income has no tax set-aside, so "left to spend" overstates
+
+```
+spendable = paycheck − savings_total
+```
+
+`already_withheld` models an employer withholding before the deposit lands —
+correct for W-2 income. Resale income has **no withholding at all**. Nine
+MacBooks and an entire `Resale Ops` epic worth of proceeds land in the ledger
+as income, raise what the card says is spendable, and the tax on them is
+invisible until it is a bill.
+
+This is the doctrine's own failure direction. `runway.py` refuses to count a
+brokerage as liquid because "counting it turns four months into forty", and
+every suppression in the document exists because the errors "**both fail
+optimistically, which is the direction that costs money**". Untaxed
+self-employment income treated as spendable is the same error, applied to the
+income side instead of the asset side.
+
+The system already knows which income is which — runway splits salary from
+resale specifically so "how long do I last if resale stops" is answerable. It
+just does not carry that distinction into what is spendable.
+
+**Proposal.** Extend the allocation model with a **percentage-of-matched-income**
+type, alongside the existing fixed amount:
+
+```json
+{"name": "Tax set-aside", "pct": 25, "applies_to": "resale", "match": ["…"]}
+```
+
+Then `spendable` is net of an estimated set-aside, and there is a visible
+"set aside for tax" figure rather than a surprise. Label it `estimated` in the
+same way an unobserved allocation is labelled `expected` — the engine already
+has that vocabulary.
+
+**Effort:** M · **Acceptance signal:** a $600 resale deposit raises spendable by
+$450, not $600, and the card names the $150.
+
+## 60. "Safe to Spend" is reserved for an engine that does not exist, so the prominent number stays bills-blind
+
+`BUDGETS.md` is scrupulous here, and that is what makes it visible:
+
+> The label **"Safe to Spend" is reserved** for a future engine that also
+> accounts for upcoming bills, obligations and liquidity.
+
+> **"Left to spend" is a pay-cycle figure, not a bank balance** and not "Safe
+> to Spend": it does not know about bills due later in the cycle.
+
+Both true, both honest. The consequence is that the number rendered most
+prominently on the money card is the one explicitly documented as not
+accounting for what you owe — and the engine that would fix it is listed under
+"Future path (architected, not built)".
+
+Bills are handled in the Budget detail modal (`app.js` reads
+`bills.supported`), so the data path exists. It just never reaches the figure
+that needs it.
+
+**Proposal.** Not the full Safe-to-Spend engine. One subtraction:
+`left − bills_due_before_next_payday`, rendered beside `left` and clearly named.
+Firefly's `/bills` already publishes next-expected dates. That turns a number
+you have to mentally discount into one you can act on, and it is a strictly
+smaller step than the reserved label implies.
+
+**Effort:** S · **Depends on:** Firefly bills being configured — which
+`supported:false` already tells you
+
+## 61. The doctrine has no concept of data that is wrong rather than missing
+
+Read the freshness section, the truncation section, the completeness flag, the
+recurring refusals: every rule addresses whether the system **has** the data.
+Not one addresses whether the data it has is **right**.
+
+The entire budget layer keys on Firefly category names — free text, assigned by
+you or an import rule, matched case-insensitively. The one confidence signal
+counts *un*categorised spend (≥20% of the month and ≥$50 → low-confidence flag).
+A transaction that is categorised **incorrectly** is counted with full
+confidence, and there is no signal anywhere that could surface it.
+
+That is not a criticism of the rule — correctness is unfalsifiable from inside
+the ledger, and pretending otherwise would be worse. But there is an
+observable proxy, and the machinery for it is already written.
+
+**Proposal.** Reuse the recurring engine's `changed` logic at category level: a
+category whose month-to-date total is far outside its own 12-month distribution
+is either a real change worth knowing about or a miscategorisation worth
+fixing, and both want the same action — look at it. The refusals that make
+`recurring.py` good (a rhythm must be a rhythm, a change must clear a relative
+*and* an absolute floor, the established value is the mode not the mean) port
+directly.
+
+**Effort:** M · **Note:** frame it as "worth a look", never as "this is wrong" —
+the engine cannot know which.
+
+## 62. Seventeen tables, nothing ever expires
+
+Every `DELETE` in the codebase is a user action — dismiss a capture, remove an
+account, untick a Big 3. There is no time-based expiry, no archival, no
+retention policy anywhere:
+
+```
+memory   deadlines   activity   thread_state   core_settings   daily_log
+focus_sessions   big3   captures   dismissals   deals   bills   visits
+accounts   recurring   events   tasks
+```
+
+Several are append-only by design and grow forever. `activity` gets rows on
+every sync — with `AUTO_SYNC_SECONDS=900` that is 96 rows a day, ~35k a year,
+for a table read only by the legacy lounge. `thread_state` accumulates a row
+per email thread permanently. `deadlines` never closes one.
+
+On its own this is slow-moving. In this specific homelab it compounds with two
+known problems: the disk-space issue already in the backlog (SCRUM-16, Docker
+logs eating the disk), and backing up the dashboard's own Postgres (SCRUM-68) —
+where an unbounded database means an unbounded backup, growing forever, on the
+box whose backups have never been restore-tested.
+
+**Proposal.** A retention policy per table, stated once and applied on a timer:
+`activity` and `memory` keep 90 days, `thread_state` drops threads with no
+message in 180 days, `deadlines` closes on resolution. Metrics (`daily_log`,
+`focus_sessions`, `visits`) keep forever — those *are* the product. The point is
+that the answer per table should be written down rather than defaulting to
+"forever" because nobody chose.
+
+**Effort:** S · **Related:** SCRUM-16, SCRUM-68
+
+## 63. The money card is now nine carefully-scoped numbers, and scoping is not prioritising
+
+What the card renders today: month spent, left-to-spend, per-day-to-payday,
+runway (with a lower-bound variant), past-30-days with trend, budget room,
+recurring events, upcoming bills, observations. Every one is correctly
+qualified — the doctrine made sure of that, and the qualifications are the good
+part.
+
+But qualification is not hierarchy. Nine numbers each saying "I mean this
+narrow thing, and not that adjacent thing you might confuse me with" is a card
+that rewards careful reading, and a dashboard's job is to work when you glance.
+`BUDGETS.md` even notes two of them "sit beside each other, both explicitly
+scoped" — which is exactly right as engineering and exactly the problem as
+interface.
+
+**Proposal.** One primary figure chosen by context, everything else secondary:
+
+- mid-cycle with a paycheck → **left to spend**
+- no paycheck / income stopped (#58) → **runway**
+- a budget over or approaching → **that budget**
+- ledger stale → **the import action**, and nothing pretending to be current
+
+The rules are already computed; this is a rendering decision. Same reasoning as
+Do-Next picking one action instead of listing six.
+
+**Effort:** S
+
+## Smaller thing
+
+`BUDGETS.md` heads the runway section *"Cash runway (runway.py — pure and
+unit-tested)"*, in a document whose other sections name files under
+`services/budget/app/`. `runway.py` actually lives in `services/assistant/app/`.
+I went looking for it in the budget service and briefly concluded the feature
+was documented but unbuilt. One clarifying path in the heading saves the next
+reader that detour.
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
