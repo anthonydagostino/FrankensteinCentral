@@ -72,3 +72,27 @@ Until it's connected it shows an empty **"not connected"** state (no sample data
 - Keep `bw serve` bound to the docker bridge (172.17.0.1) — it must never be
   reachable from the LAN or the internet, because an unlocked `bw serve`
   returns real secrets to anyone who can reach it.
+
+## Where the guard checks, and where it doesn't
+
+Two different things check `bw serve`'s binding, deliberately split (SCRUM-133):
+
+- **`tests/test_vault_serve_examples.py`** checks the **instructions** — this
+  doc, `.env.example`, and the service docstring. It is hermetic: it never
+  reads `.env`, because a machine's own configuration is not an example, and a
+  repo test cannot know which docker bridge that machine uses. It once did read
+  it, was therefore green in CI (where `.env` is gitignored and absent) and red
+  on the OptiPlex (where it exists and correctly names a different bridge), and
+  it blocked every deploy until that was found.
+- **`scripts/verify.sh`** checks the **running value**, on the box, where the
+  machine is. Loopback or a docker bridge (172.16.0.0/12) passes. `0.0.0.0`, a
+  public address, or a LAN address (192.168/16, 10/8) fails — a LAN binding is
+  the specific exposure this page warns about, and "private" is not the test,
+  since LAN addresses are private and still reach every device on the network.
+
+Your own bridge address depends on your compose project. Find it with:
+
+```bash
+docker network inspect frankensteincentral_default \
+  --format '{{ (index .IPAM.Config 0).Gateway }}'
+```
