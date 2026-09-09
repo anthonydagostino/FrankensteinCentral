@@ -91,11 +91,20 @@ def _pick(summary: dict, prefix: str) -> dict | None:
 
 
 def _accts(payload: dict, kind: str) -> list[dict]:
+    """Accounts, keeping the ROLE Firefly assigns them.
+
+    `account_role` is what separates a checking account from a brokerage, and
+    it was being dropped here. Cash runway divides spendable money by burn, so
+    counting a retirement account as spendable would produce a confidently
+    wrong number — the exact failure docs/BUDGETS.md exists to prevent. An
+    account with no role is passed through as None rather than guessed at.
+    """
     out = []
     for a in payload.get("data", []):
         at = a.get("attributes", {})
         out.append({"name": at.get("name", ""), "balance": at.get("current_balance", "0"),
-                    "currency": at.get("currency_code", ""), "type": kind})
+                    "currency": at.get("currency_code", ""), "type": kind,
+                    "role": at.get("account_role") or None})
     return out
 
 
@@ -625,10 +634,14 @@ async def _cycle_payload() -> dict:
         "tz": str(LOCAL_TZ),
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": CYCLE_LOOKBACK_DAYS,
-                   # False => Firefly had more than the page cap in this
-                   # window, so these lists are a truncated view of it.
-                   "complete": complete},
+                   "lookback_days": CYCLE_LOOKBACK_DAYS},
+        # False => Firefly had more than the page cap in this window, so these
+        # lists are a truncated view of it. Published at the TOP level, under
+        # the one name this concept has everywhere (see docs/BUDGETS.md): it
+        # used to sit inside `window` as `complete` here and as
+        # `window_complete` on /spending and /month, and reading the wrong one
+        # returns null — which is indistinguishable from "the read was fine".
+        "window_complete": complete,
         "month": {"label": today.strftime("%B %Y"), "start": month_start.isoformat(),
                   "days_total": days_total, "days_elapsed": today.day,
                   "days_left": days_total - today.day},
@@ -740,10 +753,11 @@ async def _history_payload() -> dict:
         "connected": True,
         "today": today.isoformat(),
         "window": {"start": start, "end": today.isoformat(),
-                   "lookback_days": HISTORY_LOOKBACK_DAYS,
-                   # False => more withdrawals exist in this window than the
-                   # page cap read, so absence cannot be concluded from it.
-                   "complete": complete},
+                   "lookback_days": HISTORY_LOOKBACK_DAYS},
+        # False => more withdrawals exist in this window than the page cap
+        # read, so absence cannot be concluded from it. Top level, same name
+        # as every other payload.
+        "window_complete": complete,
         "withdrawals": rows,
         "bills": bill_items,
         "ingest_latest": ingest_latest.isoformat() if ingest_latest else None,
@@ -835,11 +849,16 @@ async def networth():
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
     nw = d.get("net_worth") or {}
+    # `kind` and `role` travel with each account. Without them a consumer
+    # cannot tell a debt from an asset, nor cash from a brokerage — this list
+    # used to be flat, so both distinctions were lost the moment it left here.
     accounts = []
     for a in d.get("accounts", []):
-        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0)})
+        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0),
+                         "kind": "asset", "role": a.get("role")})
     for a in d.get("liabilities", []):
-        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0)})
+        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0),
+                         "kind": "liability", "role": a.get("role")})
     total = nw.get("value")
     if total is None:
         total = sum(a["balance"] for a in accounts)

@@ -310,7 +310,7 @@ def test_pending_and_countered_holds_survive_the_new_layout():
     assert "They countered" in titles
     assert "Declined slot" not in titles
     assert today["counts"] == {"total": 3, "confirmed": 1, "pending": 1,
-                               "countered": 1, "needs_you": 1}
+                               "countered": 1, "needs_you": 1, "google": 0}
     countered = next(e for e in today["events"] if e["status"] == "countered")
     assert countered["needs_you"] is True
 
@@ -703,6 +703,110 @@ def test_portfolio_mirrors_the_firefly_contract():
     assert dash.firefly_state({}) == dash.portfolio_state({}) == "unreachable"
 
 
+# --- Google Calendar: the states, and the events themselves ------------------
+#
+# The connection was reported through exactly two lenses — "a probe answered"
+# and "gmail has some credential" — and neither could see the failure that was
+# actually happening: a credential that exists, that Gmail is perfectly happy
+# with, and that Google refuses for Calendar because it was minted before the
+# calendar scope was asked for. That state never heals on its own, so folding
+# it into `unknown` ("couldn't confirm, try later") is advice that cannot work.
+
+CAL_NEEDS_CONSENT = {"state": "needs_consent", "ok": False, "fix": "reconnect"}
+
+
+def test_a_refused_credential_is_reported_as_needing_consent():
+    assert dash.schedule_state({"events": []}, LIVE, CAL_NEEDS_CONSENT) == "needs_consent"
+    assert dash.schedule_state({"events": [1]}, LIVE, CAL_NEEDS_CONSENT) == "needs_consent"
+    # Gmail reporting itself perfectly healthy must not soften it: Gmail works
+    # in exactly this failure, which is the whole reason it went unnoticed.
+    assert dash.schedule_state({"events": []}, GMAIL_HEALTHY,
+                               CAL_NEEDS_CONSENT) == "needs_consent"
+
+
+def test_needs_consent_is_never_rounded_to_unknown_or_ok():
+    """`unknown` invites you to wait, and waiting cannot fix a scope. The two
+    must stay distinguishable, and neither may read as a healthy calendar."""
+    state = dash.schedule_state({"events": []}, LIVE, CAL_NEEDS_CONSENT)
+    assert state not in ("ok", "unknown")
+    assert state in dash.SCHEDULE_STATES
+    # Both repairable states point at the same fix, and no others do.
+    assert set(dash.RECONNECT_STATES) == {"disconnected", "needs_consent"}
+    for healthy_ish in ("ok", "unknown", "unreachable"):
+        assert healthy_ish not in dash.RECONNECT_STATES
+
+
+def test_an_unreachable_calendar_is_still_unknown_not_a_consent_problem():
+    """A network fault is not a permissions fault. Telling someone to
+    reconnect a working account is its own wasted afternoon."""
+    assert dash.schedule_state({"events": []}, LIVE, {"state": "unreachable"}) == "unknown"
+    assert dash.schedule_state({"events": []}, LIVE, {"state": "unreachable"}) not in \
+        dash.RECONNECT_STATES
+
+
+def test_google_events_are_identifiable_on_the_grid():
+    """The week card's main content is meant to be what is really on your
+    Google Calendar, so each event says whether it came from there and the
+    week carries a total. The total is the ONLY positive evidence a reader
+    gets that the import is working: `state == "ok"` merely means a probe was
+    answered, which it is just as happily when nothing was ever imported."""
+    d = date(2026, 3, 12)
+    events = [
+        ev("Dentist", at(d, 9).isoformat()),
+        ev("Standup", at(d, 10).isoformat()),
+    ]
+    events[0]["source"] = "google_calendar"
+    events[1]["source"] = "gmail"
+    week = dash.week_window(events, at(d, 7), NY)
+    today = week["days"][0]
+    by_title = {e["title"]: e for e in today["events"]}
+    assert by_title["Dentist"]["from_google"] is True
+    assert by_title["Standup"]["from_google"] is False
+    assert today["counts"]["google"] == 1
+    assert today["counts"]["total"] == 2
+    assert week["from_google"] == 1
+
+
+def test_nothing_imported_yet_counts_as_zero_not_as_missing():
+    """A grid built only from local rows reports 0, not a missing key — the
+    header renders off this number and must not have to guess."""
+    d = date(2026, 3, 12)
+    week = dash.week_window([ev("Local only", at(d, 9).isoformat())], at(d, 7), NY)
+    assert week["from_google"] == 0
+    assert all(day["counts"]["google"] == 0 for day in week["days"])
+    assert week["days"][0]["events"][0]["from_google"] is False
+
+
+def test_google_event_totals_hold_across_a_calendar_sweep():
+    """Per docs/TESTING.md: the per-day counts and the week total are one fact
+    counted two ways, and they must agree on every date, not just today's."""
+    for offset in range(0, 800, 7):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        events = []
+        for day_offset in (0, 1, 3, 6, 9):
+            when = at(d + timedelta(days=day_offset), 14).isoformat()
+            e = ev(f"Event {day_offset}", when)
+            e["source"] = "google_calendar" if day_offset % 2 == 0 else "manual"
+            events.append(e)
+        week = dash.week_window(events, at(d, 7), NY)
+        assert week["from_google"] == sum(x["counts"]["google"] for x in week["days"]), d
+        # Day 9 falls outside the seven-day window on every date, so the total
+        # can never count an event the grid does not draw.
+        assert week["from_google"] <= sum(x["counts"]["total"] for x in week["days"]), d
+
+
+def test_an_imported_location_reaches_the_grid():
+    """Imported from Google so a card can say where to be, and normalised to
+    None when absent — the renderer draws the line only when there is one."""
+    d = date(2026, 5, 4)
+    with_place = ev("Dentist", at(d, 9).isoformat())
+    with_place["location"] = "400 Main St"
+    blank = ev("Call", at(d, 11).isoformat())
+    blank["location"] = ""
+    week = dash.week_window([with_place, blank], at(d, 7), NY)
+    by_title = {e["title"]: e for e in week["days"][0]["events"]}
+    assert by_title["Dentist"]["location"] == "400 Main St"
+    assert by_title["Call"]["location"] is None
 # --- the box's own deploy state (PRODUCT_IDEAS #24) --------------------------
 #
 # The defect this guards is silence, not a wrong number. deploy.sh advances
@@ -884,6 +988,269 @@ def test_a_naive_stamp_is_read_in_the_dashboards_own_zone():
     now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
     d = dash.deploy_state(rec(last_success_at="2026-09-07T09:00:00"), now)
     assert d["age_seconds"] == 6 * 3600.0
+
+# ══ PRODUCT_IDEAS #17 — deadlines were filed and never shown ══════════════
+#
+# The assistant extracts interview times and bill due dates on every sync and
+# writes them to `deadlines`. The only endpoint that exposed them was /space,
+# i.e. only the legacy lounge. Bucketing is pure so it can be pinned to a date.
+
+DL_NOW = datetime(2026, 9, 7, 12, 0, tzinfo=NY)
+
+
+def dl(title, due, source="gmail"):
+    return {"title": title, "due_at": due, "source": source}
+
+
+def test_overdue_is_never_sorted_in_with_upcoming():
+    out = dash.deadline_rows([
+        dl("Rent", "2026-09-01T00:00:00"),
+        dl("Interview", "2026-09-09T14:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["overdue"]] == ["Rent"]
+    assert [x["title"] for x in out["upcoming"]] == ["Interview"]
+
+
+def test_a_deadline_with_no_date_is_undated_not_due_now():
+    """The extractor stores null when the email carried no date. Rendering
+    that as due today would invent a deadline the mail never had."""
+    out = dash.deadline_rows([dl("Follow up", None)], DL_NOW, NY)
+    assert out["undated"] and out["undated"][0]["title"] == "Follow up"
+    assert not out["overdue"] and not out["upcoming"]
+
+
+def test_upcoming_is_soonest_first_and_overdue_is_most_overdue_first():
+    out = dash.deadline_rows([
+        dl("Later", "2026-09-20T09:00:00"),
+        dl("Sooner", "2026-09-08T09:00:00"),
+        dl("Long overdue", "2026-08-01T09:00:00"),
+        dl("Just missed", "2026-09-06T09:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["upcoming"]] == ["Sooner", "Later"]
+    assert [x["title"] for x in out["overdue"]] == ["Just missed", "Long overdue"]
+
+
+def test_counts_report_the_whole_set_not_just_the_shown_slice():
+    rows = [dl(f"D{i}", f"2026-09-{10 + i:02d}T09:00:00") for i in range(10)]
+    out = dash.deadline_rows(rows, DL_NOW, NY, limit=3)
+    assert len(out["upcoming"]) == 3
+    assert out["counts"]["upcoming"] == 10, "the card would understate the backlog"
+
+
+def test_malformed_rows_are_skipped_rather_than_crashing_the_card():
+    out = dash.deadline_rows(
+        ["not a dict", {}, {"title": "   "}, dl("Real", "2026-09-09T09:00:00")],
+        DL_NOW, NY)
+    assert [x["title"] for x in out["upcoming"]] == ["Real"]
+
+
+def test_an_unparseable_due_date_is_undated_not_silently_dropped():
+    out = dash.deadline_rows([dl("Weird", "next tuesday")], DL_NOW, NY)
+    assert out["undated"] and out["undated"][0]["title"] == "Weird"
+
+
+def test_the_boundary_is_now_not_midnight():
+    """A deadline earlier today is overdue; one later today is not."""
+    out = dash.deadline_rows([
+        dl("This morning", "2026-09-07T09:00:00"),
+        dl("Tonight", "2026-09-07T20:00:00"),
+    ], DL_NOW, NY)
+    assert [x["title"] for x in out["overdue"]] == ["This morning"]
+    assert [x["title"] for x in out["upcoming"]] == ["Tonight"]
+
+
+def test_bucketing_holds_across_a_two_year_sweep():
+    """Per docs/TESTING.md: never assert against today."""
+    from datetime import date as _date
+    start = _date(2026, 1, 1)
+    for n in range(0, 730, 7):
+        d = start + timedelta(days=n)
+        now = datetime(d.year, d.month, d.day, 12, tzinfo=NY)
+        out = dash.deadline_rows([
+            dl("past", (now - timedelta(days=2)).isoformat()),
+            dl("future", (now + timedelta(days=2)).isoformat()),
+        ], now, NY)
+        assert [x["title"] for x in out["overdue"]] == ["past"], d
+        assert [x["title"] for x in out["upcoming"]] == ["future"], d
+
+
+# ══ PRODUCT_IDEAS #17 — settings that were configurable and did nothing ═══
+#
+# "Alert on move >= (%)" and finance.low_balance both round-tripped through
+# Settings and were read by nothing. A setting that silently does nothing is
+# worse than a missing one: you configure it, you believe it is on, and you
+# stop watching for the thing it was supposed to catch.
+
+def test_a_move_past_the_threshold_produces_an_alert():
+    stocks = {"positions": [{"symbol": "AAPL", "change_pct": 4.2},
+                            {"symbol": "MSFT", "change_pct": 0.4}],
+              "watchlist": []}
+    alerts = dash.portfolio_alerts(stocks, 3.0)
+    assert [a["symbol"] for a in alerts] == ["AAPL"]
+    assert alerts[0]["direction"] == "up"
+
+
+def test_a_fall_past_the_threshold_alerts_too():
+    """"Move" is a magnitude. A 6% drop is the one you most want to know about."""
+    alerts = dash.portfolio_alerts(
+        {"positions": [{"symbol": "TSLA", "change_pct": -6.0}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["TSLA"]
+    assert alerts[0]["direction"] == "down"
+
+
+def test_the_threshold_boundary_is_inclusive():
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "X", "change_pct": 3.0}]}, 3.0)
+
+
+def test_the_watchlist_is_alerted_on_too():
+    alerts = dash.portfolio_alerts(
+        {"positions": [], "watchlist": [{"symbol": "NVDA", "change_pct": 9.1}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["NVDA"]
+
+
+def test_a_symbol_held_and_watched_is_alerted_once():
+    alerts = dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "change_pct": 5.0}],
+         "watchlist": [{"symbol": "AAPL", "change_pct": 5.0}]}, 3.0)
+    assert len(alerts) == 1
+
+
+def test_alerts_are_ordered_by_size_of_move():
+    alerts = dash.portfolio_alerts({"positions": [
+        {"symbol": "A", "change_pct": 3.5},
+        {"symbol": "B", "change_pct": -9.9},
+        {"symbol": "C", "change_pct": 6.0}]}, 3.0)
+    assert [a["symbol"] for a in alerts] == ["B", "C", "A"]
+
+
+def test_a_position_with_no_quote_is_not_a_move():
+    """available: False means no data, which is not a 0% day."""
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "available": False}]}, 3.0) == []
+
+
+@pytest.mark.parametrize("threshold", [None, 0, "", "abc"])
+def test_an_unset_threshold_alerts_on_nothing(threshold):
+    """An alert the user did not ask for is its own lie about the setting."""
+    assert dash.portfolio_alerts(
+        {"positions": [{"symbol": "AAPL", "change_pct": 50.0}]}, threshold) == []
+
+
+def test_low_balance_flags_accounts_at_or_under_the_floor():
+    out = dash.low_balance_accounts(
+        [{"name": "Checking", "balance": 40.0},
+         {"name": "Savings", "balance": 900.0},
+         {"name": "Spare", "balance": 100.0}], 100)
+    assert [a["name"] for a in out] == ["Checking", "Spare"]
+
+
+def test_low_balance_never_treats_a_missing_balance_as_zero():
+    """An account whose balance could not be read is not an empty account."""
+    out = dash.low_balance_accounts(
+        [{"name": "Unknown", "balance": None}, {"name": "Broken"}], 100)
+    assert out == []
+
+
+def test_low_balance_reports_the_worst_first():
+    out = dash.low_balance_accounts(
+        [{"name": "A", "balance": 90}, {"name": "B", "balance": -20}], 100)
+    assert [a["name"] for a in out] == ["B", "A"]
+
+
+@pytest.mark.parametrize("floor", [None, "abc"])
+def test_an_unusable_low_balance_floor_flags_nothing(floor):
+    assert dash.low_balance_accounts([{"name": "A", "balance": 0}], floor) == []
+
+
+# --- choosing what to recommend (PRODUCT_IDEAS #34) --------------------------
+#
+# The acceptance signal in the idea is "snooze the top item, refresh, and it's
+# still gone". The half that is easy to get wrong is the other half: what
+# takes its place. A first-match-wins chain that only skips the dismissed rule
+# shows you nothing, which is worse than what it replaced.
+
+def cand(key, title):
+    return {"key": key, "title": title, "reason": "", "action": {"type": "x"}}
+
+
+def test_the_best_candidate_wins_when_nothing_is_dismissed():
+    got = dash.first_undismissed([cand("email:a", "Reply"), cand("gym", "Gym")], set())
+    assert got["key"] == "email:a"
+
+
+def test_dismissing_the_top_item_reveals_the_NEXT_one_not_nothing():
+    """The whole reason to be able to say handled."""
+    cands = [cand("email:a", "Reply"), cand("gym", "Gym"), cand("water", "Drink")]
+    assert dash.first_undismissed(cands, {"email:a"})["key"] == "gym"
+    assert dash.first_undismissed(cands, {"email:a", "gym"})["key"] == "water"
+
+
+def test_dismissing_everything_falls_back_to_on_track():
+    cands = [cand("email:a", "Reply"), cand("gym", "Gym")]
+    got = dash.first_undismissed(cands, {"email:a", "gym"})
+    assert got["title"] == "You're on track"
+    assert got["action"] is None
+    assert got["key"] is None, "the fallback must not itself be dismissible"
+
+
+def test_the_fallback_cannot_be_dismissed_away():
+    """It is the absence of a recommendation — there is nothing behind it."""
+    got = dash.first_undismissed([], {None, "", "You're on track"})
+    assert got["title"] == "You're on track"
+
+
+def test_a_candidate_with_no_key_is_always_shown():
+    """Unidentifiable means undismissable. Hiding it would remove something
+    with no way to name it again and bring it back."""
+    cands = [{"key": None, "title": "keyless"}, cand("gym", "Gym")]
+    assert dash.first_undismissed(cands, {"gym"})["title"] == "keyless"
+    assert dash.first_undismissed(cands, set())["title"] == "keyless"
+    # The set must be able to CONTAIN the empty key without that hiding
+    # anything: `None not in {"gym"}` is true however the check is written, so
+    # a hidden set that does not contain None cannot test this at all.
+    for poisoned in ({None}, {""}, {None, "", "gym"}):
+        got = dash.first_undismissed(cands, poisoned)
+        assert got["title"] == "keyless", f"hidden by {poisoned}"
+    assert dash.first_undismissed(
+        [{"key": "", "title": "empty-key"}], {""})["title"] == "empty-key"
+
+
+@pytest.mark.parametrize("junk", [None, [], ["nope"], [7], [None]])
+def test_junk_candidates_do_not_crash_the_card(junk):
+    got = dash.first_undismissed(junk, set())
+    assert got["title"] == "You're on track"
+
+
+def test_an_empty_dismissal_set_changes_nothing():
+    """A core outage yields no keys, and must show everything rather than
+    hide what it could not check."""
+    cands = [cand("email:a", "Reply")]
+    for empty in (None, set(), frozenset()):
+        assert dash.first_undismissed(cands, empty)["key"] == "email:a"
+
+
+def test_dismissals_do_not_reorder_what_is_left():
+    cands = [cand("a", "A"), cand("b", "B"), cand("c", "C")]
+    assert dash.first_undismissed(cands, {"b"})["key"] == "a"
+    assert dash.first_undismissed(cands, {"a"})["key"] == "b"
+
+
+def test_a_generator_of_candidates_is_consumed_lazily_and_correctly():
+    """main.py hands this a generator, not a list — the rules build their own
+    strings and some of that work should not happen for suggestions that are
+    never reached."""
+    built = []
+
+    def gen():
+        for k in ("a", "b", "c"):
+            built.append(k)
+            yield cand(k, k.upper())
+
+    got = dash.first_undismissed(gen(), {"a"})
+    assert got["key"] == "b"
+    assert built == ["a", "b"], f"evaluated too much: {built}"
+
 
 # ══ PRODUCT_IDEAS #4 — "since you last checked" follows the person ════════
 #

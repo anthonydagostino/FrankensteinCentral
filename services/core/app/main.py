@@ -14,7 +14,7 @@ Nothing here is secret; no credentials are stored or returned.
 """
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -26,7 +26,11 @@ from pydantic import BaseModel
 app = FastAPI(title="Core Service")
 
 # "Today" must mean the user's actual day, not the box's UTC day.
-EASTERN = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
+from .daymath import (  # noqa: E402 - the clock seam and score arithmetic
+    DISMISS_SCOPES, EASTERN, active_dismissals, compute_score,
+    dismissal_expiry, local_day as _parse_day, today as _today,
+    week_start as _week_start,
+)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000").rstrip("/")
@@ -68,6 +72,21 @@ CREATE TABLE IF NOT EXISTS captures (
     done       BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS dismissals (
+    key        TEXT PRIMARY KEY,
+    scope      TEXT NOT NULL,
+    reason     TEXT,
+    -- NULL means forever. Stored as an instant, not a duration, so a row
+    -- means the same thing however long the service has been running.
+    expires_at TIMESTAMPTZ,
+    -- How many times this has been snoozed. The row is never deleted on
+    -- expiry, so this survives: what you keep snoozing is usually the most
+    -- honest signal the system has, and the weekly review reads it.
+    count      INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dismissals_expiry_idx ON dismissals(expires_at);
 -- What the user has already been shown, so "since you last checked" survives
 -- moving between machines. Deliberately ONE row: the question it answers is
 -- "what has Anthony not seen yet", not "what has this laptop not seen yet".
@@ -134,14 +153,6 @@ DEFAULT_SETTINGS = {
 NUTRITION_RATIO = {"poor": 0.34, "okay": 0.67, "good": 1.0}
 
 
-def _today() -> date:
-    return datetime.now(EASTERN).date()
-
-
-def _week_start(d: date) -> date:
-    return d - timedelta(days=d.weekday())  # Monday
-
-
 # ---- models -----------------------------------------------------------------
 class WaterIn(BaseModel):
     oz: int
@@ -167,6 +178,14 @@ class Big3In(BaseModel):
 class CaptureIn(BaseModel):
     text: str
     kind: str | None = "note"
+
+
+class DismissIn(BaseModel):
+    key: str
+    scope: str = "today"
+    reason: str | None = None
+    # Only read when scope == "until"; an ISO instant.
+    until: str | None = None
 
 
 class CapturePatch(BaseModel):
@@ -252,18 +271,6 @@ async def _open_tasks() -> int | None:
             return None
 
 
-def _parse_day(raw: str) -> date | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return date.fromisoformat(str(raw)[:10])
-        except ValueError:
-            return None
-
-
 # ---- study metrics ----------------------------------------------------------
 async def _study() -> dict:
     today = _today()
@@ -321,22 +328,6 @@ async def _exam_pace(settings: dict, week_min: int) -> dict | None:
 
 
 # ---- score engine -----------------------------------------------------------
-def compute_score(components: dict, weights: dict) -> dict:
-    """Transparent daily score. Each component is a 0..1 ratio; the score is the
-    weighted average over enabled components (weight>0), renormalised to 100.
-    Partial completion is rewarded. `null` components are treated as not-yet."""
-    active = {k: w for k, w in weights.items() if w and w > 0}
-    total_w = sum(active.values()) or 1
-    parts = {}
-    acc = 0.0
-    for k, w in active.items():
-        ratio = components.get(k)
-        ratio = 0.0 if ratio is None else max(0.0, min(1.0, float(ratio)))
-        parts[k] = {"ratio": round(ratio, 3), "weight": w}
-        acc += ratio * w
-    return {"score": round(100 * acc / total_w), "parts": parts}
-
-
 async def _daily_state() -> dict:
     """The full per-day personal state + score. This is the primary read the
     assistant folds into the home screen."""
@@ -626,6 +617,72 @@ async def delete_capture(cap_id: int):
     async with pool.connection() as conn:
         await conn.execute("DELETE FROM captures WHERE id = %s", (cap_id,))
     return {"deleted": cap_id}
+
+
+@app.get("/dismissals")
+async def get_dismissals(include_expired: bool = False):
+    """What is currently hidden, and — with include_expired — the whole record.
+
+    Expired rows are kept deliberately. "You have snoozed this 6 times" is a
+    fact about you that only survives if the row does.
+    """
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "SELECT key, scope, reason, expires_at, count, created_at, updated_at "
+            "FROM dismissals ORDER BY updated_at DESC LIMIT 500"
+        )
+        rows = await cur.fetchall()
+    now = datetime.now(EASTERN)
+    hidden = active_dismissals(rows, now)
+    for r in rows:
+        r["active"] = r["key"] in hidden
+    if not include_expired:
+        rows = [r for r in rows if r["active"]]
+    return {"items": rows, "count": len(rows),
+            "active_keys": sorted(hidden)}
+
+
+@app.post("/dismiss")
+async def dismiss(d: DismissIn):
+    """Tell the system "not now" or "not ever" about one thing.
+
+    Re-snoozing an already-snoozed key bumps `count` rather than inserting a
+    second row: the key IS the identity, and the interesting number is how
+    many times you have pushed it away.
+    """
+    key = (d.key or "").strip()
+    if not key:
+        return {"error": "empty key"}
+    if d.scope not in DISMISS_SCOPES:
+        return {"error": f"scope must be one of {list(DISMISS_SCOPES)}"}
+    try:
+        expires = dismissal_expiry(d.scope, datetime.now(EASTERN), d.until)
+    except ValueError as e:
+        return {"error": str(e)}
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "INSERT INTO dismissals (key, scope, reason, expires_at) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET "
+            "  scope = EXCLUDED.scope, reason = EXCLUDED.reason, "
+            "  expires_at = EXCLUDED.expires_at, "
+            "  count = dismissals.count + 1, updated_at = now() "
+            "RETURNING key, scope, reason, expires_at, count",
+            (key[:200], d.scope, (d.reason or None), expires),
+        )
+        row = await cur.fetchone()
+    return {"ok": True, "dismissal": row}
+
+
+@app.delete("/dismiss/{key:path}")
+async def undismiss(key: str):
+    """Bring something back. Removes the row entirely — an un-dismissal is a
+    correction, not another event worth counting."""
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM dismissals WHERE key = %s", (key,))
+    return {"ok": True, "key": key}
 
 
 @app.get("/history")

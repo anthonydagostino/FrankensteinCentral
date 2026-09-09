@@ -21,6 +21,21 @@ STATE_DIR="${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}"
 mkdir -p "$STATE_DIR"
 RECORD="$STATE_DIR/deployed.json"
 
+# EXPORT it, so `docker compose` below mounts the directory this script is
+# actually writing to.
+#
+# Without this the two ends kept their own defaults and silently disagreed:
+# here it is `$HOME/.frankenstein`, and in docker-compose.yml the assistant
+# mounts `${FRANKENSTEIN_STATE_DIR:-/root/.frankenstein}`. Those are the same
+# path only when the deploy runs as root — and the systemd unit template ships
+# as `User=REPLACE_WITH_USER` with a /home/... layout, so on a normal install
+# they are not. Docker then creates the missing /root/.frankenstein, mounts an
+# EMPTY directory, and the dashboard can never see a deploy record at all: it
+# reports the build as unknown/unconfirmed forever, no matter how many deploys
+# succeed. Exporting the resolved path makes them agree by construction
+# instead of by two hand-kept defaults.
+export FRANKENSTEIN_STATE_DIR="$STATE_DIR"
+
 record() {  # record <result> <sha>
   local result="$1" sha="$2" prev=""
   [ -f "$RECORD" ] && prev="$(python3 -c "

@@ -309,6 +309,73 @@ average amount, next expected date, paid-this-month). If the user hasn't
 configured bills in Firefly, the section simply doesn't render
 (`supported:false`); no parallel bill database exists here.
 
+## Cash runway (runway.py — pure and unit-tested)
+
+    liquid balances ÷ trailing average monthly burn = months of runway
+
+Every other money figure here looks backwards. This is the only forward-looking
+one, and the only one that changes a decision. The arithmetic is one division;
+all the care is in the two ways it lies, **both of which fail optimistically**,
+which is the direction that costs money.
+
+**"Liquid" must be right.** Only Firefly's cash-like `account_role` values
+count — `defaultAsset`, `savingAsset`, `cashWalletAsset`. A brokerage
+(`sharesAsset`) is real money and is *not* spendable this month; counting it
+turns four months into forty. Liabilities never join the pot. The whitelist is
+deliberate: a role the list has not heard of is **unclassified**, not liquid.
+
+An unclassified account is neither counted nor silently dropped — it is named,
+and while any exists the figure is published as a **lower bound**
+(`lower_bound: true`, rendered "at least N months"), because money we refused
+to count can only make the runway longer, never shorter.
+
+This is why `firefly /networth` publishes `kind` and `role` per account, and
+why `networth /summary` passes them through. The list used to be flat, so a
+consumer could not tell a debt from an asset, let alone cash from retirement,
+and would have had to guess from the account *name*.
+
+**The burn must be right.** A truncated read understates spending, so it
+overstates runway — `window_complete: false` yields `null`, never a number. So
+does a ledger that hasn't been imported for a week: spending that hasn't been
+imported hasn't stopped happening. Under fourteen days of history there is no
+month to average, and a near-zero trailing spend is refused rather than
+rendered as infinite runway. Every suppression carries a `reason`, so the card
+says *why* instead of going blank.
+
+Income is split salary from resale, so "how long do I last" and "how long do I
+last if resale stops" can both be read — resale is real income, but it is lumpy
+and self-directed.
+
+## The completeness flag: one name, `window_complete`
+
+Every payload that can be truncated carries **`window_complete`** — at the top
+level, under that exact name, on every endpoint that has it:
+
+| service | endpoints |
+|---|---|
+| firefly | `/spending`, `/month`, `/cycle`, `/history` |
+| budget | `/status`, `/paycheck` (top level, and inside `month` and `cycle`), `/recurring` |
+| assistant | the `money` block of `/home` |
+
+`false` means the page-cap walk stopped early, so the rows are a partial view
+of the window and no total computed from them is a total. See *Freshness* for
+what each consumer suppresses in response.
+
+It used to be spelled five ways at once — `window_complete` on two firefly
+endpoints, `window.complete` on the other two, `month.complete` and
+`figures_complete` inside the paycheck payload, and `complete` on
+`/recurring`. That is not cosmetic. Reading the wrong spelling returns `null`,
+and **`null` is indistinguishable from "the read was fine"** unless the caller
+already knows which name that particular endpoint chose. It caused a real
+misread: a consumer asked `/recurring` for `window_complete`, got `null`
+sitting next to `absence_claims_suppressed: false`, and could not tell whether
+the honesty guard had failed or the key was simply named something else.
+
+`tests/test_wire_names.py` is the guard. It fails if any service publishes or
+reads the concept under another name, if the flag moves back inside firefly's
+`window` object, or if a producer stops publishing it at all — the last one
+because a guard that only bans names would also pass if the flag vanished.
+
 ## Recurring charges (recurring.py — pure and unit-tested)
 
 Firefly holds every transaction, so recurrence is a property of the system

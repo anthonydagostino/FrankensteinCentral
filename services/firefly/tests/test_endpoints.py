@@ -53,6 +53,7 @@ class StubFirefly:
             _group(3, "Paycheck", "1500.00", "deposit", None, "2026-08-28"),
         ]
         self.bills = []            # Firefly's declared bills, if any
+        self.no_role = False       # mimic a Firefly account with no role set
         self.calls = []
         outer = self
 
@@ -82,9 +83,11 @@ class StubFirefly:
                 if u.path == "/api/v1/accounts":
                     if (q.get("type") or ["asset"])[0] == "liability":
                         return self._j({"data": []})
-                    return self._j({"data": [{"id": "1", "attributes": {
-                        "name": "Checking", "current_balance": "4200.00",
-                        "currency_code": "USD", "updated_at": outer.updated_at}}]})
+                    at = {"name": "Checking", "current_balance": "4200.00",
+                          "currency_code": "USD", "updated_at": outer.updated_at}
+                    if not outer.no_role:
+                        at["account_role"] = "defaultAsset"
+                    return self._j({"data": [{"id": "1", "attributes": at}]})
                 if u.path == "/api/v1/transactions":
                     start = (q.get("start") or [None])[0]
                     end = (q.get("end") or [None])[0]
@@ -370,14 +373,14 @@ def test_cycle_reports_a_truncated_window_as_incomplete(firefly, client, monkeyp
     _pay_ledger(firefly)
     monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
     d = client.get("/cycle").json()
-    assert d["window"]["complete"] is False
+    assert d["window_complete"] is False
 
 
 def test_cycle_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
     d = client.get("/cycle").json()
-    assert d["window"]["complete"] is True
+    assert d["window_complete"] is True
 
 
 def _always_capped(real):
@@ -440,13 +443,13 @@ def test_history_reports_a_truncated_read_as_incomplete(firefly, client, monkeyp
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
     monkeypatch.setattr(ff, "_fetch_txns", _always_capped(ff._fetch_txns))
-    assert client.get("/history").json()["window"]["complete"] is False
+    assert client.get("/history").json()["window_complete"] is False
 
 
 def test_history_window_is_complete_on_a_short_ledger(firefly, client, monkeypatch):
     pin(monkeypatch, date(2026, 9, 4))
     _pay_ledger(firefly)
-    assert client.get("/history").json()["window"]["complete"] is True
+    assert client.get("/history").json()["window_complete"] is True
 
 
 def test_history_carries_fireflys_declared_bills(firefly, client, monkeypatch):
@@ -506,4 +509,33 @@ def test_history_payload_matches_what_the_budget_service_reads(firefly, client, 
     d = client.get("/history").json()
     assert {"today", "window", "withdrawals", "bills",
             "ingest_latest", "ingest_days"} <= set(d)
-    assert {"start", "end", "lookback_days", "complete"} <= set(d["window"])
+    assert {"start", "end", "lookback_days"} <= set(d["window"])
+    assert "window_complete" in d
+
+# ---- account role and kind: what cash runway divides by -----------------
+
+def test_networth_says_which_accounts_are_debts(firefly, client, monkeypatch):
+    """The list used to be flat, so a consumer could not tell an asset from a
+    liability — and adding a credit card to your cash pot lengthens runway."""
+    pin(monkeypatch, date(2026, 9, 4))
+    d = client.get("/networth").json()
+    assert d["accounts"], "no accounts to check"
+    for a in d["accounts"]:
+        assert a["kind"] in ("asset", "liability"), a
+        assert "role" in a, a
+
+
+def test_networth_carries_fireflys_account_role(firefly, client, monkeypatch):
+    """`account_role` separates a checking account from a brokerage. Dropping
+    it forces the consumer to guess from the account NAME, and a wrong guess
+    counts retirement savings as grocery money."""
+    pin(monkeypatch, date(2026, 9, 4))
+    roles = {a["name"]: a["role"] for a in client.get("/networth").json()["accounts"]}
+    assert roles.get("Checking") == "defaultAsset", roles
+
+
+def test_an_account_with_no_role_reports_none_not_a_guess(firefly, client, monkeypatch):
+    pin(monkeypatch, date(2026, 9, 4))
+    firefly.no_role = True
+    accts = client.get("/networth").json()["accounts"]
+    assert accts and all(a["role"] is None for a in accts), accts

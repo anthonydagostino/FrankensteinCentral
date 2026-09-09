@@ -199,7 +199,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
         "days_left": month.get("days_left"),
         # An empty month with nothing imported computes to $0. That is
         # arithmetic, not knowledge — say unknown.
-        "complete": window_complete,
+        "window_complete": window_complete,
         "spent": None if (month_ingested is False or not window_complete)
                  else _round(month_spent),
         "savings": None if (month_ingested is False or not window_complete)
@@ -277,6 +277,8 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
     claimed: list[int | None] = [None] * len(cycle_out_txns)
     reverse_total = 0.0
     overlaps: list[str] = []
+    # allocation index -> names of the rules that took the movements it matched
+    contested: dict[int, set] = {}
     unmatched_savings: list[dict] = []
     withheld_only: list[dict] = []
     for j, t in enumerate(cycle_out_txns):
@@ -311,6 +313,14 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             if len(post) > 1:
                 names = ", ".join(str(allocs_cfg[i].get("name") or "?") for i in post)
                 overlaps.append(f"{t.get('desc') or 'a transfer'} matches {names}")
+                # Claiming the movement once is only half the fix. The rules
+                # that lost it have `seen == []` further down and fall back to
+                # their CONFIGURED amount, so the same $100 leaves the pot once
+                # as `observed` and again as `expected`. Recording who lost, and
+                # to whom, is what lets that fallback be suppressed.
+                for i in post[1:]:
+                    contested.setdefault(i, set()).add(
+                        str(allocs_cfg[post[0]].get("name") or "?"))
         elif claims:
             # ONLY a withheld rule matched a real post-deposit movement. A
             # pre-deposit rule cannot be what this is, so the configuration is
@@ -342,6 +352,13 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             amount, src = 0.0, "withheld_before_deposit"
         elif seen:
             amount, src = observed, "observed"
+        elif idx in contested:
+            # Every movement this rule matched was already counted under
+            # another rule: the two describe the same money. `expected` here
+            # would re-create the double deduction under a different label,
+            # which is what made claiming-once ineffective. Neither amount is
+            # knowable, so claim nothing and name who took it.
+            amount, src = 0.0, "ambiguous_rule"
         else:
             amount, src = round(planned, 2), "expected"
         savings_total += amount
@@ -351,6 +368,7 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "planned": round(planned, 2),
             "observed": observed if seen else None,
             "source": src,
+            "claimed_by": sorted(contested.get(idx, ())) or None,
             "date": max((_as_date(t.get("date")).isoformat() for t in seen),
                         default=None) if seen else None,
         })
@@ -427,7 +445,10 @@ def paycheck_cycle(cfg: dict, today, month: dict, deposits: list,
             "days_elapsed": (today - last_date).days + 1,
             "paycheck": paycheck_amount,
             # False => every money figure in this block is unknown, not exact.
-            "figures_complete": window_complete,
+            # Same boolean as the top-level flag and deliberately the same
+            # name: it was `figures_complete` here, which read as a different
+            # fact and invited a consumer to check only one of them.
+            "window_complete": window_complete,
             "paycheck_desc": pays[0].get("desc") or "",
             "paycheck_parts": len(same_day),
             "allocations": allocations,

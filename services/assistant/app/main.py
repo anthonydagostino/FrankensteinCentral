@@ -9,11 +9,12 @@ from fastapi import FastAPI
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from . import notify
-from .dashboard import (deploy_state, firefly_state, parse_event_dt,
-                        portfolio_state, schedule_state, since_changes,
-                        since_snapshot, upcoming_events, week_window,
-                        weekly_review)
+from . import answers, notify, runway
+from .dashboard import (deadline_rows, deploy_state, firefly_state,
+                        first_undismissed, low_balance_accounts,
+                        parse_event_dt, portfolio_alerts, portfolio_state,
+                        schedule_state, since_changes, since_snapshot,
+                        upcoming_events, week_window, weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -196,6 +197,22 @@ async def _add_deadline(conn, title: str, due_at, source: str, external_id: str)
 @app.get("/health")
 async def health():
     return {"service": "assistant", "briefing_items": len(STATE["items"])}
+
+
+async def _get_or_none(client: httpx.AsyncClient, url: str):
+    """Like _get, but returns None when the service did not answer.
+
+    _get() returns {} for a failure so a down sub-app just contributes nothing
+    to the dashboard — right for a tile that can render less, wrong for /ask,
+    which would then state the {} as a confident zero. Prose has no em dash to
+    hide behind, so /ask needs to tell the two apart.
+    """
+    try:
+        r = await client.get(url, timeout=8)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def _get(client: httpx.AsyncClient, url: str) -> dict:
@@ -408,9 +425,18 @@ def _study_pace_behind(study, hour) -> int:
     return int(max(0, expected - done))
 
 
-def _do_next(core, inbox, money, events, settings, t) -> dict:
-    """ONE explainable recommendation, considering time, email, calendar,
-    study pace, gym, hydration and the Big 3. First matching rule wins."""
+def _do_next_candidates(core, inbox, money, events, settings, t):
+    """Every recommendation that applies right now, best first.
+
+    This was one `return`-per-rule chain. It is a generator now for one
+    reason: dismissing the top suggestion has to fall through to the NEXT one.
+    "I have handled that, tell me the next thing" is the whole point of being
+    able to say handled — a chain that returns the first match can only ever
+    hide the answer and show nothing in its place.
+
+    Every candidate carries a stable `key` identifying the THING, not the
+    moment, so a snooze survives the recompute that happens on every load.
+    """
     now = datetime.now(LOCAL_TZ)
     hour = t["hour"]
     study = (core or {}).get("study", {})
@@ -422,26 +448,28 @@ def _do_next(core, inbox, money, events, settings, t) -> dict:
 
     # 1) A calendar event that's imminent beats everything
     if ev and 0 <= ev[0] <= 30:
-        return {"title": f"Head to {_short(ev[1].get('title',''), 40)}",
-                "reason": f"It starts in {int(ev[0])} min.",
-                "action": {"type": "open", "app": "schedule"}}
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Head to {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
 
     # 2) An important email that needs a response
     needs = [i for i in inbox.get("items", []) if i.get("needs_reply") and i.get("important")]
-    if needs:
-        e = sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True)[0]
+    for e in sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True):
         aged = f" — it's been sitting {e['age'].replace(' ago', '')}" if e.get("age") else ""
-        return {"title": f"Reply to {e['from']}",
-                "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
-                "action": {"type": "gmail"}}
+        yield {"key": f"email:{e.get('id') or e.get('subject','')}",
+               "title": f"Reply to {e['from']}",
+               "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
+               "action": {"type": "gmail"}}
 
     # 3) A calendar event starting soon
     if ev and 0 <= ev[0] <= 75:
-        return {"title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
-                "reason": f"It starts in {int(ev[0])} min.",
-                "action": {"type": "open", "app": "schedule"}}
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
 
-    # 3) Study, if you're behind pace
+    # 4) Study, if you're behind pace
     behind = _study_pace_behind(study, hour)
     goal = study.get("goal_min", 0); done = study.get("today_min", 0)
     if goal and done < goal and (behind >= 15 or hour >= 18):
@@ -449,34 +477,44 @@ def _do_next(core, inbox, money, events, settings, t) -> dict:
         mins = min(60, rem) or 25
         why = (f"you're {behind} min behind today's pace" if behind >= 15
                else f"{done//60}h {done%60}m / {goal//60}h done and the day's almost over")
-        return {"title": f"Start a {mins}-minute study session",
-                "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
+        yield {"key": "study", "title": f"Start a {mins}-minute study session",
+               "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
 
-    # 4) Gym, if the week is slipping
+    # 5) Gym, if the week is slipping
     if gym.get("available") and gym.get("week", 0) < gym.get("goal", 0):
         rem = gym["goal"] - gym["week"]
         days_left = 7 - now.weekday()
         if rem >= days_left or hour >= settings.get("evening_start_hour", 18):
-            return {"title": "Go to the gym",
-                    "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
-                    "action": {"type": "gym"}}
+            yield {"key": "gym", "title": "Go to the gym",
+                   "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
+                   "action": {"type": "gym"}}
 
-    # 5) A Big 3 item
-    undone = [b for b in big3 if not b.get("done")]
-    if undone and hour >= 10:
-        return {"title": f"Knock out: {_short(undone[0]['text'], 40)}",
-                "reason": "It's one of your Big 3 for today.",
-                "action": {"type": "big3", "id": undone[0]["id"]}}
+    # 6) A Big 3 item
+    for b in [b for b in big3 if not b.get("done")]:
+        if hour >= 10:
+            yield {"key": f"big3:{b['id']}",
+                   "title": f"Knock out: {_short(b['text'], 40)}",
+                   "reason": "It's one of your Big 3 for today.",
+                   "action": {"type": "big3", "id": b["id"]}}
 
-    # 6) Hydration, late in the day
+    # 7) Hydration, late in the day
     if water.get("goal") and water.get("oz", 0) < water["goal"] and hour >= 16:
         gap = water["goal"] - water["oz"]
-        return {"title": "Drink some water",
-                "reason": f"{gap} oz short of your {water['goal']} oz goal.",
-                "action": {"type": "water", "oz": 16}}
+        yield {"key": "water", "title": "Drink some water",
+               "reason": f"{gap} oz short of your {water['goal']} oz goal.",
+               "action": {"type": "water", "oz": 16}}
 
-    return {"title": "You're on track", "reason": "Nothing urgent right now — nice.",
-            "action": None}
+
+def _do_next(core, inbox, money, events, settings, t, dismissed=None) -> dict:
+    """ONE explainable recommendation — the best one you have not waved off.
+
+    `dismissed` is a set of currently-active dismissal keys. The fallback is
+    NOT dismissible: "You're on track" is the absence of a recommendation, and
+    there is nothing behind it to fall through to.
+    """
+    return first_undismissed(
+        _do_next_candidates(core, inbox, money, events, settings, t),
+        dismissed or set())
 
 
 def _briefing_line(core, inbox, stocks, money, events) -> list[str]:
@@ -520,7 +558,8 @@ def _is_important_sender(addr: str, important: list) -> bool:
     return any(s and s.lower() in a for s in (important or []))
 
 
-def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) -> dict:
+def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None,
+           dismissed=None) -> dict:
     """The email signal: which messages actually matter, with sender/subject/
     age — not a count of 40 unread."""
     important = settings.get("important_senders", [])
@@ -539,11 +578,21 @@ def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None) ->
         scored.append((rank, e))
     scored.sort(key=lambda x: x[0], reverse=True)
 
+    # Dismissed messages are dropped BEFORE the top-5 slice, so waving one off
+    # promotes the sixth rather than leaving a gap. Filtering after the slice
+    # would shrink the card every time you handled something.
+    hidden = dismissed or set()
+    scored = [(r, e) for r, e in scored
+              if f"email:{e.get('id') or e.get('subject','')}" not in hidden]
+
     items = []
     for rank, e in scored[:5]:
         age = e.get("age_hours")
         items.append({
             "id": e.get("id"), "thread_id": e.get("thread_id"),
+            # Stable across the recompute that happens on every page load —
+            # it names the message, not this render of it.
+            "key": f"email:{e.get('id') or e.get('subject','')}",
             "from": _sender_name(e.get("from", "")),
             "subject": _short(e.get("subject", ""), 60),
             "snippet": _short(e.get("snippet", ""), 90),
@@ -616,7 +665,7 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
     # would quietly print a partial read as an exact month-to-date total.
     # Either source saying "truncated" makes it truncated; they read one ledger.
     month_complete = sp.get("window_complete", True) is not False
-    if pay_month.get("complete") is False:
+    if pay_month.get("window_complete") is False:
         month_complete = False
     if pay.get("configured") and pay_month.get("spent") is not None:
         month_spend = pay_month.get("spent")
@@ -673,6 +722,16 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         # What's left of the current paycheck after the savings that come out
         # of it — the homepage's "left to spend". Never a bank balance.
         "paycheck": _paycheck_brief(pay),
+        # Cash runway: the one forward-looking money figure on the card.
+        # Fed the trailing 30-day window it is already computing, and the
+        # SAME completeness flag every other figure here respects — a
+        # truncated read understates burn, which overstates runway.
+        "runway": runway.cash_runway(
+            (networth or {}).get("accounts") or [],
+            last_30, 30,
+            freshness={"window_complete": month_complete,
+                       "ingest_days": days_stale},
+        ),
         "last_30": last_30,
         "last_30_trend_pct": last_30_trend,
         "last_30_note": sp.get("last_30_note"),
@@ -724,8 +783,13 @@ def _paycheck_brief(pay: dict) -> dict:
         "allocation_overlaps": c.get("allocation_overlaps", []),
         "unmatched_savings": c.get("unmatched_savings", []),
         "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
-        "figures_complete": c.get("figures_complete", True),
-        "window_complete": pay.get("window_complete", True),
+        # One flag, not two. `figures_complete` (from the cycle block) and
+        # `window_complete` (from the top) were always the same boolean, and
+        # flattening both into this dict now means the same key — so they
+        # collapse. The top-level one is the more reliable source: it survives
+        # the degraded path where the cycle block is dropped entirely.
+        "window_complete": pay.get("window_complete",
+                                   c.get("window_complete", True)),
         "allocations": c.get("allocations", []),
         "spendable": c.get("spendable"), "spent": c.get("spent"),
         "left": c.get("left"), "per_day": c.get("per_day"),
@@ -795,6 +859,24 @@ def _since_block(seen, data, now):
     block["seen_on"] = seen.get("device")
     return block
 
+
+async def _deadline_rows(limit: int = 40) -> list[dict]:
+    """The deadlines the sync already files, read for the HOME screen.
+
+    These rows have existed and accumulated since the pipeline was written; the
+    only endpoint that exposed them was `/space`, i.e. only the legacy lounge.
+    Read here directly rather than over HTTP -- it is this service's own table.
+    """
+    try:
+        async with pool.connection() as conn:
+            conn.row_factory = dict_row
+            cur = await conn.execute(
+                "SELECT title, due_at, source FROM deadlines "
+                "ORDER BY due_at NULLS LAST LIMIT %s", (limit,))
+            return await cur.fetchall()
+    except Exception:  # noqa: BLE001 - a card that cannot load is not a 500
+        return []
+
 async def build_home(fresh: bool = False) -> dict:
     cached = _HOME_CACHE
     if (not fresh and cached["data"] and cached["at"]
@@ -804,7 +886,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, seen, emails_r, avail, finance, budget, firefly,
          spending, networth, schedule, cal_health, deals, stocks, vault,
-         captures, review) = await asyncio.gather(
+         captures, review, dismissals) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             # The shared "already shown" baseline. Fetched here so the diff is
@@ -830,6 +912,10 @@ async def build_home(fresh: bool = False) -> dict:
             # PRODUCT_IDEAS #5: core has exposed this since it was written and
             # nothing ever rendered it.
             _get(client, f"{CORE_URL}/weekly-review"),
+            # PRODUCT_IDEAS #34. `_get` swallows a failure into {}, which
+            # yields NO active keys — so a core outage shows you everything
+            # rather than silently hiding items it could not check.
+            _get(client, f"{CORE_URL}/dismissals"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -863,35 +949,84 @@ async def build_home(fresh: bool = False) -> dict:
     week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
     settings = settings or {}
 
+    # Which attention items you have waved off. An unreachable core yields an
+    # empty set, and showing you something you had hidden is the safe
+    # direction — hiding something because we could not check is not.
+    hidden = set((dismissals or {}).get("active_keys") or [])
+
     t = _home_time(settings)
     inbox = _inbox(gmail_emails, avail, settings, gmail_mode,
-                   (emails_r or {}).get("sync"))
+                   (emails_r or {}).get("sync"), hidden)
     money = _money(firefly, spending, finance, budget, networth, settings)
 
     data = {
         **t,
         "briefing": _briefing_line(core, inbox, stocks, money, events),
         "big3": (core or {}).get("big3", []),
-        "do_next": _do_next(core, inbox, money, events, settings, t),
+        # The attention feed AUDIT.md section 3 promised. core._nudges()
+        # computes it -- severity, icon, title, detail and a typed action per
+        # item -- on every /today, which this function already fetches, and it
+        # was dropped on the floor here while the home screen rendered a single
+        # do_next instead. The feed existed the whole time; nothing asked for it.
+        # Nudges already carry stable keys ("study", "gym"), and they are the
+        # SAME keys Do-Next uses on purpose: waving off study should quiet it
+        # on both surfaces, because it is one thing, not two.
+        "nudges": [n for n in (core or {}).get("nudges", [])
+                   if n.get("key") not in hidden],
+        # Written on every sync since the pipeline was built, readable only
+        # from the demoted lounge until now.
+        "deadlines": deadline_rows(await _deadline_rows(), now_local, LOCAL_TZ),
+        # finance.low_balance has been in DEFAULT_SETTINGS and consumed nowhere.
+        "low_balance": {
+            "floor": (settings.get("finance", {}) or {}).get("low_balance"),
+            "accounts": low_balance_accounts(
+                ((firefly or {}).get("accounts") or []),
+                (settings.get("finance", {}) or {}).get("low_balance")),
+        },
+        "do_next": _do_next(core, inbox, money, events, settings, t, hidden),
         "inbox": inbox,
         "money": money,
         "budget": _budget_brief(budget),
         # `state` travels with it: an unreachable stocks service is not an
-        # empty portfolio, and must not read as "add your stocks".
-        "portfolio": {**(stocks or {}), "state": portfolio_state(stocks)},
+        # empty portfolio, and must not read as "add your stocks". `alerts`
+        # is what finally makes the "Alert on move >= (%)" setting do
+        # something -- it round-tripped through Settings and was read by
+        # nothing.
+        "portfolio": {
+            **(stocks or {}), "state": portfolio_state(stocks),
+            "alerts": portfolio_alerts(
+                stocks, (settings.get("market", {}) or {}).get("move_threshold_pct")),
+            "move_threshold_pct": (settings.get("market", {}) or {}).get("move_threshold_pct")},
         "health": {
             "study": (core or {}).get("study", {}),
             "gym": (core or {}).get("gym", {}),
             "water": (core or {}).get("water", {}),
             "nutrition": (core or {}).get("nutrition", {}),
+            # core has reported this on every /today and nothing carried it
+            # to a screen, so the sleep column stayed null forever.
+            "sleep": (core or {}).get("sleep", {}),
         },
-        "score": (core or {}).get("score", {"score": 0, "parts": {}}),
+        # A missing core payload means we do not KNOW the score. The old
+        # default asserted 0, which the header then displayed as a real bad day
+        # during any core outage.
+        "score": (core or {}).get(
+            "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
         "captures": (captures.get("items", []) if captures else [])[:8],
+        # What is hidden right now, so the UI can offer to bring it back
+        # rather than leaving you wondering where something went.
+        "dismissed": sorted(hidden),
         "next_event": events[0] if events else None,
         "calendar": calendar,
         "week": week,
         "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
-        "systems": {"healthy": not down, "down": down},
+        # NOT a claim about the stack. This only ever probed the two sub-apps
+        # the home payload itself needs, so `healthy: true` meant "core and
+        # gmail answered" while thirteen other services could be down. The
+        # footer now renders the gateway's /api/health, which probes every
+        # registered service; this field says what it actually looked at, so
+        # no reader can mistake it for the whole picture again.
+        "systems": {"checked": ["core", "email"], "down": down,
+                    "covers_all_services": False},
         # What the box is actually running. A failed deploy leaves the
         # PREVIOUS build serving and is otherwise completely silent from
         # the UI, so this is the only place a stale build announces itself.
@@ -956,118 +1091,23 @@ def _short(text: str, limit: int = 48) -> str:
 
 @app.get("/ask")
 async def ask(q: str = ""):
-    """A lightweight, offline Q&A over your apps — intent-matched, no LLM needed."""
-    ql = q.lower().strip()
+    """A lightweight, offline Q&A over your apps — intent-matched, no LLM.
+
+    The wording and every figure come from answers.py, which is pure and
+    refuses to state anything sourced from a service that did not answer. See
+    that module for why: this endpoint used to render a down service as $0.
+    """
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        fitness = await _get(client, f"{FITNESS_URL}/plan")
-        pb = await _get(client, f"{POWERBUY_URL}/summary")
-        cal = await _get(client, f"{SCHEDULE_URL}/events")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        networth = await _get(client, f"{NETWORTH_URL}/summary")
-        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
-
-    def has(*words):
-        return any(w in ql for w in words)
-
-    if has("budget", "spending", "spent", "over budget", "left to spend"):
-        over = budget.get("over_budget", [])
-        base = (f"You've spent ${budget.get('total_spent', 0)} of "
-                f"${budget.get('total_budget', 0)} ({budget.get('percent_used', 0)}%), "
-                f"${budget.get('remaining', 0)} left.")
-        if over:
-            base += f" Over budget on: {', '.join(over)}."
-        return {"answer": base}
-
-    if has("email", "reply", "inbox", "mail"):
-        ems = emails.get("emails", [])
-        if not ems:
-            return {"answer": "Inbox's clear — nothing needs a reply."}
-        shown = ems[:5]
-        lines = [f"{len(ems)} email(s) need a reply:"]
-        lines += [f"• {_short(e['subject'])} — {_sender_name(e['from'])}" for e in shown]
-        if len(ems) > len(shown):
-            lines.append(f"…and {len(ems) - len(shown)} more.")
-        return {"answer": "\n".join(lines)}
-
-    if has("task", "todo", "to-do", "to do"):
-        top = ", ".join(tasks.get("top", []))
-        n = tasks.get("open", 0)
-        return {"answer": f"You have {n} open task(s)" + (f": {top}." if top else ".")}
-
-    if has("bill", "due", "subscription", "finance", "money", "spend", "budget"):
-        up = finance.get("upcoming", [])
-        if not up:
-            return {"answer": f"No bills due in the next week. You spend "
-                              f"${finance.get('monthly_total', 0)}/month total."}
-        names = ", ".join(f"{b['name']} (${b['amount']}, in {b['days_until']}d)" for b in up)
-        return {"answer": f"Coming up: {names}."}
-
-    if has("profit", "powerbuy", "arbitrage", "purchase", "unpaid"):
-        s = pb.get("summary", {})
-        return {"answer": f"Expected profit is ${s.get('expected_profit', 0)}, with "
-                          f"{s.get('unpaid_count', 0)} unpaid and "
-                          f"{s.get('expiring_soon_count', 0)} expiring soon."}
-
-    if has("workout", "gym", "lift", "train", "exercise", "today"):
-        tp = fitness.get("today_plan") or {}
-        lifts = ", ".join(tp.get("lifts", [])) or "recovery"
-        return {"answer": f"Today is {tp.get('focus', 'rest')} day: {lifts}."}
-
-    if has("pending", "awaiting", "waiting on", "proposed", "did they reply", "confirm"):
-        threads = availability.get("threads", [])
-        pend = [t for t in threads if t.get("status") in ("pending", "countered")]
-        if not pend:
-            return {"answer": "Nothing awaiting a reply — every proposed time has been "
-                              "confirmed or fell through."}
-        lines = [f"{len(pend)} thread(s) awaiting a reply:"]
-        for t in pend:
-            who = _sender_name(t.get("counterparty", ""))
-            tag = "they countered" if t.get("status") == "countered" else "awaiting them"
-            lines.append(f"• {_short(t.get('subject', ''))} — {who} ({tag})")
-        return {"answer": "\n".join(lines)}
-
-    if has("schedule", "calendar", "next", "event", "interview", "meeting", "coming up"):
-        events = [e for e in cal.get("events", []) if e.get("status", "confirmed") == "confirmed"]
-        if not events:
-            return {"answer": "Nothing confirmed on your calendar yet."}
-        nxt = events[0]
-        return {"answer": f"Next up: {nxt['title']} at {nxt['starts_at']}."}
-
-    if has("deal", "discount", "coupon", "promo", "sale", "offer"):
-        top = deals.get("top", [])
-        if not top:
-            return {"answer": "No real deals spotted in your inbox lately."}
-        return {"answer": f"Deals spotted: {'; '.join(top)}."}
-
-    if has("net worth", "worth", "balance", "chase", "marcus", "robinhood", "fidelity", "tsp", "savings"):
-        accts = networth.get("accounts", [])
-        if not accts:
-            return {"answer": "No accounts set up yet."}
-        lines = [f"Net worth: ${networth.get('total', 0):,.2f}"]
-        lines += [f"• {a['name']}: ${a['balance']:,.2f}" for a in accts]
-        return {"answer": "\n".join(lines)}
-
-    # default: a full rundown
-    ov = await build_overview()
-    parts = []
-    if ov["emails_to_reply"]:
-        parts.append(f"{ov['emails_to_reply']} emails to reply")
-    if ov["open_tasks"]:
-        parts.append(f"{ov['open_tasks']} open tasks")
-    if ov["bills_due"]:
-        parts.append(f"{ov['bills_due']} bills due soon")
-    if ov["unpaid"]:
-        parts.append(f"{ov['unpaid']} unpaid buys")
-    if ov.get("deals_count"):
-        parts.append(f"{ov['deals_count']} deals spotted")
-    rundown = "; ".join(parts) if parts else "nothing urgent"
-    nxt = f" Next up: {ov['next_event']}." if ov["next_event"] else ""
-    return {"answer": f"Here's your plate: {rundown}. Today is "
-                      f"{ov.get('today_focus') or 'rest'} day.{nxt}"}
+        names = ["emails", "tasks", "finance", "fitness", "powerbuy",
+                 "budget", "deals", "networth", "availability"]
+        urls = [f"{GMAIL_URL}/needs-reply", f"{TASKS_URL}/summary",
+                f"{FINANCE_URL}/summary", f"{FITNESS_URL}/plan",
+                f"{POWERBUY_URL}/summary", f"{BUDGET_URL}/summary",
+                f"{DEALS_URL}/summary", f"{NETWORTH_URL}/summary",
+                f"{GMAIL_URL}/thread-availability"]
+        payloads = await asyncio.gather(*(_get_or_none(client, u) for u in urls))
+    sources = dict(zip(names, payloads))
+    return answers.answer(q, sources, short=_short, sender=_sender_name)
 
 
 @app.get("/agents")

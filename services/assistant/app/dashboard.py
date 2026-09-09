@@ -62,6 +62,24 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
     return picked[:limit] if limit else picked
 
 
+def portfolio_state(stocks):
+    """`ok`, `unreachable` or `not_configured` — the same three states
+    `firefly_state` draws, for the same reason.
+
+    `_get` swallows a timeout and returns `{}`, and `stocks or {"configured":
+    False}` turned that into a confident "No holdings yet. Add your stocks →".
+    So a blip in the stocks container told you to go and set up a portfolio you
+    had already set up. The stocks service answers `{"configured": False}` on
+    its own when it genuinely has no holdings, so an EMPTY payload can only
+    mean it never answered.
+    """
+    if not stocks:
+        return "unreachable"
+    if stocks.get("configured") is False:
+        return "not_configured"
+    return "ok"
+
+
 def firefly_state(firefly):
     """`ok`, `unreachable` or `not_configured` — three states, not two.
 
@@ -118,18 +136,30 @@ def ordinal(day):
 
 # What the week card is allowed to claim about where its events came from.
 #
-#   ok            the schedule service answered AND the calendar integration
-#                 is known to be connected
-#   unreachable   the schedule service did not answer at all — we have nothing
-#   disconnected  the service answered, but the calendar integration has no
-#                 credential, so anything living only in Google is missing
-#   unknown       the service answered, but the integration's health cannot be
-#                 established — which is NOT the same as healthy
+#   ok             the schedule service answered AND the calendar integration
+#                  is known to be connected
+#   unreachable    the schedule service did not answer at all — we have nothing
+#   disconnected   the service answered, but the calendar integration has no
+#                  credential, so anything living only in Google is missing
+#   needs_consent  a credential exists and Google refuses it for Calendar —
+#                  wrong scopes. Fixable in one click, and never by waiting
+#   unknown        the service answered, but the integration's health cannot be
+#                  established — which is NOT the same as healthy
 #
 # `unknown` exists because the previous two-state version returned `ok` for
 # any truthy payload, so a disconnected calendar rendered as a clear week.
 # Absence of evidence was being presented as evidence of absence.
-SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "unknown")
+#
+# `needs_consent` exists for the mirror-image reason. It was previously folded
+# into `unknown`, whose caveat says the connection could not be confirmed —
+# language that invites you to wait. But a refresh token minted without the
+# calendar scope never heals on its own, so "wait" is advice that cannot work,
+# and the week grid quietly stays incomplete for as long as you take it.
+SCHEDULE_STATES = ("ok", "unreachable", "disconnected", "needs_consent", "unknown")
+
+# The states where Google Calendar is definitely NOT syncing and a person has
+# to reconnect the account. Both render an action, not a shrug.
+RECONNECT_STATES = ("disconnected", "needs_consent")
 
 
 def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
@@ -181,6 +211,12 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     # No credential at all, from either side. Conclusive negative evidence.
     if evidence.get("state") == "disconnected" or link.get("mode") == "disconnected":
         return "disconnected"
+
+    # A credential that Calendar refuses. Also conclusive, and also negative —
+    # but it points at a different repair than "disconnected" does, so it is
+    # reported separately rather than being rounded to the nearest state.
+    if evidence.get("state") == "needs_consent":
+        return "needs_consent"
 
     # Everything else: a failed probe, no probe, or gmail reporting "live"
     # while its own sync_status is failed/never. None of those establish
@@ -324,6 +360,13 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
             continue
         index[day].append({
             **event,
+            # The schedule service stamps `source` on import; anything it
+            # pulled out of the real Google Calendar carries
+            # 'google_calendar'. Resolved here rather than in the browser so
+            # the front end never has to know the service's source strings,
+            # and so the calendar sweep covers it.
+            "from_google": event.get("source") == "google_calendar",
+            "location": event.get("location") or None,
             "time_label": _time_label(start, all_day),
             "end_label": None if all_day or end == start else _time_label(end, all_day),
             "slot": _slot_for(start, all_day),
@@ -380,11 +423,21 @@ def week_window(events, now, local_tz, days=WINDOW_DAYS):
                 "pending": statuses.count("pending"),
                 "countered": statuses.count("countered"),
                 "needs_you": statuses.count("countered"),
+                "google": sum(1 for e in entries if e["from_google"]),
             },
         })
         previous_month = day.month
 
-    return {"days": out, "beyond": beyond, "spans_months": len({d["month_index"] for d in out}) > 1}
+    # A running total of what came out of Google Calendar. This is the only
+    # POSITIVE, visible-to-the-user evidence that the import is actually
+    # working: `state == "ok"` says the API answered a probe, which it will do
+    # just as happily when nothing has ever been imported. A number here that
+    # stays at zero on a week you know is busy is the symptom worth seeing.
+    from_google = sum(d["counts"]["google"] for d in out)
+
+    return {"days": out, "beyond": beyond,
+            "from_google": from_google,
+            "spans_months": len({d["month_index"] for d in out}) > 1}
 
 
 # --- the weekly review (PRODUCT_IDEAS #5) -----------------------------------
@@ -549,6 +602,158 @@ def deploy_state(record, now=None):
         # than picking whichever field flatters the box.
         return {**out, "state": "unknown"}
     return {**out, "state": "current"}
+
+def deadline_rows(rows, now, local_tz, limit=6):
+    """Split stored deadlines into overdue and upcoming, newest pressure first.
+
+    WHY THIS EXISTS: the assistant extracts interview times and bill due dates
+    on every sync and files them in `deadlines`, and the only page that could
+    display them was `/space` -- the legacy lounge that was deliberately
+    demoted. So the extraction ran, the rows accumulated, and nothing the user
+    looks at could show them.
+
+    Three states, not two, for the same reason the money layer draws them:
+
+      * OVERDUE is not the same as upcoming and must not be sorted in with it.
+      * A row with no `due_at` is UNDATED, not due today. The extractor stores
+        a null when it could not find a date, and rendering that as "due now"
+        would invent a deadline the email never carried.
+
+    Everything is bucketed against the caller's `now`, so the tests can pin any
+    date rather than depending on when they run.
+    """
+    overdue, upcoming, undated = [], [], []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        title = (r.get("title") or "").strip()
+        if not title:
+            continue
+        item = {"title": title, "source": r.get("source"), "due_at": r.get("due_at")}
+        due = parse_event_dt(r.get("due_at"), local_tz) if r.get("due_at") else None
+        if due is None:
+            undated.append(item)
+            continue
+        item["due_at_parsed"] = due
+        (overdue if due < now else upcoming).append(item)
+    overdue.sort(key=lambda i: i["due_at_parsed"], reverse=True)   # most overdue first
+    upcoming.sort(key=lambda i: i["due_at_parsed"])                # soonest first
+    for i in overdue + upcoming:
+        i.pop("due_at_parsed", None)
+    return {
+        "overdue": overdue[:limit],
+        "upcoming": upcoming[:limit],
+        "undated": undated[:limit],
+        "counts": {"overdue": len(overdue), "upcoming": len(upcoming),
+                   "undated": len(undated)},
+    }
+
+
+def portfolio_alerts(stocks, threshold_pct):
+    """Positions and watchlist symbols that moved at least `threshold_pct` today.
+
+    WHY THIS EXISTS: Settings has had an "Alert on move >= (%)" field since the
+    market section was written. It saved to `core`, round-tripped correctly,
+    and was read by absolutely nothing -- so the alert it promised was never
+    produced. A setting that silently does nothing is worse than a missing one:
+    you configure it, you believe it is on, and you stop watching for the thing
+    it was supposed to catch.
+
+    Returns [] when the threshold is unset or unusable rather than defaulting
+    to some other number -- an alert the user did not ask for is its own kind
+    of lie about what the setting does.
+    """
+    try:
+        threshold = abs(float(threshold_pct))
+    except (TypeError, ValueError):
+        return []
+    if not threshold:
+        return []
+    seen, out = set(), []
+    groups = ((stocks or {}).get("positions") or [],
+              (stocks or {}).get("watchlist") or [])
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            symbol = item.get("symbol")
+            pct = item.get("change_pct")
+            if not symbol or symbol in seen:
+                continue
+            try:
+                pct = float(pct)
+            except (TypeError, ValueError):
+                continue          # no quote is not a move; it is no data
+            if abs(pct) + 1e-9 >= threshold:
+                seen.add(symbol)
+                out.append({"symbol": symbol, "change_pct": pct,
+                            "direction": "up" if pct >= 0 else "down"})
+    out.sort(key=lambda a: abs(a["change_pct"]), reverse=True)
+    return out
+
+
+def low_balance_accounts(accounts, floor):
+    """Accounts at or below the configured `finance.low_balance` floor.
+
+    Same story as `portfolio_alerts`: `low_balance` has been in
+    DEFAULT_SETTINGS and consumed by nothing.
+
+    A missing balance is skipped, never treated as 0 -- an account whose
+    balance could not be read is not an account that is empty, and that
+    distinction is the whole of docs/BUDGETS.md.
+    """
+    try:
+        limit = float(floor)
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for a in accounts or []:
+        if not isinstance(a, dict):
+            continue
+        balance = a.get("balance")
+        if balance is None:
+            continue
+        try:
+            balance = float(balance)
+        except (TypeError, ValueError):
+            continue
+        if balance <= limit:
+            out.append({"name": a.get("name") or "account", "balance": balance})
+    out.sort(key=lambda a: a["balance"])
+    return out
+
+
+# --- choosing what to recommend (PRODUCT_IDEAS #34) --------------------------
+
+def first_undismissed(candidates, hidden=None, fallback=None):
+    """The best recommendation you have not waved off.
+
+    Lives here rather than in `main.py` for this file's founding reason: the
+    module that generates the candidates imports psycopg and so cannot be
+    imported by a test at all, and "which suggestion do you actually get" is
+    precisely the decision that needs covering.
+
+    Falling THROUGH is the whole point. A first-match-wins chain that returns
+    the top rule can only hide it and show nothing in its place, and "I have
+    handled that, tell me the next thing" is the entire reason to be able to
+    say handled.
+
+    The fallback is deliberately not dismissible: "You're on track" is the
+    absence of a recommendation, and there is nothing behind it to reveal.
+    """
+    hide = hidden or set()
+    for rec in candidates or []:
+        if not isinstance(rec, dict):
+            continue
+        key = rec.get("key")
+        # No key means it cannot be identified, so it cannot have been
+        # dismissed — showing it is the only safe reading.
+        if not key or key not in hide:
+            return rec
+    return fallback if fallback is not None else {
+        "key": None, "title": "You're on track",
+        "reason": "Nothing urgent right now — nice.", "action": None}
+
 
 # ── "since you last checked", computed once and shared across devices ──────
 #
