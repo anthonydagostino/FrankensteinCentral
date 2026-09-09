@@ -334,6 +334,30 @@ why `networth /summary` passes them through. The list used to be flat, so a
 consumer could not tell a debt from an asset, let alone cash from retirement,
 and would have had to guess from the account *name*.
 
+**A role is evidence, not a fact (SCRUM-93).** The guard above defends against
+a role that is *missing*. It cannot fire on one that is *wrong*, and wrong is
+what a real ledger produces. Anthony's Firefly returned `defaultAsset` for all
+eleven accounts — two brokerages, a TSP, a crypto account and three credit
+cards included — so nothing landed in `unclassified`, `lower_bound` stayed
+false, and the card published **64.5 months** against a true figure near 13.2.
+A 4.9x overstatement with no hedge, in the optimistic direction. Absence was
+guarded; misclassification was what happened.
+
+Two refusals close it, and both are refusals to trust one unverified field:
+
+- **A role that never varies is not a classification.** If every asset account
+  reports the same role, that field is a default the ledger never filled in.
+  It is then ignored entirely — everything becomes unclassified and the figure
+  is suppressed with a reason that names the ledger fix, rather than divided by
+  a "liquid" pot built from brokerages. A single asset account is exempt: one
+  account cannot demonstrate variety either way.
+- **A negative balance is never spendable.** A card entered as an asset account
+  is a debt whatever role it claims, and cannot join a cash pot.
+
+The card also names the accounts it *counted*, not only the ones it excluded.
+`64.5` passed unexamined for a day; `Counting: Santander, Marcus, Fidelity,
+TSP, Platinum Card…` would not have.
+
 **The burn must be right.** A truncated read understates spending, so it
 overstates runway — `window_complete: false` yields `null`, never a number. So
 does a ledger that hasn't been imported for a week: spending that hasn't been

@@ -415,6 +415,93 @@ else:
     add("WARN", "recurring", f"{err or 'no data'} — OLD build (no /recurring)? redeploy needed")
 
 print()
+print("-- vault: where bw serve is actually bound (SCRUM-133) --")
+# The repo guard checks EXAMPLES and is deliberately hermetic. This checks the
+# running value, because only the box knows which bridge its containers use —
+# and because an over-exposed `bw serve` looks exactly like a working one.
+# Never prints a secret: BW_SERVE_URL is an address, and only the host is shown.
+import ipaddress as _ip
+import re as _re
+# Docker allocates bridge networks from 172.16.0.0/12 by default; the compose
+# project network on this box is 172.22.0.1, docker0 is 172.17.0.1. Both
+# qualify. This is a range, not one pinned address, because the address a
+# machine actually uses depends on its compose project — pinning one is what
+# broke the repo guard in the first place.
+_DOCKER_BRIDGES = _ip.ip_network("172.16.0.0/12")
+_raw = os.environ.get("BW_SERVE_URL", "")
+if not _raw:
+    for _p in (os.path.join(os.path.dirname(__file__), "..", ".env"), ".env"):
+        try:
+            with open(_p) as _f:
+                for _line in _f:
+                    if _line.strip().startswith("BW_SERVE_URL="):
+                        _raw = _line.split("=", 1)[1].strip()
+                        break
+        except OSError:
+            continue
+        if _raw:
+            break
+_m = _re.match(r"https?://([^:/]+)(?::(\d+))?", _raw or "")
+if not _raw:
+    add("WARN", "bw serve", "BW_SERVE_URL not set — vault lookups will not work")
+elif not _m:
+    add("FAIL", "bw serve", "BW_SERVE_URL is not a URL")
+else:
+    _host, _port = _m.group(1), _m.group(2) or ""
+    try:
+        _addr = _ip.ip_address(_host)
+    except ValueError:
+        _addr = None
+    if _host == "0.0.0.0":
+        # The failure the guard exists for. Unlocked, bw serve answers
+        # /list/object/items with real credentials to anyone who can reach it.
+        add("FAIL", "bw serve", "bound to 0.0.0.0 — an unlocked vault is "
+            "readable by anything that can reach this host")
+    elif _addr is not None and _addr.is_global:
+        add("FAIL", "bw serve", f"bound to a PUBLIC address ({_host}) — "
+            "the vault is exposed beyond this machine")
+    elif _addr is not None and (_addr.is_loopback or _addr in _DOCKER_BRIDGES):
+        # Loopback, or a docker bridge (172.16/12): the host and its containers
+        # reach it, the LAN does not. That is the property, not "is_private" —
+        # 192.168/16 and 10/8 are private AND routable across the whole network,
+        # which is the exposure the vault docs warn about by name.
+        add("PASS", "bw serve", f"bound to {_host}:{_port} (host-local)")
+    elif _addr is not None and _addr.is_private:
+        add("FAIL", "bw serve", f"bound to {_host} — a LAN address. Unlocked, "
+            "bw serve hands real credentials to every device on the network; "
+            "bind it to the docker bridge instead")
+    else:
+        add("WARN", "bw serve", f"bound to {_host} — cannot classify; confirm "
+            "only this host and its containers can reach it")
+
+print()
+print("-- cash runway --")
+# I told Anthony verify.sh would show these inputs before this section existed.
+# It now does. The classification is the part that cannot be unit-tested against
+# a real ledger, so it is exactly what a live diagnostic is for.
+st, home, err = get(8085, "/home", timeout=60)
+rw = ((home or {}).get("money") or {}).get("runway") or {} if st == 200 else {}
+if not rw:
+    add("WARN", "runway", f"{err or 'no runway block'} — OLD build? redeploy needed")
+elif rw.get("available"):
+    add("PASS", "runway", f"{'at least ' if rw.get('lower_bound') else ''}"
+        f"{rw.get('months')} months = ${rw.get('liquid')} liquid / "
+        f"${rw.get('burn_monthly')}/mo over {rw.get('burn_window_days')}d")
+    add("PASS", "  counted", ", ".join(rw.get("liquid_accounts") or []) or "(none)")
+    if rw.get("excluded"):
+        add("PASS", "  excluded", ", ".join(rw["excluded"]) + " (not spendable this month)")
+    if rw.get("unclassified"):
+        add("WARN", "  unclassified", ", ".join(rw["unclassified"]) +
+            " — no account_role in Firefly, so the figure is a LOWER BOUND")
+else:
+    # Suppressed on purpose. The reason is the actionable part, not the absence.
+    add("WARN", "runway", f"unavailable — {rw.get('reason')}")
+    if rw.get("roles_informative") is False:
+        add("WARN", "  account roles",
+            "every account reports the same role, so Firefly is not classifying "
+            "them; set roles and enter credit cards as liabilities")
+
+print()
 print("-- Firefly data-quality audit (last 12 months) --")
 st, au, err = get(8097, "/audit", timeout=90)
 if st == 200 and au and au.get("connected"):

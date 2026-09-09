@@ -1054,6 +1054,11 @@
       const cls = rw.months < 3 ? "warn" : "";
       const excl = (rw.excluded || []).length
         ? ` · ${(rw.excluded || []).join(", ")} not counted` : "";
+      // Name what was COUNTED, not only what wasn't. A bare "64.5 months" is
+      // exactly the number that passed unexamined for a day while it was
+      // silently dividing by brokerages and credit-card balances.
+      const counted = (rw.liquid_accounts || []).length
+        ? `<br><span class="sub">Counting: ${esch((rw.liquid_accounts || []).join(", "))}.</span>` : "";
       const unk = rw.lower_bound
         ? `<br><span class="sub">${(rw.unclassified || []).join(", ")} ${
              (rw.unclassified || []).length === 1 ? "isn't" : "aren't"
@@ -1062,7 +1067,7 @@
       const alt = rw.months_without_resale != null
         ? ` · ${rw.months_without_resale} without resale` : "";
       runLine = `<p class="mny-run ${cls}">🧭 <b>${at}${rw.months} months</b> of runway${alt}
-        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${unk}</p>`;
+        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${counted}${unk}</p>`;
     } else if (rw.reason) {
       // Named, not blank: a missing runway with no explanation reads as a bug.
       runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;
