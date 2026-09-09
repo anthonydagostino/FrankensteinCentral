@@ -210,49 +210,71 @@
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
     renderDeploy(d);
-    saveSnapshot(d);
   }
 
-  // ---- since last check (per-device via localStorage) -----------------------
-  function snapshot(d) {
-    return {
-      ts: Date.now(),
-      importantIds: (d.inbox && d.inbox.items || []).filter((i) => i.important).map((i) => i.id),
-      spendMonth: d.money && d.money.month,
-      spendToday: d.money && d.money.today,
-      port: d.portfolio && d.portfolio.day_change_pct,
-      portVal: d.portfolio && d.portfolio.value,
-      score: d.score && d.score.score,
-    };
-  }
-  function saveSnapshot(d) {
-    try { localStorage.setItem("cc_snap", JSON.stringify(snapshot(d))); } catch {}
-  }
+  // ---- since last check (shared across devices, computed in the assistant) --
+  //
+  // This used to live in localStorage under `cc_snap`, so the phone, both
+  // MacBooks, the Kali laptop and the OptiPlex each kept their own idea of what
+  // had already been shown — and a fresh browser had none at all. The baseline
+  // now belongs to the person: core holds one row, the assistant diffs against
+  // it, and this only renders what it is handed.
   function renderSince(d) {
-    let prev;
-    try { prev = JSON.parse(localStorage.getItem("cc_snap") || "null"); } catch {}
     const el = q("#cc-since");
-    if (!prev || Date.now() - prev.ts < 15 * 60 * 1000) { el.hidden = true; return; } // only after a 15-min+ gap
-    const bits = [];
-    const nowImp = (d.inbox && d.inbox.items || []).filter((i) => i.important).map((i) => i.id);
-    const newImp = nowImp.filter((id) => !(prev.importantIds || []).includes(id)).length;
-    if (newImp) bits.push(`<span class="it"><b>${newImp}</b> new important email${newImp > 1 ? "s" : ""}</span>`);
-    if (prev.portVal != null && d.portfolio && d.portfolio.value != null) {
-      const dp = (d.portfolio.day_change_pct || 0);
-      if (Math.abs(dp) >= 0.1) bits.push(`<span class="it">Portfolio <b>${dp >= 0 ? "+" : ""}${dp}%</b> today</span>`);
+    const since = d.since || {};
+    if (!since.show || !(since.changes || []).length) {
+      // Nothing to say, or too soon since the last look, or no baseline at all
+      // (a first run must not report every email you already read as new).
+      el.hidden = true;
+      el.innerHTML = "";
+      // Showing and STORING are different decisions. A first-ever load shows
+      // nothing and must still record the baseline, or one never exists and
+      // the feature cannot start. A too-soon refresh stores nothing, so an
+      // idle tab cannot consume this morning's changes.
+      if (since.store) markSeen(d);
+      return;
     }
-    if (prev.spendToday != null && d.money && d.money.today != null) {
-      const diff = d.money.today - prev.spendToday;
-      if (diff > 0) bits.push(`<span class="it"><b>$${Math.round(diff)}</b> new spending</span>`);
-    }
-    if (d.score && d.score.score != null && prev.score != null
-        && d.score.score !== prev.score) {
-      bits.push(`<span class="it">Score ${d.score.score > prev.score ? "up" : "down"} to <b>${d.score.score}</b></span>`);
-    }
-    if (!bits.length) bits.push('<span class="it">No new alerts. You\'re current.</span>');
-    el.innerHTML = `<span class="lbl">Since you last checked</span>${bits.join("")}<button class="x" title="dismiss">✕</button>`;
-    el.querySelector(".x").onclick = () => (el.hidden = true);
+    const bits = since.changes.map((c) =>
+      `<span class="it${c.urgent ? " urgent" : ""}">${esch(c.icon || "")} ${esch(c.text)}</span>`).join("");
+    const gap = since.gap_minutes;
+    const ago = gap == null ? ""
+      : gap >= 1440 ? ` <em>since ${Math.round(gap / 1440)}d ago</em>`
+      : gap >= 60 ? ` <em>since ${Math.round(gap / 60)}h ago</em>`
+      : ` <em>since ${Math.round(gap)}m ago</em>`;
     el.hidden = false;
+    el.innerHTML = `<b>While you were away</b>${ago} ${bits}`;
+    markSeen(d);
+  }
+
+  // Record what was actually rendered, so the next device — or the next
+  // browser — starts from what YOU last saw rather than from nothing. Only
+  // called once the block has been shown, so an idle tab refreshing in the
+  // background cannot quietly consume this morning's changes.
+  let seenMarked = false;
+  async function markSeen(d) {
+    if (seenMarked) return;
+    seenMarked = true;
+    const snap = (d.since && d.since.snapshot) || null;
+    if (!snap) return;
+    try {
+      await fetch("/api/core/seen", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snapshot: snap, device: deviceLabel() }),
+      });
+    } catch {}
+  }
+
+  // A human-readable hint about WHERE it was last seen. Never an identifier,
+  // never used for keying: the baseline is deliberately shared.
+  function deviceLabel() {
+    const ua = navigator.userAgent || "";
+    if (/iPhone|Android/i.test(ua)) return "phone";
+    if (/iPad|Tablet/i.test(ua)) return "tablet";
+    if (/Macintosh/i.test(ua)) return "mac";
+    if (/Linux/i.test(ua)) return "linux";
+    if (/Windows/i.test(ua)) return "windows";
+    return "browser";
   }
 
   // ---- schedule -------------------------------------------------------------

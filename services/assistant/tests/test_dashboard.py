@@ -1312,3 +1312,205 @@ def test_the_tint_is_independent_of_the_season():
         day = dash.week_window([], at(d, 9), NY)["days"][0]
         assert day["season"] == dash.SEASON_KEYS[d.month - 1]
         assert day["tint"] == d.toordinal() % dash.TINTS
+
+
+# ══ PRODUCT_IDEAS #4 — "since you last checked" follows the person ════════
+#
+# It lived in localStorage under `cc_snap`, so a phone, two MacBooks, a Kali
+# laptop and the OptiPlex each kept a different answer, and a fresh browser had
+# none. The baseline is now one shared row and the diff is computed here, so it
+# can be driven at any clock value instead of only in a browser.
+
+SEEN_NOW = datetime(2026, 9, 7, 18, 0, tzinfo=NY)
+LONG_AGO = SEEN_NOW - timedelta(hours=8)
+
+
+def home_payload(**over):
+    base = {
+        "inbox": {"items": [{"id": "m1", "important": True}]},
+        "money": {"today": 20.0, "month": 900.0},
+        "portfolio": {"value": 10_000.0},
+        "score": {"score": 70},
+        "budget": {"over_budget": []},
+        "calendar": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_the_second_device_does_not_re_report_what_the_first_showed():
+    """THE ACCEPTANCE SIGNAL: check the hub on your phone, then open it on the
+    MacBook — the second must not repeat the first."""
+    home = home_payload(inbox={"items": [{"id": "m1", "important": True},
+                                         {"id": "m2", "important": True}]})
+    old = dash.since_snapshot(home_payload())
+
+    phone = dash.since_changes(old, dash.since_snapshot(home), LONG_AGO, SEEN_NOW)
+    assert phone["show"] is True
+    assert any("1 new important email" in c["text"] for c in phone["changes"])
+
+    # The phone marked it seen; the MacBook opens a minute later.
+    mac = dash.since_changes(dash.since_snapshot(home), dash.since_snapshot(home),
+                             SEEN_NOW, SEEN_NOW + timedelta(minutes=1))
+    assert mac["show"] is False
+    assert mac["reason"] == "too_soon"
+
+
+def test_a_first_ever_load_reports_nothing_rather_than_everything():
+    """With no baseline there is nothing to diff. Inventing an empty one would
+    report every email already read as new."""
+    out = dash.since_changes(None, dash.since_snapshot(home_payload()), None, SEEN_NOW)
+    assert out["show"] is False
+    assert out["reason"] == "never_seen"
+    assert out["changes"] == []
+
+
+def test_a_refresh_two_minutes_later_is_too_soon():
+    out = dash.since_changes(dash.since_snapshot(home_payload()),
+                             dash.since_snapshot(home_payload()),
+                             SEEN_NOW, SEEN_NOW + timedelta(minutes=2))
+    assert out["show"] is False and out["reason"] == "too_soon"
+
+
+def test_a_countered_interview_slot_is_surfaced_and_marked_urgent():
+    """The pipeline's whole point: they countered and it needs your reply."""
+    before = dash.since_snapshot(home_payload(
+        calendar=[{"id": "e1", "status": "pending", "title": "Acme"}]))
+    after = dash.since_snapshot(home_payload(
+        calendar=[{"id": "e1", "status": "countered", "title": "Acme"}]))
+    out = dash.since_changes(before, after, LONG_AGO, SEEN_NOW)
+    c = [x for x in out["changes"] if x["key"] == "countered"]
+    assert c and c[0].get("urgent") is True
+
+
+def test_a_newly_proposed_slot_is_surfaced():
+    before = dash.since_snapshot(home_payload(calendar=[]))
+    after = dash.since_snapshot(home_payload(
+        calendar=[{"id": "e9", "status": "pending", "title": "Acme"}]))
+    out = dash.since_changes(before, after, LONG_AGO, SEEN_NOW)
+    assert any(x["key"] == "proposed" for x in out["changes"])
+
+
+def test_a_hold_that_was_already_countered_is_not_re_announced():
+    snap = dash.since_snapshot(home_payload(
+        calendar=[{"id": "e1", "status": "countered", "title": "Acme"}]))
+    out = dash.since_changes(snap, snap, LONG_AGO, SEEN_NOW)
+    assert not [x for x in out["changes"] if x["key"] == "countered"]
+
+
+def test_crossing_into_over_budget_is_news_but_staying_over_is_not():
+    before = dash.since_snapshot(home_payload(budget={"over_budget": ["Dining"]}))
+    after = dash.since_snapshot(home_payload(budget={"over_budget": ["Dining", "Gas"]}))
+    out = dash.since_changes(before, after, LONG_AGO, SEEN_NOW)
+    budget = [x for x in out["changes"] if x["key"] == "budget"]
+    assert budget and "Gas" in budget[0]["text"] and "Dining" not in budget[0]["text"]
+
+    same = dash.since_changes(after, after, LONG_AGO, SEEN_NOW)
+    assert not [x for x in same["changes"] if x["key"] == "budget"]
+
+
+def test_new_spending_is_reported_and_a_refund_is_not_called_spending():
+    up = dash.since_changes(dash.since_snapshot(home_payload(money={"today": 20.0})),
+                            dash.since_snapshot(home_payload(money={"today": 65.0})),
+                            LONG_AGO, SEEN_NOW)
+    assert any("45" in c["text"] for c in up["changes"] if c["key"] == "spend")
+    down = dash.since_changes(dash.since_snapshot(home_payload(money={"today": 65.0})),
+                              dash.since_snapshot(home_payload(money={"today": 20.0})),
+                              LONG_AGO, SEEN_NOW)
+    assert not [c for c in down["changes"] if c["key"] == "spend"]
+
+
+def test_a_score_that_became_unknown_is_not_a_score_that_fell():
+    """null is not a drop to zero — the same rule docs/BUDGETS.md enforces."""
+    out = dash.since_changes(dash.since_snapshot(home_payload(score={"score": 70})),
+                             dash.since_snapshot(home_payload(score={"score": None})),
+                             LONG_AGO, SEEN_NOW)
+    assert not [c for c in out["changes"] if c["key"] == "score"]
+
+
+def test_nothing_changed_produces_an_empty_change_list_not_a_fake_item():
+    out = dash.since_changes(dash.since_snapshot(home_payload()),
+                             dash.since_snapshot(home_payload()),
+                             LONG_AGO, SEEN_NOW)
+    assert out["show"] is True and out["changes"] == []
+
+
+def test_the_snapshot_is_stable_for_an_unchanged_payload():
+    """An unstable fingerprint would report a change on every single load."""
+    assert dash.since_snapshot(home_payload()) == dash.since_snapshot(home_payload())
+
+
+def test_the_snapshot_survives_a_malformed_payload():
+    for bad in ({}, {"inbox": None}, {"calendar": ["not a dict"]},
+                {"inbox": {"items": [{"important": True}]}}):
+        assert isinstance(dash.since_snapshot(bad), dict)
+
+
+def test_an_unreadable_baseline_is_never_seen_not_no_changes():
+    for bad in ("a string", [], 0):
+        out = dash.since_changes(bad, dash.since_snapshot(home_payload()),
+                                 LONG_AGO, SEEN_NOW)
+        assert out["show"] is False and out["reason"] == "never_seen"
+
+
+def test_a_first_load_records_the_baseline_even_though_it_shows_nothing():
+    """THE DEADLOCK. `show` and `store` are separate decisions.
+
+    An earlier cut stored the baseline only when the block was successfully
+    shown — and nothing can be shown without a baseline, so the first load
+    never recorded one, every later load was "never_seen" too, and the feature
+    could not start at all. Every unit test still passed, because each one
+    handed it a baseline directly; the full phone-then-MacBook walkthrough is
+    what exposed it.
+    """
+    out = dash.since_changes(None, dash.since_snapshot(home_payload()), None, SEEN_NOW)
+    assert out["show"] is False
+    assert out["store"] is True, "the baseline is never recorded, so it never starts"
+
+
+def test_a_too_soon_refresh_must_not_overwrite_the_baseline():
+    """The other half: an idle tab refreshing in the background would quietly
+    consume this morning's changes."""
+    out = dash.since_changes(dash.since_snapshot(home_payload()),
+                             dash.since_snapshot(home_payload()),
+                             SEEN_NOW, SEEN_NOW + timedelta(minutes=2))
+    assert out["show"] is False
+    assert out["store"] is False, "an idle refresh ate the baseline"
+
+
+def test_a_shown_block_stores_the_new_baseline():
+    out = dash.since_changes(dash.since_snapshot(home_payload()),
+                             dash.since_snapshot(home_payload(money={"today": 99.0})),
+                             LONG_AGO, SEEN_NOW)
+    assert out["show"] is True and out["store"] is True
+
+
+def test_the_whole_cross_device_sequence():
+    """The idea doc's acceptance signal, walked end to end against one shared
+    row: first load, phone, MacBook a minute later, a browser that has never
+    been opened, and the next morning."""
+    seen = {"snapshot": None, "at": None}
+
+    def visit(home, at):
+        cur = dash.since_snapshot(home)
+        out = dash.since_changes(seen["snapshot"], cur, seen["at"], at)
+        if out["store"]:
+            seen.update(snapshot=cur, at=at)
+        return out
+
+    before = home_payload()
+    after = home_payload(inbox={"items": [{"id": "m1", "important": True},
+                                          {"id": "m2", "important": True}]})
+    t = SEEN_NOW
+
+    assert visit(before, t)["show"] is False               # first ever
+    phone = visit(after, t + timedelta(hours=8))
+    assert phone["show"] is True and phone["changes"]      # the phone reports
+    mac = visit(after, t + timedelta(hours=8, minutes=1))
+    assert mac["show"] is False, "the MacBook re-reported what the phone showed"
+    fresh = visit(after, t + timedelta(hours=8, minutes=2))
+    assert fresh["show"] is False, "a new browser re-reported it"
+    # A genuinely new change the next day still lands.
+    nextday = visit(home_payload(inbox={"items": [{"id": "m3", "important": True}]}),
+                    t + timedelta(days=1))
+    assert nextday["show"] is True and nextday["changes"]
