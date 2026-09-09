@@ -69,6 +69,13 @@ body.cc[data-mode="evening"] {
 
 /* ---- grid ---- */
 .cc-main { display: flex; flex-direction: column; gap: 16px; }
+/* Money and the portfolio, side by side, directly under the calendar. They and
+   the week grid are what this page is opened for; everything below is what you
+   read once you are already here. */
+.cc-money-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start;
+}
+@media (max-width: 900px) { .cc-money-row { grid-template-columns: 1fr; } }
 .cc-cols { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start; }
 .cc-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
@@ -873,9 +880,17 @@ body.cc[data-mode="evening"] {
   font-size: 12px; opacity: .35; color: var(--muted);
 }
 .snz-b:hover, .snz-b:focus-visible { opacity: 1; }
+/* `display: flex` here outranks the UA stylesheet's `[hidden] { display: none }`
+   — a class selector beats it — so every one of these menus rendered OPEN, on
+   every card, permanently. The JS has always toggled `hidden` correctly and it
+   has never once had an effect. Three of them hung over the money card.
+   `:not([hidden])` gives the attribute back its meaning. */
+.snz-menu:not([hidden]) {
+  display: flex;
+}
 .snz-menu {
   position: absolute; right: 0; top: 100%; z-index: 40; margin-top: 4px;
-  display: flex; flex-direction: column; min-width: 152px;
+  flex-direction: column; min-width: 152px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
   box-shadow: 0 12px 30px -12px rgba(0,0,0,.7); overflow: hidden;
 }
@@ -899,6 +914,22 @@ body.cc[data-mode="evening"] {
 }
 .hid-x:hover { color: var(--text); border-color: var(--accent-2); }
 
+
+/* The weekly review's six-days-a-week form: one line, carrying only the
+   week-over-week trend. The three bars it used to draw are restated in full by
+   the Health & Discipline card directly above it — and this card used to sit
+   above the calendar, which is a lot of prime page to spend saying something
+   twice. On Sunday evening it still expands and takes the top. */
+.wr-line {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; color: var(--text);
+}
+.wr-l {
+  font-size: 10px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.wr-line .muted { color: var(--muted); }
+.wr-trend.flat { color: var(--muted); }
 /* "While you were away" (PRODUCT_IDEAS #4) — one shared baseline, so a
    second device does not re-report what the first already showed. */
 #cc-since .it.urgent { color: var(--imp, #e0574a); font-weight: 600; }
