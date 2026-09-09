@@ -415,6 +415,33 @@ else:
     add("WARN", "recurring", f"{err or 'no data'} — OLD build (no /recurring)? redeploy needed")
 
 print()
+print("-- cash runway --")
+# I told Anthony verify.sh would show these inputs before this section existed.
+# It now does. The classification is the part that cannot be unit-tested against
+# a real ledger, so it is exactly what a live diagnostic is for.
+st, home, err = get(8085, "/home", timeout=60)
+rw = ((home or {}).get("money") or {}).get("runway") or {} if st == 200 else {}
+if not rw:
+    add("WARN", "runway", f"{err or 'no runway block'} — OLD build? redeploy needed")
+elif rw.get("available"):
+    add("PASS", "runway", f"{'at least ' if rw.get('lower_bound') else ''}"
+        f"{rw.get('months')} months = ${rw.get('liquid')} liquid / "
+        f"${rw.get('burn_monthly')}/mo over {rw.get('burn_window_days')}d")
+    add("PASS", "  counted", ", ".join(rw.get("liquid_accounts") or []) or "(none)")
+    if rw.get("excluded"):
+        add("PASS", "  excluded", ", ".join(rw["excluded"]) + " (not spendable this month)")
+    if rw.get("unclassified"):
+        add("WARN", "  unclassified", ", ".join(rw["unclassified"]) +
+            " — no account_role in Firefly, so the figure is a LOWER BOUND")
+else:
+    # Suppressed on purpose. The reason is the actionable part, not the absence.
+    add("WARN", "runway", f"unavailable — {rw.get('reason')}")
+    if rw.get("roles_informative") is False:
+        add("WARN", "  account roles",
+            "every account reports the same role, so Firefly is not classifying "
+            "them; set roles and enter credit cards as liabilities")
+
+print()
 print("-- Firefly data-quality audit (last 12 months) --")
 st, au, err = get(8097, "/audit", timeout=90)
 if st == 200 and au and au.get("connected"):

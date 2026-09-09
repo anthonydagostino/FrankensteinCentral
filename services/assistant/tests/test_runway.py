@@ -25,6 +25,7 @@ from conftest import load_service_module  # noqa: E402
 # `from app.runway import ...` shadows budget's `app` for the whole run.
 _rw = load_service_module("assistant_runway", "services/assistant/app/runway.py")
 LIQUID_ROLES = _rw.LIQUID_ROLES
+roles_are_informative = _rw.roles_are_informative
 MAX_MONTHS = _rw.MAX_MONTHS
 cash_runway = _rw.cash_runway
 monthly_burn = _rw.monthly_burn
@@ -203,3 +204,101 @@ def test_split_reports_all_four_buckets():
     assert [a["name"] for a in b["illiquid"]] == ["Fidelity", "TSP"]
     assert [a["name"] for a in b["liabilities"]] == ["Amex"]
     assert [a["name"] for a in b["unclassified"]] == ["Mystery"]
+
+# ---- SCRUM-93: the guard that was not enough ---------------------------
+#
+# The lower-bound valve fires on a role that is MISSING. It could not fire on
+# a role that is WRONG. Anthony's Firefly returns `defaultAsset` for all
+# eleven accounts — two brokerages, a TSP, a crypto account and three credit
+# cards included — so `unclassified` stayed empty, `lower_bound` stayed false,
+# and the card published 64.5 months against a true ~13.2. A 4.9x
+# overstatement with no hedge, found live on the box, not by these tests.
+
+REAL_LEDGER = [                      # exactly as read off the running box
+    ("Santander", 755.97), ("Marcus", 20500.0), ("Cash wallet", 0.0),
+    ("Fidelity", 82000.0), ("Robinhood", 20700.0), ("TSP", 26600.0),
+    ("Coinbase", 210.0), ("Chase Checking", 13000.0),
+    ("Platinum Card (1002)", 3016.40),
+    ("American Express Gold Card (2009)", 1088.56),
+    ("Discover (4796)", -636.68),
+]
+UNIFORM = [acct(n, b, "defaultAsset") for n, b in REAL_LEDGER]
+REAL_BURN = 2593.11
+
+
+def test_the_real_ledger_no_longer_publishes_a_confident_number():
+    """The regression, with the exact data that produced it."""
+    r = cash_runway(UNIFORM, REAL_BURN, 30, freshness=FRESH)
+    assert r["available"] is False
+    assert r["months"] is None, "still dividing by brokerages and credit cards"
+    assert r["months"] != 64.5
+    assert r["roles_informative"] is False
+
+
+def test_the_suppression_names_the_ledger_fix_not_a_bug():
+    """A reason the reader can act on. This is a Firefly data fix, and the
+    text has to say so or it reads as the dashboard being broken."""
+    r = cash_runway(UNIFORM, REAL_BURN, 30, freshness=FRESH)
+    assert "same role" in r["reason"]
+    assert "liabilities" in r["reason"]
+
+
+def test_a_ledger_with_real_roles_gives_the_true_figure():
+    """And the fix must not simply suppress everything: with roles actually
+    set, the same balances give the number the ledger supports."""
+    good = [acct("Chase Checking", 13000.0, "defaultAsset"),
+            acct("Santander", 755.97, "defaultAsset"),
+            acct("Marcus", 20500.0, "savingAsset"),
+            acct("Cash wallet", 0.0, "cashWalletAsset"),
+            acct("Fidelity", 82000.0, "sharesAsset"),
+            acct("TSP", 26600.0, "sharesAsset")]
+    r = cash_runway(good, REAL_BURN, 30, freshness=FRESH)
+    assert r["liquid"] == 34255.97
+    assert r["months"] == 13.2
+    assert set(r["excluded"]) == {"Fidelity", "TSP"}
+
+
+def test_one_role_repeated_is_a_default_not_a_classification():
+    assert roles_are_informative(UNIFORM) is False
+    assert roles_are_informative([acct("A", 1, "defaultAsset"),
+                                  acct("B", 1, "savingAsset")]) is True
+
+
+def test_a_single_account_is_not_suspicious_for_being_uniform():
+    """One account cannot demonstrate variety either way; refusing there would
+    suppress a perfectly good ledger for having one bank."""
+    assert roles_are_informative([acct("Chase", 9000.0, "defaultAsset")]) is True
+    r = cash_runway([acct("Chase", 9000.0, "defaultAsset")], 3000.0, 30, freshness=FRESH)
+    assert r["months"] == 3.0
+
+
+def test_liabilities_do_not_count_toward_role_variety():
+    """A liability's role is irrelevant to whether the ASSET roles vary — one
+    credit card entered correctly must not make a uniform asset set look
+    informative."""
+    accounts = [acct("Chase", 100.0, "defaultAsset"),
+                acct("Fidelity", 100.0, "defaultAsset"),
+                acct("Amex", -50.0, "ccAsset", kind="liability")]
+    assert roles_are_informative(accounts) is False
+
+
+def test_a_negative_balance_is_never_spendable_whatever_its_role():
+    """Discover arrives as kind=asset, role=defaultAsset, balance -636.68. A
+    debt cannot be part of a cash pot."""
+    accounts = [acct("Chase", 10000.0, "defaultAsset"),
+                acct("Marcus", 5000.0, "savingAsset"),
+                acct("Discover", -2000.0, "defaultAsset")]
+    r = cash_runway(accounts, 1000.0, 30, freshness=FRESH)
+    assert r["liquid"] == 15000.0
+    assert "Discover" not in r["liquid_accounts"]
+    assert r["months"] == 15.0
+
+
+def test_the_counted_accounts_are_published_so_a_number_can_be_challenged():
+    """64.5 passed unexamined for a day. The card now names what it counted."""
+    good = [acct("Chase", 13000.0, "defaultAsset"),
+            acct("Marcus", 20500.0, "savingAsset"),
+            acct("Fidelity", 82000.0, "sharesAsset")]
+    r = cash_runway(good, REAL_BURN, 30, freshness=FRESH)
+    assert r["liquid_accounts"] == ["Chase", "Marcus"]
+    assert r["excluded"] == ["Fidelity"]
