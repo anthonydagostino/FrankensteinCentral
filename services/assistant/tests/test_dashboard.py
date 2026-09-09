@@ -828,6 +828,9 @@ def rec(**kw):
     return base
 
 
+NOW_FOR_DEPLOY = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+
+
 def test_deploy_state_reports_current_when_the_last_attempt_succeeded():
     now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
     d = dash.deploy_state(rec(), now)
@@ -1515,3 +1518,59 @@ def test_the_whole_cross_device_sequence():
     nextday = visit(home_payload(inbox={"items": [{"id": "m3", "important": True}]}),
                     t + timedelta(days=1))
     assert nextday["show"] is True and nextday["changes"]
+
+
+# ── did the serving build pass the gate? (SCRUM-108) ────────────────────────
+#
+# `DEPLOY_SKIP_TESTS=1` forces a deploy past the suite. That is a defensible
+# escape hatch — a gate with no override tends to get removed rather than used
+# carefully — but the record used to look IDENTICAL either way, so an hour
+# later nothing could tell a tested deploy from an untested one. An override
+# you can see is a safety net; one you cannot is a hole.
+#
+# The state machine above is orthogonal to this: a deploy can be perfectly
+# `current` and still never have been checked.
+
+def test_a_tested_deploy_says_so():
+    d = dash.deploy_state(rec(running_tests="passed"), NOW_FOR_DEPLOY)
+    assert d["state"] == "current"
+    assert d["tests"] == "passed"
+    assert d["untested"] is False
+
+
+def test_a_skipped_gate_is_visible_on_a_deploy_that_is_otherwise_current():
+    """The whole point. Everything else about this deploy looks healthy."""
+    d = dash.deploy_state(rec(running_tests="skipped"), NOW_FOR_DEPLOY)
+    assert d["state"] == "current"
+    assert d["tests"] == "skipped"
+    assert d["untested"] is True
+
+
+def test_an_absent_verdict_is_unknown_and_never_passed():
+    """A record written before this was tracked has no such key. Reporting
+    'passed' from a missing field invents reassurance out of missing data —
+    the same failure docs/BUDGETS.md bans in the money layer."""
+    d = dash.deploy_state(rec(), NOW_FOR_DEPLOY)          # no running_tests key
+    assert d["tests"] is None
+    assert d["untested"] is False, "unknown is not a warning, but it is not 'passed' either"
+
+
+@pytest.mark.parametrize("record", [None, {}, [], "nope", 0])
+def test_the_unreadable_record_still_has_the_new_keys(record):
+    """A ragged shape between branches is how a consumer starts reading None
+    as False somewhere else. Every return carries the same keys."""
+    d = dash.deploy_state(record, NOW_FOR_DEPLOY)
+    assert d["tests"] is None
+    assert d["untested"] is False
+
+
+def test_a_failed_attempt_reports_the_gate_of_what_is_still_serving():
+    """`running_tests` describes the build that is SERVING, so a later failed
+    attempt must not overwrite it — exactly as `running_commit` behaves."""
+    d = dash.deploy_state(
+        rec(last_result="tests_failed",
+            last_attempt_commit="ffffffffffffffffffffffffffffffffffffffff",
+            running_tests="skipped"),
+        NOW_FOR_DEPLOY)
+    assert d["state"] == "failed"
+    assert d["untested"] is True

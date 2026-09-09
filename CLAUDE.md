@@ -31,6 +31,13 @@ Two things, and neither is an approval — nobody has to be asked:
 - **The test gate.** `scripts/deploy.sh` runs the full suite on the box
   BEFORE touching any container and aborts if it fails. A red suite cannot
   reach production. Keep it that way.
+
+  There is an override — `DEPLOY_SKIP_TESTS=1` — and you should know it
+  exists rather than discover it. Emergencies are real, and a gate with no
+  hatch tends to get removed rather than used carefully. But using it is
+  **recorded**: `deployed.json` carries `running_tests: "skipped"`, and both
+  `frankenstein-status.sh` and the deploy card say so until a tested deploy
+  replaces it. Do not reach for it to get past a red suite you caused.
 - **Fast-forward only.** `promote.sh` refuses a promotion that is not a
   fast-forward, so production history is never rewritten and nothing already
   shipped is silently erased. If your branch is behind, merge or rebase onto

@@ -55,6 +55,17 @@ try:
           f"   (last SUCCESSFUL deploy)")
     print(f"  Last attempted:        {short(attempt)}   at {rec.get('last_attempt_at','?')}")
     print(f"  Last deploy result:    {result}")
+    # SCRUM-108: an override you can see is a safety net; one you cannot is a
+    # hole. Absent means UNKNOWN — a record written before this was tracked —
+    # and must not be reported as though the suite had passed.
+    running_tests = rec.get("running_tests")
+    label = {"passed": "passed", "skipped": "SKIPPED", None: "unknown (record predates tracking)"}
+    print(f"  Test gate (serving):   {label.get(running_tests, running_tests)}")
+    if running_tests == "skipped":
+        print("  ! THE RUNNING BUILD WAS DEPLOYED WITH THE TEST GATE OFF")
+        print(f"  !   DEPLOY_SKIP_TESTS=1 at {rec.get('last_skipped_tests_at','?')}"
+              f" on {short(rec.get('last_skipped_tests_commit'))}")
+        print("  !   This stays until a tested deploy replaces it.")
     # A null/absent running_commit is PENDING too: no successfully deployed SHA
     # is confirmed in the record. That says nothing about whether containers
     # happen to be up — only that no deployment has been confirmed.

@@ -603,20 +603,39 @@ def deploy_state(record, now=None):
                than `attempted`, and `running` is what you are looking at.
       current  the last attempt succeeded and it is what is running.
 
+    Orthogonal to all four: `tests` and `untested` say whether the SERVING
+    build was gated by the suite. A `current` deploy can still be untested if
+    it went out under DEPLOY_SKIP_TESTS=1, and that stays true until a tested
+    deploy replaces it — which is the whole point of recording it (SCRUM-108).
+    `tests` of None is unknown, never passed.
+
     `now` is injected rather than read, per `docs/TESTING.md`: the age this
     returns is the one number here that moves on its own.
     """
     if not isinstance(record, dict) or not record:
         return {"state": "unknown", "running": None, "attempted": None,
-                "last_result": None, "age_seconds": None, "attempt_age_seconds": None}
+                "last_result": None, "tests": None, "untested": False,
+                "age_seconds": None, "attempt_age_seconds": None}
 
     running = record.get("running_commit") or None
     attempted = record.get("last_attempt_commit") or None
     result = record.get("last_result") or None
+    # What gated the build that is SERVING — "passed", "skipped", or None.
+    #
+    # None means UNKNOWN, not passed (SCRUM-108). A record written before the
+    # test verdict was recorded has no such key, and so does one written by a
+    # deploy.sh that lost the field again. Reporting "passed" from an absent
+    # key is the exact failure `docs/BUDGETS.md` bans in the money layer, for
+    # the same reason: it invents reassurance out of missing data.
+    running_tests = record.get("running_tests") or None
     out = {
         "running": running,
         "attempted": attempted,
         "last_result": result,
+        "tests": running_tests,
+        # The one flag a card can render without interpreting the rest: the
+        # code now serving went out with the gate switched off.
+        "untested": running_tests == "skipped",
         "age_seconds": _deploy_age(record.get("last_success_at"), now),
         "attempt_age_seconds": _deploy_age(record.get("last_attempt_at"), now),
     }
