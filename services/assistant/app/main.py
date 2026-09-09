@@ -13,8 +13,8 @@ from . import answers, notify, runway
 from .dashboard import (deadline_rows, deploy_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
-                        schedule_state, upcoming_events, week_window,
-                        weekly_review)
+                        schedule_state, since_changes, since_snapshot,
+                        upcoming_events, week_window, weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -850,6 +850,20 @@ def _read_deploy_record(path=None):
         return {}
     return rec if isinstance(rec, dict) else {}
 
+def _since_block(seen, data, now):
+    """The "since you last checked" block, plus the fingerprint to store."""
+    seen = seen if isinstance(seen, dict) else {}
+    seen_at = parse_event_dt(seen.get("seen_at"), LOCAL_TZ) if seen.get("seen_at") else None
+    current = since_snapshot(data)
+    block = since_changes(seen.get("snapshot"), current, seen_at, now)
+    # The client stores this back verbatim, so the baseline is always the
+    # fingerprint of a payload that was actually rendered.
+    block["snapshot"] = current
+    block["seen_at"] = seen.get("seen_at")
+    block["seen_on"] = seen.get("device")
+    return block
+
+
 async def _deadline_rows(limit: int = 40) -> list[dict]:
     """The deadlines the sync already files, read for the HOME screen.
 
@@ -874,11 +888,15 @@ async def build_home(fresh: bool = False) -> dict:
         return cached["data"]
 
     async with httpx.AsyncClient() as client:
-        (settings, core, emails_r, avail, finance, budget, firefly, spending,
-         networth, schedule, cal_health, deals, stocks, vault,
+        (settings, core, seen, emails_r, avail, finance, budget, firefly,
+         spending, networth, schedule, cal_health, deals, stocks, vault,
          captures, review, dismissals) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
+            # The shared "already shown" baseline. Fetched here so the diff is
+            # computed once, server-side, instead of five devices each keeping
+            # their own answer in localStorage.
+            _get(client, f"{CORE_URL}/seen"),
             _get(client, f"{GMAIL_URL}/needs-reply"),
             _get(client, f"{GMAIL_URL}/thread-availability"),
             _get(client, f"{FINANCE_URL}/summary"),
@@ -1019,6 +1037,9 @@ async def build_home(fresh: bool = False) -> dict:
         "deploy": deploy_state(_read_deploy_record(), now_local),
         "last_updated": t["now"],
     }
+    # Computed against the payload we are ABOUT to return, so the fingerprint
+    # the client marks as seen is exactly what it was shown.
+    data["since"] = _since_block(seen, data, now_local)
     _HOME_CACHE["data"] = data
     _HOME_CACHE["at"] = datetime.now(LOCAL_TZ)
     return data

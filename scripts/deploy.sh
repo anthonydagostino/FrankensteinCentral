@@ -195,6 +195,30 @@ $DC up -d --build --remove-orphans
 # Keep disk tidy — drop dangling images from old builds.
 docker image prune -f >/dev/null 2>&1 || true
 
-record "success" "$(git rev-parse HEAD)"
-echo "==> Deployed $(git rev-parse --short HEAD) on '$BRANCH'"
-docker compose ps
+# ── verify the stack is actually SERVING before claiming success ──────────
+#
+# SCRUM-107. `up -d` returns when containers have been STARTED, not when they
+# are serving; a container that starts and instantly crash-loops satisfies it.
+# Recording "success" here regardless put `running_commit: <sha>` in
+# deployed.json for a stack that might be entirely down — and autopull.sh
+# treats that field as ground truth, so it concluded DESIRED == RUNNING and
+# STOPPED RETRYING. The box would then sit on a broken deploy while the
+# deployment system believed it had converged.
+#
+# `started_unhealthy` is a distinct result on purpose. `record` only advances
+# running_commit when the result is exactly "success", so an unhealthy deploy
+# leaves running_commit at the PREVIOUS good commit — which is both the honest
+# answer for the dashboard and the thing that makes the poller try again.
+SHA="$(git rev-parse HEAD)"
+if bash scripts/stack-health.sh; then
+  record "success" "$SHA"
+  echo "==> Deployed $(git rev-parse --short HEAD) on '$BRANCH'"
+  docker compose ps
+else
+  record "started_unhealthy" "$SHA"
+  echo "!! Containers were started but the stack is not serving."
+  echo "!! deployed.json still names the last commit that DID serve, so the"
+  echo "!! poller will retry this deploy on its next tick."
+  docker compose ps
+  exit 1
+fi
