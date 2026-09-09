@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -233,14 +233,21 @@ async def build_briefing() -> list[dict]:
     action attached to them (reply, pay, review) make the cut.
     """
     items: list[dict] = []
+    # Concurrent, like build_home: these seven services know nothing about each
+    # other, so awaiting them one at a time only added their latencies together
+    # — and each _get waits up to 8s, so one slow container used to delay every
+    # service queued behind it.
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        vault = await _get(client, f"{VAULT_URL}/summary")
-        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
+        (emails, powerbuy, finance, budget, deals, vault,
+         availability) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+            _get(client, f"{GMAIL_URL}/thread-availability"),
+        )
 
     for e in emails.get("emails", [])[:5]:
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -316,16 +323,19 @@ async def briefing():
 async def build_overview() -> dict:
     """A glanceable set of numbers across every app — the command-center row."""
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
-        cal = await _get(client, f"{SCHEDULE_URL}/events")
-        fitness = await _get(client, f"{FITNESS_URL}/plan")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        networth = await _get(client, f"{NETWORTH_URL}/summary")
-        vault = await _get(client, f"{VAULT_URL}/summary")
+        (emails, powerbuy, cal, fitness, finance, tasks, budget, deals,
+         networth, vault) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{SCHEDULE_URL}/events"),
+            _get(client, f"{FITNESS_URL}/plan"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{TASKS_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{NETWORTH_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+        )
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     # Only a *confirmed* event counts as "next up" — a still-pending proposal
@@ -811,7 +821,6 @@ def _budget_brief(status) -> dict:
                 "recurring": (status or {}).get("recurring")
                              or {"available": False, "events": []}}
     warns = status.get("warnings", [])
-    counts = status.get("state_counts", {})
     freshness = status.get("freshness") or {}
     fresh = freshness.get("current_ok", False)
     return {

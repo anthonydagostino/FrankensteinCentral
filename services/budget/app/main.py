@@ -70,10 +70,15 @@ async def _build(fresh: bool = False) -> dict:
         return _CACHE["data"]
 
     async with httpx.AsyncClient() as client:
-        settings = await _get(client, f"{CORE_URL}/settings", timeout=8)
-        month = await _get(client, f"{FIREFLY_SVC_URL}/month", timeout=40)
-        bills = await _get(client, f"{FIREFLY_SVC_URL}/bills", timeout=20)
-        cycle = await _get(client, f"{FIREFLY_SVC_URL}/cycle", timeout=40)
+        # Four independent reads. Awaited one at a time they added up to a
+        # worst case of 108 seconds of timeout; concurrently the slowest one
+        # is the whole wait.
+        settings, month, bills, cycle = await asyncio.gather(
+            _get(client, f"{CORE_URL}/settings", timeout=8),
+            _get(client, f"{FIREFLY_SVC_URL}/month", timeout=40),
+            _get(client, f"{FIREFLY_SVC_URL}/bills", timeout=20),
+            _get(client, f"{FIREFLY_SVC_URL}/cycle", timeout=40),
+        )
 
     budgets_cfg = (settings or {}).get("budgets") or []
     paycheck_cfg = (settings or {}).get("paycheck") or {}

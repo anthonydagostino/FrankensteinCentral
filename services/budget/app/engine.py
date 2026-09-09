@@ -22,6 +22,8 @@ distinct: suppressed values are None, never 0.
 """
 from __future__ import annotations
 
+from datetime import date
+
 INGEST_MAX_DAYS = 3         # data imported within this many days => guidance allowed
 ACTIVITY_FALLBACK_MAX = 2   # no ingestion signal: fall back to newest-txn age
 EARLY_MONTH_DAYS = 3        # before this many elapsed days, pace is too noisy for WATCH
@@ -29,6 +31,26 @@ APPROACH_REMAINING_PCT = 0.10   # remaining <= 10% of limit => approaching
 APPROACH_PACE_FACTOR = 0.5      # safe/day < 50% of the budget's implied daily => approaching
 UNCAT_CONFIDENCE_PCT = 20       # uncategorized >= 20% of spend => low confidence
 UNCAT_CONFIDENCE_MIN = 50.0     # ...and at least this many dollars
+
+
+# Transaction field coercion, shared by paycheck.py and recurring.py. Firefly
+# hands back dates as strings and amounts as strings-that-might-be-null, and
+# both modules were carrying their own identical copy of the same two
+# defensive readers.
+def _as_date(v) -> date | None:
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _amount(t: dict) -> float:
+    try:
+        return abs(float(t.get("amount") or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _norm(name: str) -> str:

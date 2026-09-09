@@ -63,15 +63,16 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
 
 
 def portfolio_state(stocks):
-    """`ok`, `unreachable` or `not_configured` — the same three states
-    `firefly_state` draws, for the same reason.
+    """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13, and the
+    same three states `firefly_state` draws, for the same reason.
 
-    `_get` swallows a timeout and returns `{}`, and `stocks or {"configured":
-    False}` turned that into a confident "No holdings yet. Add your stocks →".
-    So a blip in the stocks container told you to go and set up a portfolio you
-    had already set up. The stocks service answers `{"configured": False}` on
-    its own when it genuinely has no holdings, so an EMPTY payload can only
-    mean it never answered.
+    `_get` swallows a timeout and returns `{}`, and the home payload used to
+    collapse that into `{"configured": False}`. So a stocks container that was
+    briefly down told you **"No holdings yet. Add your stocks →"** — an
+    instruction to go and repair configuration that was already correct, and
+    acting on it means hunting a problem that does not exist. The stocks
+    service answers `{"configured": False}` itself when it genuinely has no
+    holdings, so an EMPTY payload can only mean it never answered.
     """
     if not stocks:
         return "unreachable"
@@ -256,25 +257,6 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     # function exists to prevent.
     return "unknown"
 
-
-def portfolio_state(stocks):
-    """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13.
-
-    `_get` swallows a timeout and returns `{}`, and the home payload used to
-    collapse that into `{"configured": False}`. So a stocks container that was
-    briefly down told you **"No holdings yet. Add your stocks →"** — an
-    instruction to go and fix configuration that was already correct. Acting on
-    it means hunting a problem that does not exist.
-
-    Exactly the same three-states-not-two rule as `firefly_state`, which is the
-    pattern this repo already got right, applied to the one card the idea's
-    acceptance signal names.
-    """
-    if not stocks:
-        return "unreachable"
-    if stocks.get("configured") is False:
-        return "not_configured"
-    return "ok"
 
 
 def _event_bounds(event, local_tz):

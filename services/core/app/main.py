@@ -14,8 +14,7 @@ Nothing here is secret; no credentials are stored or returned.
 """
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import FastAPI

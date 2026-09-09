@@ -19,7 +19,7 @@ position math stay local — computed in this service from the returned prices.
 import asyncio
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import httpx

@@ -37,29 +37,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from .engine import INGEST_MAX_DAYS
+from .engine import INGEST_MAX_DAYS, _amount, _as_date
 
 DEFAULT_CADENCE_DAYS = 14      # biweekly, the most common US pay schedule
 MIN_OBSERVED_CADENCE = 5       # shorter gaps are split deposits, not two cycles
 MAX_OBSERVED_CADENCE = 40      # longer gaps are a missed import, not a cadence
 OVERDUE_GRACE_DAYS = 3         # paydays drift across weekends/holidays
 LOW_LEFT_PCT = 0.15            # <= this share of the spendable pot => "low"
-
-
-def _as_date(v) -> date | None:
-    if isinstance(v, date):
-        return v
-    try:
-        return date.fromisoformat(str(v)[:10])
-    except (TypeError, ValueError):
-        return None
-
-
-def _amount(t: dict) -> float:
-    try:
-        return abs(float(t.get("amount") or 0))
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _terms(raw) -> list[str]:

@@ -11,6 +11,8 @@ Config:
   FIREFLY_WEB_URL       browser-facing URL for the "Open in Firefly" link (e.g. http://<box-ip>:8095)
   FIREFLY_IMPORTER_URL  browser-facing URL for the data importer (e.g. http://<box-ip>:8096)
 """
+import asyncio
+import calendar
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -507,14 +509,18 @@ async def _month_payload() -> dict:
     """Raw material for the budget engine: this month's withdrawals and
     categorized deposits (refunds/credits), per-category nets, income, and
     ledger freshness. Transfers are excluded entirely."""
-    import calendar
     today = _today()
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_txns(client, "withdrawal", month_start.isoformat(), today.isoformat())
-        dep = await _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat())
-        ledger_latest = await _ledger_latest(client)
+        # Three independent walks of the same ledger — sequential, they only
+        # added their latencies together. `ingest_latest` genuinely depends on
+        # the rows the first two return, so it stays after them.
+        wd, dep, ledger_latest = await asyncio.gather(
+            _fetch_txns(client, "withdrawal", month_start.isoformat(), today.isoformat()),
+            _fetch_txns(client, "deposit", month_start.isoformat(), today.isoformat()),
+            _ledger_latest(client),
+        )
         ingest_latest = await _ingest_latest(client, wd + dep)
     # Same page cap as /cycle. A truncated month read understates spending,
     # which makes every budget look healthier than it is — the dangerous
@@ -609,16 +615,17 @@ async def _cycle_payload() -> dict:
     the engine uses them to recognise the money that left the spendable pot
     on payday (Fidelity, Marcus), which is the opposite of spending it.
     """
-    import calendar
     today = _today()
     start, end = _cycle_window(today)
     month_start = today.replace(day=1)
     days_total = calendar.monthrange(today.year, today.month)[1]
     async with httpx.AsyncClient() as client:
-        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=10)
-        dep = await _fetch_txns(client, "deposit", start, end, max_pages=4)
-        tr = await _fetch_txns(client, "transfer", start, end, max_pages=4)
-        ledger_latest = await _ledger_latest(client)
+        wd, dep, tr, ledger_latest = await asyncio.gather(
+            _fetch_txns(client, "withdrawal", start, end, max_pages=10),
+            _fetch_txns(client, "deposit", start, end, max_pages=4),
+            _fetch_txns(client, "transfer", start, end, max_pages=4),
+            _ledger_latest(client),
+        )
         ingest_latest = await _ingest_latest(client, wd + dep + tr)
     # Firefly is asked for one day past today so the range is never
     # zero-length; drop anything future-dated so no claim covers days that
@@ -794,13 +801,15 @@ async def audit():
         today = _today()
         year_ago = today - timedelta(days=365)
         async with httpx.AsyncClient() as client:
-            wd = await _fetch_txns(client, "withdrawal", year_ago.isoformat(),
-                                   today.isoformat(), max_pages=10)
-            dep = await _fetch_txns(client, "deposit", year_ago.isoformat(),
-                                    today.isoformat(), max_pages=4)
-            ledger_latest = await _ledger_latest(client)
-            fb = await client.get(f"{FIREFLY_URL}/api/v1/budgets",
-                                  headers=_headers(), timeout=15)
+            wd, dep, ledger_latest, fb = await asyncio.gather(
+                _fetch_txns(client, "withdrawal", year_ago.isoformat(),
+                            today.isoformat(), max_pages=10),
+                _fetch_txns(client, "deposit", year_ago.isoformat(),
+                            today.isoformat(), max_pages=4),
+                _ledger_latest(client),
+                client.get(f"{FIREFLY_URL}/api/v1/budgets",
+                           headers=_headers(), timeout=15),
+            )
             firefly_budgets = ([b.get("attributes", {}).get("name", "")
                                 for b in fb.json().get("data", [])]
                                if fb.status_code == 200 else [])
