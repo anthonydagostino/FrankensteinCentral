@@ -26,6 +26,11 @@
         </button>
         <button class="cc-icon-btn" id="cc-apps" title="Apps & services">▦</button>
         <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
+        <!-- Shown by auth.js only when a password is set AND this browser holds
+             a session (SCRUM-98). A session you cannot end is half a feature. -->
+        <form id="fc-logout" method="post" action="/logout" hidden>
+          <button class="cc-icon-btn" type="submit" title="Sign out">⎋</button>
+        </form>
         <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
           <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
         </div>
@@ -148,6 +153,7 @@
       </div>
     </div>
 
+    <script src="/auth.js"></script>
     <script src="/weekclock.js"></script>
     <script src="/evcolor.js"></script>
     <script src="/attention.js"></script>

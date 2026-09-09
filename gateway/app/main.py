@@ -8,11 +8,13 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import auth
 from .registry import load_registry
 
 app = FastAPI(title="FrankensteinCentral Gateway")
 REGISTRY = {s.key: s for s in load_registry()}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+app.include_router(auth.router)
 
 # --- Host allowlist (SCRUM-115) ----------------------------------------------
 #
@@ -197,6 +199,18 @@ async def reject_unknown_hosts(request: Request, call_next):
         # this request valid, so 401 and 403 would both be lies.
         return JSONResponse({"error": "invalid host header"}, status_code=400)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Single-user session on everything that is data (SCRUM-98).
+
+    The rules — what is public, why unset means open-but-loud, why not by
+    client IP — live in gateway/app/auth.py with their reasons. This is only
+    the hook. Delegated so tests can monkeypatch `auth.PASSWORD` and drive the
+    real decision, not a copy of it.
+    """
+    return await auth.guard(request, call_next)
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

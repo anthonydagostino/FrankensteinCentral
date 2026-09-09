@@ -96,6 +96,10 @@ own.
 - Honesty rules in the money layer: zero and unknown are different states;
   suppressed values are `null`, never `0`; never present a partial window as
   complete. See `docs/BUDGETS.md`.
+- `GATEWAY_PASSWORD` in `.env` gates the dashboard (SCRUM-98). Unset means
+  no login — a real state, reported by `verify.sh`, `frankenstein-status.sh`
+  and a banner on the page — never a silent one. Do not add public paths to
+  `gateway/app/auth.py` without saying why in the same commit.
 - `scripts/verify.sh` is the live diagnostic. It never prints secrets, email
   bodies, or tokens — keep it that way.
 - Deployment: **pushing is not deploying.** Pushing a task branch is always

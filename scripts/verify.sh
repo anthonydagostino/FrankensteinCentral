@@ -88,6 +88,20 @@ print("-- gateway / core --")
 st, _, err = get(8080, "/api/apps")
 add("PASS" if st == 200 else "FAIL", "gateway :8080", "hub responding" if st == 200 else f"{err}")
 
+# SCRUM-98. /api/auth/status is public on purpose and says only whether a
+# password is configured — never the value. WARN, not FAIL: an open dashboard
+# is a deliberate state the owner may be in; a diagnostic that screams about a
+# choice gets ignored, and then it gets ignored about a fault.
+st, auth_st, err = get(8080, "/api/auth/status")
+if st == 200 and isinstance(auth_st, dict):
+    if auth_st.get("configured"):
+        add("PASS", "dashboard login", "GATEWAY_PASSWORD is set")
+    else:
+        add("WARN", "dashboard login", "NOT SET — anyone on the LAN can open the hub "
+            "(GATEWAY_PASSWORD in .env)")
+else:
+    add("FAIL", "dashboard login", f"/api/auth/status unreachable: {err}")
+
 st, h, err = get(8098, "/health")
 if st == 200 and h:
     tz = h.get("tz")

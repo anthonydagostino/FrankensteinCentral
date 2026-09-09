@@ -89,3 +89,14 @@ except (OSError, ValueError):
 print()
 print("  Ship with: bash scripts/test.sh && bash scripts/promote.sh <sha>")
 PY
+
+# SCRUM-98: the dashboard's own login. Read from .env because the setting lives
+# on the box, not in the repo. NOT SET is a state, not a fault — but it is one
+# you should be looking at, so it is printed every time rather than only once.
+echo
+if grep -q "^GATEWAY_PASSWORD=." .env 2>/dev/null; then
+  echo "  Dashboard login:       SET (GATEWAY_PASSWORD in .env)"
+else
+  echo "  Dashboard login:       NOT SET — anyone on the LAN can open the hub"
+  echo "                         (GATEWAY_PASSWORD in .env; see .env.example)"
+fi
