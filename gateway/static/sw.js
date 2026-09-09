@@ -24,7 +24,7 @@ var DATA = VERSION + "-data";
 // Everything needed to paint the page with no network at all.
 var SHELL_FILES = [
   "/", "/index.html", "/styles.css", "/home.css",
-  "/app.js", "/home.js", "/offline.js", "/donut.js", "/weekclock.js",
+  "/auth.js", "/app.js", "/home.js", "/offline.js", "/donut.js", "/weekclock.js",
   "/manifest.webmanifest", "/icon.svg",
 ];
 
