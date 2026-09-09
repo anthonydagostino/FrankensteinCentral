@@ -926,3 +926,7 @@ body.cc[data-mode="evening"] {
 }
 .wr-line .muted { color: var(--muted); }
 .wr-trend.flat { color: var(--muted); }
+/* "While you were away" (PRODUCT_IDEAS #4) — one shared baseline, so a
+   second device does not re-report what the first already showed. */
+#cc-since .it.urgent { color: var(--imp, #e0574a); font-weight: 600; }
+#cc-since em { font-style: normal; opacity: .55; font-size: .74rem; }

@@ -12,6 +12,7 @@ source of truth instead of duplicating it:
 
 Nothing here is secret; no credentials are stored or returned.
 """
+import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -86,6 +87,18 @@ CREATE TABLE IF NOT EXISTS dismissals (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dismissals_expiry_idx ON dismissals(expires_at);
+-- What the user has already been shown, so "since you last checked" survives
+-- moving between machines. Deliberately ONE row: the question it answers is
+-- "what has Anthony not seen yet", not "what has this laptop not seen yet".
+-- Keying it per device is what localStorage already did, and it is why a
+-- MacBook re-reported everything the phone had shown five minutes earlier.
+CREATE TABLE IF NOT EXISTS seen (
+    id         INTEGER PRIMARY KEY DEFAULT 1,
+    snapshot   TEXT NOT NULL DEFAULT '{}',
+    device     TEXT,
+    seen_at    TIMESTAMPTZ,
+    CONSTRAINT seen_is_singleton CHECK (id = 1)
+);
 CREATE INDEX IF NOT EXISTS focus_day_idx ON focus_sessions(day);
 CREATE INDEX IF NOT EXISTS big3_day_idx ON big3(day);
 """
@@ -705,6 +718,52 @@ async def history(days: int = 30):
                     "nutrition": (logs.get(k) or {}).get("nutrition")})
         d += timedelta(days=1)
     return {"days": out}
+
+
+class SeenIn(BaseModel):
+    snapshot: dict
+    device: str | None = None
+
+
+@app.get("/seen")
+async def get_seen():
+    """The last state the user was actually shown, on any device.
+
+    `home.js` kept this in localStorage under `cc_snap`, so every machine held
+    its own idea of what had been seen: a phone, two MacBooks, a Kali laptop
+    and the OptiPlex each told a different story, and a fresh browser told none.
+    Moving it here makes "since you last checked" mean the person, not the
+    browser profile.
+
+    `seen_at` is null when nothing has ever been recorded — that is not the
+    same as "seen a long time ago", and the caller has to be able to tell.
+    """
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "SELECT snapshot, device, seen_at FROM seen WHERE id = 1")
+        row = await cur.fetchone()
+    if not row:
+        return {"snapshot": None, "device": None, "seen_at": None}
+    try:
+        snap = json.loads(row["snapshot"])
+    except (TypeError, ValueError):
+        snap = None          # unreadable is unknown, never an empty baseline
+    return {"snapshot": snap, "device": row["device"],
+            "seen_at": row["seen_at"].isoformat() if row["seen_at"] else None}
+
+
+@app.put("/seen")
+async def put_seen(s: SeenIn):
+    """Record that the user has now been shown this state."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO seen (id, snapshot, device, seen_at) "
+            "VALUES (1, %s, %s, now()) "
+            "ON CONFLICT (id) DO UPDATE SET snapshot = EXCLUDED.snapshot, "
+            "device = EXCLUDED.device, seen_at = EXCLUDED.seen_at",
+            (json.dumps(s.snapshot)[:20000], (s.device or "")[:60] or None))
+    return {"ok": True}
 
 
 @app.get("/weekly-review")
