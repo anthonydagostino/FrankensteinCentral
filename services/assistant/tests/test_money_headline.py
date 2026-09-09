@@ -241,27 +241,45 @@ def test_cadence_is_rendered_as_a_unit_not_a_chopped_adjective():
 
 # ---- cash runway, through the real _money() and the real renderer -------
 
+# Roles here are Firefly's REAL ones. Fidelity is `defaultAsset` because that
+# is the only value a brokerage can have — Firefly has no investment role — and
+# an earlier version of this fixture used `sharesAsset`, which does not exist
+# (SCRUM-137). Naming it made the exclusion look tested when nothing real could
+# ever match it.
 NW = {"total": 168396.5, "accounts": [
-    {"name": "Chase", "balance": 4200.0, "kind": "asset", "role": "defaultAsset"},
+    {"name": "Chase", "balance": 4200.0, "kind": "asset", "role": "cashWalletAsset"},
     {"name": "Marcus", "balance": 8000.0, "kind": "asset", "role": "savingAsset"},
-    {"name": "Fidelity", "balance": 90000.0, "kind": "asset", "role": "sharesAsset"},
+    {"name": "Fidelity", "balance": 90000.0, "kind": "asset", "role": "defaultAsset"},
 ]}
+# What Anthony would set once, in Settings, to say which accounts are not cash.
+REVIEWED = {"finance": {"not_spendable": ["Fidelity"]}}
 
 
-def _money_nw(spending, paycheck, networth=NW):
+def _money_nw(spending, paycheck, networth=NW, settings=None):
     return am._money({"connected": True, "categories": []}, spending,
-                     {"upcoming": []}, _budget(paycheck), networth, {})
+                     {"upcoming": []}, _budget(paycheck), networth,
+                     settings if settings is not None else {})
 
 
 def test_runway_reaches_the_money_payload_from_real_inputs():
     """The engine is proven in test_runway.py; this proves _money() actually
     feeds it the accounts and the trailing window."""
-    m = _money_nw(_spending(), PAYCHECK_ABSENT)
+    m = _money_nw(_spending(), PAYCHECK_ABSENT, settings=REVIEWED)
     rw = m["runway"]
     assert rw["available"] is True
     assert rw["liquid"] == 12200.0
     assert rw["burn_window_days"] == 30
     assert rw["excluded"] == ["Fidelity"]
+    assert rw["certain"] is True
+
+
+def test_the_not_spendable_setting_reaches_the_engine():
+    """The setting is the only thing that can resolve the ambiguity, so a
+    broken wire here silently reopens the range for good."""
+    open_range = _money_nw(_spending(), PAYCHECK_ABSENT)
+    assert open_range["runway"]["certain"] is False
+    assert open_range["runway"]["ambiguous"] == ["Fidelity"]
+    assert open_range["runway"]["months"] is None
 
 
 def test_runway_respects_the_same_completeness_flag_as_the_headline():
@@ -275,10 +293,10 @@ def test_runway_respects_the_same_completeness_flag_as_the_headline():
 
 @needs_node
 def test_the_card_states_runway_with_its_inputs_visible():
-    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT))
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, settings=REVIEWED))
     assert "months</b> of runway" in html
     assert "$12,200" in html and "cash" in html
-    assert "Fidelity not counted" in html
+    assert "because you said so: Fidelity" in html
 
 
 @needs_node
@@ -290,10 +308,45 @@ def test_an_unavailable_runway_says_why_rather_than_going_blank():
 
 
 @needs_node
-def test_unclassified_money_makes_the_card_say_at_least():
+def test_an_open_range_leads_with_the_floor_and_never_the_ceiling():
+    """64.7 was the ceiling. Anchoring on the high end is the optimistic
+    direction and the expensive one, so the headline is the floor and the
+    ceiling is stated as conditional."""
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT))
+    assert "At least 5.8 months" in html
+    assert "Could be as much as 48.7 months" in html
+    assert html.index("At least 5.8") < html.index("Could be as much as")
+
+
+@needs_node
+def test_the_card_explains_the_ambiguity_and_names_the_exit():
+    """SCRUM-137 end to end. The reader must learn that this is a Firefly
+    schema limit and that Settings is what closes it — not be left with a
+    mystery range."""
     nw = {**NW, "accounts": NW["accounts"] + [
-        {"name": "Mystery", "balance": 5000.0, "kind": "asset", "role": None}]}
+        {"name": "Robinhood", "balance": 20700.0, "kind": "asset",
+         "role": "defaultAsset"}]}
     html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
-    assert "at least" in html
-    assert "Mystery" in html
-    assert "could only make this longer" in html
+    assert "Robinhood" in html
+    assert "no account type for a brokerage" in html
+    assert "Settings" in html
+
+
+@needs_node
+def test_naming_the_accounts_in_settings_collapses_the_card_to_one_number():
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, settings=REVIEWED))
+    assert "<b>5.8 months</b> of runway" in html
+    assert "At least" not in html
+    assert "Could be as much as" not in html
+
+
+@needs_node
+def test_an_account_dropped_for_carrying_a_debt_is_still_named():
+    """Discover was correctly dropped and then appeared nowhere on the card.
+    An input that vanishes cannot be argued with."""
+    nw = {**NW, "accounts": NW["accounts"] + [
+        {"name": "Discover", "balance": -636.68, "kind": "asset",
+         "role": "defaultAsset"}]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
+    assert "Discover" in html
+    assert "carries a debt" in html
