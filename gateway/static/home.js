@@ -485,7 +485,11 @@
     // matters on a day is what is happening on it. The number was 26px and took
     // the widest line in the card, which pushed the actual commitments down and
     // made every column look the same from across the room.
+    // data-tint rotates the month's palette per day, so seven cards are a
+    // progression across the theme rather than one gradient stamped seven
+    // times. Decoration only, and derived from the date server-side.
     return `<article class="${cls}" data-season="${esch(day.season)}"
+        data-tint="${esch(day.tint == null ? 0 : day.tint)}"
         role="listitem" tabindex="0" aria-label="${esch(label)}">
       <header class="wk-hd">
         <div class="wk-hd-top">
