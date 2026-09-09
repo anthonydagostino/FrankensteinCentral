@@ -9,6 +9,13 @@
 #   $1                 branch to deploy (default: whatever is checked out)
 set -euo pipefail
 
+# This script's own absolute path, captured BEFORE the cd below: `$0` may be
+# relative to whatever directory the caller was in, and the self-upgrade check
+# further down compares against it. Resolving it after the cd would compare
+# against a path that does not exist, which reads as "changed" and would hand
+# over on every single run.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 DIR="${FRANKENSTEIN_DIR:-$HOME/FrankensteinCentral}"
 cd "$DIR"
 
@@ -35,6 +42,51 @@ RECORD="$STATE_DIR/deployed.json"
 # succeed. Exporting the resolved path makes them agree by construction
 # instead of by two hand-kept defaults.
 export FRANKENSTEIN_STATE_DIR="$STATE_DIR"
+
+# ── hand over to the version of this script being deployed ─────────────────
+#
+# Below, this script runs `git reset --hard` on the repository it lives in —
+# which includes itself. Bash does not load a script into memory; it executes
+# it by byte offset and re-reads the file as it goes. Rewriting deploy.sh
+# mid-run therefore makes the interpreter resume at a stale offset inside NEW
+# content: it can skip a block, run a fragment of a line, or execute something
+# that was never a statement. Nothing reports an error. The symptom is a
+# deploy that half-applies.
+#
+# The tamer half of the same bug is that a change to deploy.sh only takes
+# effect on the deploy AFTER the one that pulls it, because the pull is
+# performed by the old copy. That is exactly how the FRANKENSTEIN_STATE_DIR
+# export shipped and then did nothing for a cycle.
+#
+# So the handover happens FIRST, while the working tree is still untouched:
+# fetch, compare the running script against the one being deployed, and if
+# they differ, exec the new one from a copy OUTSIDE the repo. That copy is
+# what the reset cannot reach, so there is never a moment when the file being
+# interpreted changes underneath the interpreter. The new script does the
+# actual pull, finds itself already current, and proceeds.
+#
+# Every step degrades to "carry on with the script we have", which is the
+# behaviour this replaces — a deploy must not be blocked by its own upgrade
+# check. An unreachable remote is handled by the real fetch further down,
+# which is still gated by `set -e`.
+SELF_IN_REPO="scripts/deploy.sh"
+UPGRADE="$STATE_DIR/.deploy-upgrade.sh"
+
+if [ "${FRANKENSTEIN_DEPLOY_REEXEC:-0}" != "1" ]; then
+  if git fetch --prune origin "$BRANCH" >/dev/null 2>&1 \
+     && git show "origin/$BRANCH:$SELF_IN_REPO" >"$UPGRADE.tmp" 2>/dev/null \
+     && [ -s "$UPGRADE.tmp" ] \
+     && ! cmp -s "$UPGRADE.tmp" "$SELF"; then
+    mv -f "$UPGRADE.tmp" "$UPGRADE"
+    echo "==> deploy.sh itself changed in '$BRANCH' — running the new one"
+    # Set on the child only. The guard makes the handover strictly one-shot:
+    # the new script skips this block, so a pathological pair of scripts that
+    # each considered the other newer could not ping-pong.
+    export FRANKENSTEIN_DEPLOY_REEXEC=1
+    exec bash "$UPGRADE" "$BRANCH"
+  fi
+  rm -f "$UPGRADE.tmp"
+fi
 
 record() {  # record <result> <sha>
   local result="$1" sha="$2" prev=""
