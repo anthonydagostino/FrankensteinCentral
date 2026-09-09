@@ -44,16 +44,79 @@
   async function refresh(fresh) {
     let d;
     try {
-      d = await fetch("/api/assistant/home" + (fresh ? "?fresh=1" : "")).then((r) => r.json());
-    } catch { return; }
+      const res = await fetch("/api/assistant/home" + (fresh ? "?fresh=1" : ""));
+      d = await res.json();
+      // The service worker stamps a cached reply so the page can tell a live
+      // payload from a replayed one. Without the stamp we are online.
+      const cachedAt = res.headers.get("X-FC-Cached-At");
+      if (cachedAt) d = Offline.staleView(d, cachedAt, new Date().toISOString());
+    } catch {
+      // No network AND nothing cached. Say so rather than leaving whatever is
+      // on screen looking current.
+      showOffline(null);
+      return;
+    }
     HOME = d;
     render(d);
+    showOffline(d.offline);
     // The footer's health claim came from the assistant, which only ever looked
     // at core and gmail -- 2 of 15 services. The gateway already probes all of
     // them concurrently and the UI threw the answer away. Fetched separately so
     // a slow health probe never delays the dashboard itself.
     refreshSystems();
   }
+
+  // ---- offline ---------------------------------------------------------------
+  // Opening the hub from a phone home screen with the box unreachable used to
+  // give a white page. It now paints the last payload -- which immediately
+  // creates the risk docs/BUDGETS.md exists to prevent, so the banner is not
+  // decoration: it is the thing that stops yesterday's figures reading as
+  // today's. Volatile fields are suppressed upstream in Offline.staleView.
+  function showOffline(offline) {
+    let el = q("#cc-offline");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "cc-offline";
+      el.setAttribute("role", "status");
+      const since = q("#cc-since");
+      if (since && since.parentNode) since.parentNode.insertBefore(el, since);
+      else document.body.insertBefore(el, document.body.firstChild);
+    }
+    // Three states, and `null` means something different from absent:
+    //   null       no network AND nothing cached -- a total failure
+    //   undefined  a live payload; nothing to say
+    //   object     a cached payload, which must announce itself
+    if (offline === null) {
+      el.hidden = false;
+      el.textContent = "Offline, and nothing saved to show yet.";
+    } else if (!offline || !offline.stale) {
+      el.hidden = true;
+      el.textContent = "";
+    } else {
+      el.hidden = false;
+      el.textContent = Offline.banner(offline);
+    }
+  }
+
+  // Register the worker. A service worker needs a SECURE CONTEXT, so over
+  // plain HTTP on the LAN this does nothing at all -- the hub is not behind
+  // HTTPS until Tailscale (SCRUM-48) lands. Reported rather than assumed:
+  // silently doing nothing is how you end up believing offline works.
+  function registerWorker() {
+    if (!("serviceWorker" in navigator)) {
+      console.info("[fc] offline mode unavailable: no service worker support");
+      return;
+    }
+    if (!self.isSecureContext) {
+      console.info("[fc] offline mode inactive: needs HTTPS (SCRUM-48). "
+        + "The hub still works; it just will not open offline.");
+      return;
+    }
+    navigator.serviceWorker.register("/sw.js").catch((e) => {
+      console.warn("[fc] offline mode failed to register:", e && e.message);
+    });
+  }
+  registerWorker();
 
   // ---- footer: the REAL systems aggregate -----------------------------------
   async function refreshSystems() {
@@ -572,6 +635,59 @@
     });
   }
 
+  // ---- snooze / dismiss (PRODUCT_IDEAS #34) ---------------------------------
+  // Nothing here could be told "not now" or "not ever", so an email you had
+  // consciously decided not to answer sat at the top of the card for a week
+  // and Do-Next re-suggested what you had just handled. A menu rather than a
+  // bare X: "hidden until when" is the question, and answering it silently
+  // with "forever" would be worse than not offering it.
+  async function dismiss(key, scope, reason) {
+    if (!key) return;
+    await fetch("/api/core/dismiss", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: key, scope: scope, reason: reason || null }),
+    });
+    refresh(true);
+  }
+  async function undismiss(key) {
+    if (!key) return;
+    await fetch("/api/core/dismiss/" + encodeURIComponent(key), { method: "DELETE" });
+    refresh(true);
+  }
+  // The affordance, as markup. `data-key` is read by one delegated handler so
+  // every surface that grows a snooze does not grow its own listener.
+  function snoozeBtn(key, label) {
+    if (!key) return "";
+    return `<span class="snz" data-snz-key="${esch(key)}">
+      <button class="snz-b" type="button" title="${esch(label || "Not now")}"
+        aria-label="${esch(label || "Not now")}">⏳</button>
+      <span class="snz-menu" hidden>
+        <button type="button" data-scope="today">Not today</button>
+        <button type="button" data-scope="forever">Never show this</button>
+      </span></span>`;
+  }
+  // One listener for every snooze on the page, including ones rendered later.
+  document.addEventListener("click", (e) => {
+    const opener = e.target.closest(".snz-b");
+    if (opener) {
+      const menu = opener.parentElement.querySelector(".snz-menu");
+      const wasOpen = !menu.hidden;
+      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+      menu.hidden = wasOpen;
+      e.stopPropagation();
+      return;
+    }
+    const choice = e.target.closest(".snz-menu button");
+    if (choice) {
+      const wrap = choice.closest(".snz");
+      dismiss(wrap.dataset.snzKey, choice.dataset.scope);
+      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+      e.stopPropagation();
+      return;
+    }
+    document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
+  });
+
   function renderDoNext(dn, d) {
     dn = dn || { title: "You're on track", reason: "Nothing urgent.", action: null };
     const el = q("#cc-donext");
@@ -579,14 +695,31 @@
     const btn = dn.action ? `<button class="big-btn" id="dn-go">${esch(actionLabel(dn.action))}</button>` : "";
     el.className = "cc-card compact";
     el.innerHTML = `
-      <h3>Do this next</h3>
+      <h3>Do this next${snoozeBtn(dn.key, "Not this — show me the next thing")}</h3>
       <div class="donext ${calm ? "calm" : ""}">
         <div class="title">${esch(dn.title)}</div>
         <div class="reason">${esch(dn.reason || "")}</div>
         <div class="cta">${btn}</div>
-      </div>`;
+      </div>
+      ${renderHidden(d)}`;
     if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
   }
+
+  // Hidden things say so. A snooze you cannot see or undo is indistinguishable
+  // from the system having quietly lost your data, which is exactly the
+  // suspicion that makes people stop trusting a dashboard.
+  function renderHidden(d) {
+    const keys = (d && d.dismissed) || [];
+    if (!keys.length) return "";
+    const chips = keys.map((k) =>
+      `<button class="hid-x" type="button" data-unhide="${esch(k)}"
+        title="Bring this back">${esch(k)} ✕</button>`).join("");
+    return `<div class="hid-row"><span class="hid-l">Hidden</span>${chips}</div>`;
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-unhide]");
+    if (b) undismiss(b.dataset.unhide);
+  });
 
   // ---- Needs attention ------------------------------------------------------
   // AUDIT.md section 3 promised a unified attention feed with Important/FYI
@@ -622,7 +755,7 @@
             ${n.detail ? `<em>${esch(n.detail)}</em>` : ""}
           </span>
           <span class="att-sev" title="${sev === "important" ? "Important" : "FYI"}">${sev === "important" ? "Important" : "FYI"}</span>
-          ${btn}
+          ${btn}${snoozeBtn(n.key, "Not now")}
         </div>`;
     }).join("");
     el.hidden = false;
@@ -697,7 +830,7 @@
         <div class="inbox-main">
           <div class="s">${esch(e.subject || "(no subject)")}</div>
           <div class="f"><span>${esch(e.from)}</span><span class="age">${esch(e.age || "")}</span></div>
-        </div>${catTag(e.category)}</div>`).join("");
+        </div>${catTag(e.category)}${snoozeBtn(e.key, "I'm not answering this")}</div>`).join("");
     const need = inbox.need_reply || 0;
     const header = `<h3>Inbox${need ? ` · ${need} need a reply` : ""}</h3>`;
     // Sync age, not message age — these are different facts. A 72h-old
@@ -905,6 +1038,32 @@
         ? ` · ${rec.event_count - bits.length} more` : "";
       recLine = `<p class="mny-sub mny-rec">🔁 ${bits.join(" · ")}${more}</p>`;
     }
+    // ---- cash runway: the only forward-looking number on this card -------
+    // Everything else here is a rear-view mirror. This one answers "how long
+    // do I last", so it gets stated plainly or not at all — an optimistic
+    // runway is worse than no runway, which is why the engine returns null
+    // with a reason rather than a cheerful guess.
+    const rw = m.runway || {};
+    let runLine = "";
+    if (rw.available && rw.months != null) {
+      const at = rw.lower_bound ? "at least " : "";
+      const cls = rw.months < 3 ? "warn" : "";
+      const excl = (rw.excluded || []).length
+        ? ` · ${(rw.excluded || []).join(", ")} not counted` : "";
+      const unk = rw.lower_bound
+        ? `<br><span class="sub">${(rw.unclassified || []).join(", ")} ${
+             (rw.unclassified || []).length === 1 ? "isn't" : "aren't"
+           } marked as cash in Firefly, so it's left out — counting it could only make this longer.</span>`
+        : "";
+      const alt = rw.months_without_resale != null
+        ? ` · ${rw.months_without_resale} without resale` : "";
+      runLine = `<p class="mny-run ${cls}">🧭 <b>${at}${rw.months} months</b> of runway${alt}
+        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${unk}</p>`;
+    } else if (rw.reason) {
+      // Named, not blank: a missing runway with no explanation reads as a bug.
+      runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;
+    }
+
     // Secondary context: a rolling window and remaining budget capacity.
     // Neither is a bank balance and neither is "left to spend".
     const subBits = [];
@@ -963,7 +1122,7 @@
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
-      ${payLine}${budLine}${recLine}${subLine}
+      ${payLine}${runLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>

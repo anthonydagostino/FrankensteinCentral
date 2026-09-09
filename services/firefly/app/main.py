@@ -91,11 +91,20 @@ def _pick(summary: dict, prefix: str) -> dict | None:
 
 
 def _accts(payload: dict, kind: str) -> list[dict]:
+    """Accounts, keeping the ROLE Firefly assigns them.
+
+    `account_role` is what separates a checking account from a brokerage, and
+    it was being dropped here. Cash runway divides spendable money by burn, so
+    counting a retirement account as spendable would produce a confidently
+    wrong number — the exact failure docs/BUDGETS.md exists to prevent. An
+    account with no role is passed through as None rather than guessed at.
+    """
     out = []
     for a in payload.get("data", []):
         at = a.get("attributes", {})
         out.append({"name": at.get("name", ""), "balance": at.get("current_balance", "0"),
-                    "currency": at.get("currency_code", ""), "type": kind})
+                    "currency": at.get("currency_code", ""), "type": kind,
+                    "role": at.get("account_role") or None})
     return out
 
 
@@ -840,11 +849,16 @@ async def networth():
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "firefly unreachable", "detail": str(exc)}, status_code=502)
     nw = d.get("net_worth") or {}
+    # `kind` and `role` travel with each account. Without them a consumer
+    # cannot tell a debt from an asset, nor cash from a brokerage — this list
+    # used to be flat, so both distinctions were lost the moment it left here.
     accounts = []
     for a in d.get("accounts", []):
-        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0)})
+        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0),
+                         "kind": "asset", "role": a.get("role")})
     for a in d.get("liabilities", []):
-        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0)})
+        accounts.append({"name": a["name"], "balance": float(a.get("balance") or 0),
+                         "kind": "liability", "role": a.get("role")})
     total = nw.get("value")
     if total is None:
         total = sum(a["balance"] for a in accounts)

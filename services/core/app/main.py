@@ -26,7 +26,8 @@ app = FastAPI(title="Core Service")
 
 # "Today" must mean the user's actual day, not the box's UTC day.
 from .daymath import (  # noqa: E402 - the clock seam and score arithmetic
-    EASTERN, compute_score, local_day as _parse_day, today as _today,
+    DISMISS_SCOPES, EASTERN, active_dismissals, compute_score,
+    dismissal_expiry, local_day as _parse_day, today as _today,
     week_start as _week_start,
 )
 
@@ -70,6 +71,21 @@ CREATE TABLE IF NOT EXISTS captures (
     done       BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS dismissals (
+    key        TEXT PRIMARY KEY,
+    scope      TEXT NOT NULL,
+    reason     TEXT,
+    -- NULL means forever. Stored as an instant, not a duration, so a row
+    -- means the same thing however long the service has been running.
+    expires_at TIMESTAMPTZ,
+    -- How many times this has been snoozed. The row is never deleted on
+    -- expiry, so this survives: what you keep snoozing is usually the most
+    -- honest signal the system has, and the weekly review reads it.
+    count      INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dismissals_expiry_idx ON dismissals(expires_at);
 CREATE INDEX IF NOT EXISTS focus_day_idx ON focus_sessions(day);
 CREATE INDEX IF NOT EXISTS big3_day_idx ON big3(day);
 """
@@ -149,6 +165,14 @@ class Big3In(BaseModel):
 class CaptureIn(BaseModel):
     text: str
     kind: str | None = "note"
+
+
+class DismissIn(BaseModel):
+    key: str
+    scope: str = "today"
+    reason: str | None = None
+    # Only read when scope == "until"; an ISO instant.
+    until: str | None = None
 
 
 class CapturePatch(BaseModel):
@@ -580,6 +604,72 @@ async def delete_capture(cap_id: int):
     async with pool.connection() as conn:
         await conn.execute("DELETE FROM captures WHERE id = %s", (cap_id,))
     return {"deleted": cap_id}
+
+
+@app.get("/dismissals")
+async def get_dismissals(include_expired: bool = False):
+    """What is currently hidden, and — with include_expired — the whole record.
+
+    Expired rows are kept deliberately. "You have snoozed this 6 times" is a
+    fact about you that only survives if the row does.
+    """
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "SELECT key, scope, reason, expires_at, count, created_at, updated_at "
+            "FROM dismissals ORDER BY updated_at DESC LIMIT 500"
+        )
+        rows = await cur.fetchall()
+    now = datetime.now(EASTERN)
+    hidden = active_dismissals(rows, now)
+    for r in rows:
+        r["active"] = r["key"] in hidden
+    if not include_expired:
+        rows = [r for r in rows if r["active"]]
+    return {"items": rows, "count": len(rows),
+            "active_keys": sorted(hidden)}
+
+
+@app.post("/dismiss")
+async def dismiss(d: DismissIn):
+    """Tell the system "not now" or "not ever" about one thing.
+
+    Re-snoozing an already-snoozed key bumps `count` rather than inserting a
+    second row: the key IS the identity, and the interesting number is how
+    many times you have pushed it away.
+    """
+    key = (d.key or "").strip()
+    if not key:
+        return {"error": "empty key"}
+    if d.scope not in DISMISS_SCOPES:
+        return {"error": f"scope must be one of {list(DISMISS_SCOPES)}"}
+    try:
+        expires = dismissal_expiry(d.scope, datetime.now(EASTERN), d.until)
+    except ValueError as e:
+        return {"error": str(e)}
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "INSERT INTO dismissals (key, scope, reason, expires_at) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET "
+            "  scope = EXCLUDED.scope, reason = EXCLUDED.reason, "
+            "  expires_at = EXCLUDED.expires_at, "
+            "  count = dismissals.count + 1, updated_at = now() "
+            "RETURNING key, scope, reason, expires_at, count",
+            (key[:200], d.scope, (d.reason or None), expires),
+        )
+        row = await cur.fetchone()
+    return {"ok": True, "dismissal": row}
+
+
+@app.delete("/dismiss/{key:path}")
+async def undismiss(key: str):
+    """Bring something back. Removes the row entirely — an un-dismissal is a
+    correction, not another event worth counting."""
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM dismissals WHERE key = %s", (key,))
+    return {"ok": True, "key": key}
 
 
 @app.get("/history")
