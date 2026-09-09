@@ -238,3 +238,62 @@ def test_cadence_is_rendered_as_a_unit_not_a_chopped_adjective():
                         "confidence": "high", "last_seen": "2026-09-01"}]}})
     assert "$890.00/yr" in html
     assert "/annual" not in html
+
+# ---- cash runway, through the real _money() and the real renderer -------
+
+NW = {"total": 168396.5, "accounts": [
+    {"name": "Chase", "balance": 4200.0, "kind": "asset", "role": "defaultAsset"},
+    {"name": "Marcus", "balance": 8000.0, "kind": "asset", "role": "savingAsset"},
+    {"name": "Fidelity", "balance": 90000.0, "kind": "asset", "role": "sharesAsset"},
+]}
+
+
+def _money_nw(spending, paycheck, networth=NW):
+    return am._money({"connected": True, "categories": []}, spending,
+                     {"upcoming": []}, _budget(paycheck), networth, {})
+
+
+def test_runway_reaches_the_money_payload_from_real_inputs():
+    """The engine is proven in test_runway.py; this proves _money() actually
+    feeds it the accounts and the trailing window."""
+    m = _money_nw(_spending(), PAYCHECK_ABSENT)
+    rw = m["runway"]
+    assert rw["available"] is True
+    assert rw["liquid"] == 12200.0
+    assert rw["burn_window_days"] == 30
+    assert rw["excluded"] == ["Fidelity"]
+
+
+def test_runway_respects_the_same_completeness_flag_as_the_headline():
+    """It must not be the one figure on the card that ignores a truncated
+    read — a low burn makes runway look LONGER, not shorter."""
+    m = _money_nw(_spending(complete=False), PAYCHECK_ABSENT)
+    assert m["month_complete"] is False
+    assert m["runway"]["months"] is None
+    assert "truncated" in m["runway"]["reason"]
+
+
+@needs_node
+def test_the_card_states_runway_with_its_inputs_visible():
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT))
+    assert "months</b> of runway" in html
+    assert "$12,200" in html and "cash" in html
+    assert "Fidelity not counted" in html
+
+
+@needs_node
+def test_an_unavailable_runway_says_why_rather_than_going_blank():
+    html = _render(_money_nw(_spending(complete=False), PAYCHECK_ABSENT))
+    assert "Runway unavailable" in html
+    assert "truncated" in html
+    assert "months</b> of runway" not in html
+
+
+@needs_node
+def test_unclassified_money_makes_the_card_say_at_least():
+    nw = {**NW, "accounts": NW["accounts"] + [
+        {"name": "Mystery", "balance": 5000.0, "kind": "asset", "role": None}]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
+    assert "at least" in html
+    assert "Mystery" in html
+    assert "could only make this longer" in html

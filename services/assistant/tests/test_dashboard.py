@@ -1250,3 +1250,65 @@ def test_a_generator_of_candidates_is_consumed_lazily_and_correctly():
     got = dash.first_undismissed(gen(), {"a"})
     assert got["key"] == "b"
     assert built == ["a", "b"], f"evaluated too much: {built}"
+
+
+# --- the month's theme is a palette, not one colour -------------------------
+#
+# Each month declares three colours. The grid drew all three on every card, in
+# the same order, seven times — so a three-colour theme still read as a single
+# colour, because nothing about it changed as your eye moved across the week.
+# `tint` rotates which of the three a day leads with.
+#
+# It is decoration and says nothing about the data, so what these pin is that
+# it stays derived from the DATE: a tint that moved with a card's position
+# would repaint the whole grid every time the window rolled over midnight,
+# which is motion carrying no information.
+
+def test_every_day_gets_a_tint_in_range():
+    for offset in range(0, 800, 11):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        for day in dash.week_window([], at(d, 9), NY)["days"]:
+            assert day["tint"] in range(dash.TINTS), (d, day["iso"], day["tint"])
+
+
+def test_consecutive_days_do_not_share_a_tint():
+    """The whole point. Two neighbouring cards leading with the same colour is
+    the repetition this exists to break."""
+    for offset in range(0, 800, 7):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        days = dash.week_window([], at(d, 9), NY)["days"]
+        for earlier, later in zip(days, days[1:]):
+            assert earlier["tint"] != later["tint"], (earlier["iso"], later["iso"])
+
+
+def test_a_week_shows_every_colour_of_the_palette():
+    """Seven days over a three-colour rotation must reach all three, or a month
+    would go a whole week without showing part of its own theme."""
+    for offset in range(0, 800, 13):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        tints = {day["tint"] for day in dash.week_window([], at(d, 9), NY)["days"]}
+        assert tints == set(range(dash.TINTS)), (d, tints)
+
+
+def test_a_date_keeps_its_tint_wherever_it_sits_in_the_window():
+    """The reason it comes from the date and not the column index: the same
+    day must not be repainted just because the window scrolled past it."""
+    target = date(2026, 4, 15)
+    seen = set()
+    for lead in range(7):  # the same date, at all seven positions
+        start = target - timedelta(days=lead)
+        days = dash.week_window([], at(start, 9), NY)["days"]
+        match = next(x for x in days if x["iso"] == target.isoformat())
+        assert days.index(match) == lead
+        seen.add(match["tint"])
+    assert len(seen) == 1, f"the 15th was drawn {len(seen)} different ways"
+
+
+def test_the_tint_is_independent_of_the_season():
+    """Two separate decorative facts: which palette, and which member of it
+    leads. Collapsing them would tie a colour to a month's length."""
+    for offset in range(0, 800, 3):
+        d = date(2026, 1, 1) + timedelta(days=offset)
+        day = dash.week_window([], at(d, 9), NY)["days"][0]
+        assert day["season"] == dash.SEASON_KEYS[d.month - 1]
+        assert day["tint"] == d.toordinal() % dash.TINTS
