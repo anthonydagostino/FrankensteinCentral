@@ -1994,6 +1994,185 @@ reader that detour.
 
 ---
 
+# Wave 9 — how it feels to use: latency, keyboard, and where state actually lives
+
+Eight waves of correctness, security and money. This one is about the three
+dimensions nobody has looked at: how long the page takes, whether it can be
+driven from a keyboard, and which of your data would survive clearing a browser
+profile. All verified against production `e918f7e`.
+
+## 64. The home screen waits on the slowest of sixteen services, every time the cache expires
+
+`build_home()` fans out to **16** services concurrently, each with `timeout=8`:
+
+```python
+if (not fresh and cached["data"] and cached["at"]
+        and (datetime.now(LOCAL_TZ) - cached["at"]).total_seconds() < _HOME_TTL):
+    return cached["data"]
+# otherwise: recompute inline, right now, while this request waits
+```
+
+Concurrency means the worst case is ~8 seconds, not 128 — that part is right.
+But three things compound:
+
+1. **The whole page is one request.** `home.js` does a single
+   `fetch("/api/assistant/home")`, so the browser renders nothing until the
+   slowest of sixteen returns. There is no progressive card-by-card render.
+2. **A cache miss blocks the requester.** The unlucky load pays the full cost
+   while everyone else's would have been instant.
+3. **Nothing warms the cache.** `_HOME_TTL` is 30 seconds and
+   `AUTO_SYNC_SECONDS` ships as `0`; even when set it runs `sync()`, which is a
+   different code path and does not populate `_HOME_CACHE`.
+
+So: open the dashboard after a few minutes away, with one sick service — Plex
+on someone else's network, Stooq rate-limited, Firefly mid-restart — and you get
+up to eight seconds of nothing. Not an error, not a skeleton. Nothing. That is
+the single most-felt property of this dashboard and it is invisible in every
+test, because tests don't wait.
+
+**Proposal.** Stale-while-revalidate: serve the cached payload immediately with
+its age attached, and kick the refresh off in the background. A load then costs
+one local round-trip, always, and the page shows real numbers labelled "as of
+14:02" instead of a blank screen.
+
+The pattern is already in this codebase — `gmail` serves its last-known-good
+inbox while a refresh runs, and the card says when it was last checked. This is
+that idea one level up.
+
+**Effort:** S · **Acceptance signal:** stop one sub-app; the home screen still
+renders in under a second.
+
+## 65. One timeout budget for a service on localhost and a service on the internet
+
+Every `_get` uses `timeout=8`, whether the target is `core` (same Docker
+network, sub-millisecond) or `plex` (a server on *someone else's* network,
+reached through plex.tv) or `stocks` (Stooq, which rate-limits by IP).
+
+That means the services most likely to be slow are given exactly as long to be
+slow as the ones that never are, and they set the page's latency floor.
+
+**Proposal.** A per-service timeout budget: ~2s for anything inside compose,
+~5s for anything reaching the internet, and the total capped so the page has a
+worst case you can state. With #64 in place this matters less — a slow service
+just misses the current refresh — but the two together are what make the page
+feel instant rather than usually-fast.
+
+**Effort:** XS
+
+## 66. Five overlays, three Escape handlers, and `aria-modal` asserting something that isn't true
+
+`index.html` declares five overlays: `#palette`, `#focus`, `#launcher`,
+`#settings`, `#overlay` (app detail).
+
+Escape closes three of them — palette and launcher (`home.js:1454-1455`), and
+the app modal (`app.js:93`). **Settings and the focus timer have no Escape
+handler at all.** Settings is a form: open it, change a goal, press Escape
+expecting to cancel, and nothing happens.
+
+Underneath that, none of the five has any focus management:
+
+- no focus moved into the dialog on open (except the palette input),
+- no focus trap, so Tab walks straight out of the modal and into the page
+  behind it,
+- no focus restored to the trigger on close,
+- no `inert` or `aria-hidden` on the background.
+
+And three of them declare `role="dialog" aria-modal="true"`. That attribute
+tells assistive technology *"everything outside this is unavailable"* — which
+is a promise the code does not keep. An unimplemented `aria-modal` is worse
+than none, because a screen-reader user is told the rest of the page is inert
+and then finds themselves in it.
+
+This is worth fixing rather than deleting the attribute, because the project
+clearly cares: the donut wedges got `tabindex="0"`, `role="img"` and per-wedge
+`aria-label` in the same week. The dialogs just haven't had the same pass.
+
+**Proposal.** One shared `openDialog(el)` / `closeDialog()` used by all five:
+remember the trigger, move focus in, trap Tab inside, restore focus on close,
+Escape everywhere. Roughly forty lines that replace five inconsistent
+implementations.
+
+**Effort:** S · **Acceptance signal:** every overlay closes on Escape, and Tab
+never reaches the page behind an open one.
+
+## 67. Quick actions have no pending state, and the refresh they trigger is the slow path
+
+```js
+b.onclick = async () => { await post("/core/water", {oz}); toast("+16 oz"); refresh(true); }
+q("#cc-health").querySelector("[data-gym]").onclick = async () => {
+  await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); };
+```
+
+`refresh(true)` sends `?fresh=1`, which **bypasses the cache** and forces the
+full sixteen-service fan-out from #64. So after tapping "Log workout" the number
+on screen does not move for up to eight seconds, the button stays live, and
+nothing indicates anything is happening except a toast that has already faded.
+
+Tap it twice — which is the natural response to a button that appears not to
+have worked — and you have logged two workouts. For water that is cosmetic. For
+gym it inflates the `fitness` score component (weight 20) and, once streaks
+land, the streak.
+
+The right pattern is already here, one card over: the inbox refresh button does
+`rf.disabled = true; rf.textContent = "Checking…"`. Same file, same class of
+action, and only that one does it.
+
+**Proposal.** Disable the control and show it working until the write returns;
+update the number optimistically from the response rather than waiting on a
+full re-render. And the write itself should not need a sixteen-service fan-out
+to reflect — `/core/gym` already returns the new state.
+
+**Effort:** S
+
+## 68. Your job-hunt research lives in one browser, and is not backed up
+
+`jobs.html` persists — I assumed it didn't and was wrong. It writes to
+`localStorage` and the page says so: *"Click into any list to edit; it saves in
+this browser as you go."* The weighted ranking of 233 Analytics, DeepL, AIRIA
+and EliseAI, the per-factor scores, the pros and cons — all saved.
+
+**In that browser.** Not on the server, not in Postgres, and therefore not in
+the database backup (SCRUM-68), which is itself the backup that has never been
+restore-tested. You have a 2019 MacBook, a 2012 MacBook, a Kali Lenovo, the
+OptiPlex and a phone; this data exists on exactly one of them, whichever one you
+happened to type it into. Clearing site data loses it silently.
+
+The asymmetry is worth stating: the most decision-relevant thinking you have
+recorded anywhere in this system — how you actually rank the companies you might
+work for — is stored in the least durable place in it, while your water intake
+is in a replicated Postgres.
+
+The team already recognises this problem class: there is a
+`claude/since-across-devices` branch in flight, doing exactly this migration for
+the "since you last checked" snapshot — a far less important piece of state.
+
+**Proposal.** Move it server-side with the same move, or fold it into the jobs
+service (SCRUM-74) as the per-company notes field that idea already specifies.
+Until then, one line on the page saying the data is local to this browser would
+at least make the risk visible.
+
+**Effort:** XS to warn · S to migrate · **Related:** SCRUM-74, SCRUM-68
+
+## 69. On a phone, Back leaves the dashboard instead of closing what you opened
+
+There is no `pushState`, `replaceState` or `popstate` anywhere in
+`gateway/static/` — zero matches. Overlays open and close by toggling `hidden`,
+with no history entry.
+
+On a desktop that is a minor annoyance. On a phone, Back is the primary
+navigation gesture: open the app launcher, open a sub-app modal, press Back to
+go up a level, and you leave FrankensteinCentral entirely — losing the modal,
+the scroll position and, with the PWA (SCRUM-90), the app shell.
+
+**Proposal.** Push a history entry when a dialog opens and close it on
+`popstate`. Perhaps fifteen lines, and it pairs directly with #66's shared
+dialog helper — both are the same "we have five overlays and no common way to
+manage them" problem.
+
+**Effort:** XS once #66 exists · **Related:** SCRUM-90
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
