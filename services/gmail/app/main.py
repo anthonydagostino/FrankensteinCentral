@@ -378,8 +378,18 @@ async def health():
 async def internal_token():
     """Access token for OTHER sub-apps on the internal docker network only —
     lets the schedule service push to Google Calendar with the same
-    connected account, without a second OAuth flow. Not linked from the UI
-    and not meaningful to call from outside the compose network."""
+    connected account, without a second OAuth flow.
+
+    "Internal" is now enforced rather than described: the gateway refuses any
+    path with an `internal` segment (gateway/app/main.py PRIVATE_SEGMENTS,
+    guarded by tests/test_internal_not_proxyable.py). It used to be a claim in
+    this docstring and nothing more, and the proxy served the credential below
+    to anyone who asked for it — SCRUM-114.
+
+    Still true, and not fixed here: this service publishes 8083:8000, so the
+    route is reachable at http://<box>:8083/internal/token without the gateway
+    in the path at all. That needs the port to stop being published (SCRUM-116),
+    which first needs the OAuth redirect URI moved off it."""
     token = await _access_token()
     if not token:
         return JSONResponse({"error": "not connected"}, status_code=503)

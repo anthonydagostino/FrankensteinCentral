@@ -45,6 +45,41 @@ async def aggregate_health():
     return {r["key"]: r for r in results}
 
 
+# Path segments a browser must never reach through the gateway.
+#
+# `/internal/...` is the convention sub-apps use for routes meant only for
+# other containers on the compose network. gmail's /internal/token hands out a
+# live Google OAuth credential carrying gmail.modify AND calendar.events — read
+# and modify the whole inbox, read and write the calendar.
+#
+# That convention was a docstring and nothing else. The proxy below forwards
+# any path to any registered service and the gateway has no authentication, so
+# `GET http://<box>:8080/api/gmail/internal/token` returned the credential to
+# any unauthenticated caller on the network — through the same origin the
+# dashboard is served on. The comment described an intent; this set enforces it.
+PRIVATE_SEGMENTS = {"internal"}
+
+
+def _reaches_private_route(path: str) -> bool:
+    """True when `path` lands on a container-only route.
+
+    Resolves "." and ".." BEFORE looking at the segments, because httpx
+    normalises them when it builds the upstream URL: a literal check would
+    wave `x/../internal/token` through and it would still arrive at
+    /internal/token upstream.
+    """
+    resolved: list[str] = []
+    for segment in path.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if resolved:
+                resolved.pop()
+            continue
+        resolved.append(segment)
+    return any(s.casefold() in PRIVATE_SEGMENTS for s in resolved)
+
+
 @app.api_route(
     "/api/{app_key}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -54,6 +89,12 @@ async def proxy(app_key: str, path: str, request: Request):
     sub = REGISTRY.get(app_key)
     if sub is None:
         return JSONResponse({"error": f"unknown app '{app_key}'"}, status_code=404)
+
+    # 404 and not 403, worded exactly as FastAPI words a route that isn't
+    # there: a refusal that says "you found something" is itself an answer.
+    # Refused here, before any upstream call, so nothing reaches the sub-app.
+    if _reaches_private_route(path):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
 
     target = f"{sub.url}/{path}"
     body = await request.body()
