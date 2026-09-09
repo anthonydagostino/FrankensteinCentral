@@ -146,13 +146,18 @@ async def _live() -> dict:
     cat_start = (today - timedelta(days=30)).isoformat()  # pie = trailing 30 days
     failures: list[str] = []
     async with httpx.AsyncClient() as client:
-        summary = await _read(client, "/api/v1/summary/basic",
-                              {"start": start, "end": end}, failures)
-        asset = await _read(client, "/api/v1/accounts", {"type": "asset"}, failures)
-        liab = await _read(client, "/api/v1/accounts", {"type": "liability"}, failures)
-        tx = await _read(client, "/api/v1/transactions", {"limit": 10}, failures)
-        cat = await _read(client, "/api/v1/insight/expense/category",
-                          {"start": cat_start, "end": end}, failures)
+        # Five independent endpoints, each allowed 20s. In series that is the
+        # sum on a slow Firefly; concurrently it is the slowest of the five.
+        # `failures` is still appended by each _read — only its ORDER changes,
+        # and the only thing that reads it is a count and a joined message.
+        summary, asset, liab, tx, cat = await asyncio.gather(
+            _read(client, "/api/v1/summary/basic", {"start": start, "end": end}, failures),
+            _read(client, "/api/v1/accounts", {"type": "asset"}, failures),
+            _read(client, "/api/v1/accounts", {"type": "liability"}, failures),
+            _read(client, "/api/v1/transactions", {"limit": 10}, failures),
+            _read(client, "/api/v1/insight/expense/category",
+                  {"start": cat_start, "end": end}, failures),
+        )
 
     # Everything failed => Firefly really is unreachable. Say so loudly rather
     # than returning an empty payload that would read as "you have nothing".

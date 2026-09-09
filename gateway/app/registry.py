@@ -11,117 +11,68 @@ class SubApp:
     url: str
 
 
-def load_registry() -> list[SubApp]:
-    """The catalog of sub-apps the hub knows about.
+# The catalog of sub-apps the hub knows about, as data rather than as fifteen
+# near-identical constructor calls: (key, name, icon, url env var, default url,
+# description). Adding a sub-app to FrankensteinCentral means adding a row here
+# and a container in docker-compose.
+#
+# The env var names are NOT derivable from the key — `plex` reads PLEX_SVC_URL
+# and `firefly` reads FIREFLY_URL_SVC, because both names were already taken by
+# the upstream services these talk to. So each row names its own variable
+# rather than a rule pretending to cover them.
+_CATALOG = (
+    ('core', 'Core', '🧩',
+     'CORE_URL', 'http://core:8000',
+     'Your personal state & daily score — study, water, nutrition, Big 3, captures.'),
+    ('stocks', 'Stocks', '📈',
+     'STOCKS_URL', 'http://stocks:8000',
+     'Portfolio & watchlist — value, daily movers, positions. Keyless quotes.'),
+    ('assistant', 'Assistant', '🧠',
+     'ASSISTANT_URL', 'http://assistant:8000',
+     'Your manager. Reads across every sub-app, surfaces deadlines, and routes info where it belongs.'),
+    ('powerbuy', 'PowerBuy', '🛒',
+     'POWERBUY_URL', 'http://powerbuy:8000',
+     'Your arbitrage tracker. Purchases, profit, unpaid & expiring alerts.'),
+    ('fitness', 'Fitness', '💪',
+     'FITNESS_URL', 'http://fitness:8000',
+     'Tracks your gym visits, plans the optimal week, and tells you what to eat and buy.'),
+    ('gmail', 'Gmail Checker', '📬',
+     'GMAIL_URL', 'http://gmail:8000',
+     'Scans your inbox for what actually needs a reply and flags deadlines.'),
+    ('schedule', 'Schedule', '🗓️',
+     'SCHEDULE_URL', 'http://schedule:8000',
+     'Your calendar. The assistant drops interviews, deadlines, and workouts here.'),
+    ('finance', 'Finance', '💸',
+     'FINANCE_URL', 'http://finance:8000',
+     "Your bills & subscriptions. Monthly spend and what's due soon."),
+    ('tasks', 'Tasks', '✅',
+     'TASKS_URL', 'http://tasks:8000',
+     "Your to-do list. Quick capture, check things off, track what's open."),
+    ('budget', 'Budget', '📊',
+     'BUDGET_URL', 'http://budget:8000',
+     "Monthly spending by category. What's left and what's over."),
+    ('deals', 'Deals', '🏷️',
+     'DEALS_URL', 'http://deals:8000',
+     'Real discounts spotted in your inbox — merchant, offer, source email.'),
+    ('networth', 'Net Worth', '💎',
+     'NETWORTH_URL', 'http://networth:8000',
+     'Chase, Marcus, Robinhood, Fidelity, TSP — individual balances and the total.'),
+    ('vault', 'Vault', '🔐',
+     'VAULT_URL', 'http://vault:8000',
+     'Password health from your Vaultwarden — weak, reused, old, no-2FA. No secrets stored.'),
+    ('plex', 'Plex', '🎬',
+     'PLEX_SVC_URL', 'http://plex:8000',
+     'The Plex server shared with you — continue watching, recently added, libraries.'),
+    ('firefly', 'Firefly', '📒',
+     'FIREFLY_URL_SVC', 'http://firefly:8000',
+     "Your Firefly III finances — net worth, this month's spend/income, accounts, recent transactions."),
+)
 
-    Each sub-app is an independent service reachable at its own URL. Adding a
-    new sub-app to FrankensteinCentral means adding a service here (and a
-    container in docker-compose).
-    """
+
+def load_registry() -> list[SubApp]:
+    """Each sub-app is an independent service reachable at its own URL."""
     return [
-        SubApp(
-            key="core",
-            name="Core",
-            description="Your personal state & daily score — study, water, nutrition, Big 3, captures.",
-            icon="🧩",
-            url=os.environ.get("CORE_URL", "http://core:8000"),
-        ),
-        SubApp(
-            key="stocks",
-            name="Stocks",
-            description="Portfolio & watchlist — value, daily movers, positions. Keyless quotes.",
-            icon="📈",
-            url=os.environ.get("STOCKS_URL", "http://stocks:8000"),
-        ),
-        SubApp(
-            key="assistant",
-            name="Assistant",
-            description="Your manager. Reads across every sub-app, surfaces deadlines, and routes info where it belongs.",
-            icon="🧠",
-            url=os.environ.get("ASSISTANT_URL", "http://assistant:8000"),
-        ),
-        SubApp(
-            key="powerbuy",
-            name="PowerBuy",
-            description="Your arbitrage tracker. Purchases, profit, unpaid & expiring alerts.",
-            icon="🛒",
-            url=os.environ.get("POWERBUY_URL", "http://powerbuy:8000"),
-        ),
-        SubApp(
-            key="fitness",
-            name="Fitness",
-            description="Tracks your gym visits, plans the optimal week, and tells you what to eat and buy.",
-            icon="💪",
-            url=os.environ.get("FITNESS_URL", "http://fitness:8000"),
-        ),
-        SubApp(
-            key="gmail",
-            name="Gmail Checker",
-            description="Scans your inbox for what actually needs a reply and flags deadlines.",
-            icon="📬",
-            url=os.environ.get("GMAIL_URL", "http://gmail:8000"),
-        ),
-        SubApp(
-            key="schedule",
-            name="Schedule",
-            description="Your calendar. The assistant drops interviews, deadlines, and workouts here.",
-            icon="🗓️",
-            url=os.environ.get("SCHEDULE_URL", "http://schedule:8000"),
-        ),
-        SubApp(
-            key="finance",
-            name="Finance",
-            description="Your bills & subscriptions. Monthly spend and what's due soon.",
-            icon="💸",
-            url=os.environ.get("FINANCE_URL", "http://finance:8000"),
-        ),
-        SubApp(
-            key="tasks",
-            name="Tasks",
-            description="Your to-do list. Quick capture, check things off, track what's open.",
-            icon="✅",
-            url=os.environ.get("TASKS_URL", "http://tasks:8000"),
-        ),
-        SubApp(
-            key="budget",
-            name="Budget",
-            description="Monthly spending by category. What's left and what's over.",
-            icon="📊",
-            url=os.environ.get("BUDGET_URL", "http://budget:8000"),
-        ),
-        SubApp(
-            key="deals",
-            name="Deals",
-            description="Real discounts spotted in your inbox — merchant, offer, source email.",
-            icon="🏷️",
-            url=os.environ.get("DEALS_URL", "http://deals:8000"),
-        ),
-        SubApp(
-            key="networth",
-            name="Net Worth",
-            description="Chase, Marcus, Robinhood, Fidelity, TSP — individual balances and the total.",
-            icon="💎",
-            url=os.environ.get("NETWORTH_URL", "http://networth:8000"),
-        ),
-        SubApp(
-            key="vault",
-            name="Vault",
-            description="Password health from your Vaultwarden — weak, reused, old, no-2FA. No secrets stored.",
-            icon="🔐",
-            url=os.environ.get("VAULT_URL", "http://vault:8000"),
-        ),
-        SubApp(
-            key="plex",
-            name="Plex",
-            description="The Plex server shared with you — continue watching, recently added, libraries.",
-            icon="🎬",
-            url=os.environ.get("PLEX_SVC_URL", "http://plex:8000"),
-        ),
-        SubApp(
-            key="firefly",
-            name="Firefly",
-            description="Your Firefly III finances — net worth, this month's spend/income, accounts, recent transactions.",
-            icon="📒",
-            url=os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000"),
-        ),
+        SubApp(key=key, name=name, description=description, icon=icon,
+               url=os.environ.get(env, default))
+        for key, name, icon, env, default, description in _CATALOG
     ]
