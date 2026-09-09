@@ -2173,6 +2173,145 @@ manage them" problem.
 
 ---
 
+# Wave 10 — the calendar writer, and the board as a system
+
+Two of these came out of closing eleven tickets that were shipped but still
+open. The first came out of reading the last unexamined piece of date logic in
+the repo — the one that writes into a real calendar.
+
+## 70. The function that books your interviews has no timezone and no year rollover
+
+`services/assistant/app/orchestrator.py`:
+
+```python
+year = default_year or datetime.utcnow().year
+...
+return datetime(year, month, day, hour, minute).isoformat()
+```
+
+This is the parser behind *"Interview scheduled: Fri Jul 25, 2:00 PM"* → a
+calendar event. `assistant` calls it during sync, posts the result to
+`schedule`, and `schedule` pushes it to your real Google Calendar. Three
+defects, in the order they will bite:
+
+**No timezone.** The returned ISO string is naive — no offset, no `tzinfo`.
+Everything downstream has to guess what "14:00" means, and a naive timestamp
+handed to a calendar is the single most reliable way to put an event four hours
+from where it belongs.
+
+**No year rollover.** The year is simply *this* year. So in December, an email
+reading "Interview scheduled: Jan 8, 2:00 PM" books **January 8th of the year
+that is ending** — eleven months in the past. The event is created, lands
+behind you in the calendar, and `_event_minutes_until` will never surface it
+because it is not in the future. You would find out by not being at the
+interview.
+
+**`utcnow().year`.** For the last few hours of December 31st local time, UTC is
+already in January, so even the current year is wrong.
+
+**The correct implementation is in this repo.** `services/gmail/app/dateparse.py`
+does all three properly:
+
+```python
+now = (now or datetime.now(EASTERN)).astimezone(EASTERN)   # tz-aware
+cand = datetime(year, month, day, tzinfo=EASTERN)          # tz attached
+if <candidate is in the past>:
+    cand = cand.replace(year=year + 1)                     # rollover
+```
+
+Two date parsers, in the same service tree, for the same job. The careful one
+reads mail. The naive one writes to your calendar.
+
+And it is untested: `services/assistant/tests/` has `test_dashboard.py`,
+`test_money_headline.py` and `test_runway.py` — nothing for `orchestrator`.
+`docs/TESTING.md` requires date logic to go through one clock seam and be swept
+across a calendar; this is date logic with a side effect on a real external
+system, and it has neither.
+
+This is the same class as the gym-timestamp bug (SCRUM-64, now closed), one
+file over and with worse consequences: that one miscounted a workout, this one
+misses an interview.
+
+**Proposal.** Delete `extract_datetime` and call `dateparse` from the assistant,
+or move `dateparse`'s logic into a shared module both import. Then sweep it —
+every month of a two-year window, including the December→January boundary that
+produces the past-dated booking.
+
+**Effort:** S · **Acceptance signal:** parsing "Jan 8, 2:00 PM" on December 20th
+returns next January, tz-aware, asserted across a calendar sweep.
+
+## 71. "Shipped" and "verified" are the same state on the board, and they are not the same thing
+
+I closed eleven tickets this session by checking production for evidence a
+feature landed — a file exists, a test file exists, a string appears in
+`home.js`. That is evidence the **code shipped**. It is not evidence the thing
+**works**.
+
+Every ticket I filed carries an explicit **Acceptance signal** line, written to
+be checkable: *"stop the `stocks` container; the portfolio card says it is
+unreachable"*, *"a visit logged at 9pm local counts for today"*, *"snooze the
+top item, refresh, and it is still gone"*. As far as I can tell not one of them
+has been run. They were written, the work was done, and the signal was never
+used to confirm the work did what it was for.
+
+That gap is exactly the one `docs/BUDGETS.md` polices in the data: *a number
+you know might be wrong is useful; a number you think is complete is not.* A
+board full of Done tickets nobody verified is the same shape — it reads as
+"this all works" and nothing behind it says so.
+
+**Proposal.** Two cheap changes:
+
+1. Where an acceptance signal can be a test, it should be one, and the ticket
+   cites it on closing. Several already exist and were the evidence I used —
+   `test_visitclock.py`, `test_score_and_days.py`, `test_session_label.py`.
+   That is the pattern; it just isn't the rule.
+2. Where it can't (anything needing a stopped container or a live browser),
+   the closing comment states **what was actually observed**, not what was
+   built. "Verified: stopped `stocks`, card read 'couldn't reach'" is a
+   different claim from "`health.js` exists".
+
+**Effort:** XS as a convention · **Note:** this is a criticism of my own closing
+pass as much as anyone's. I closed those eleven on file-existence evidence and
+said so in each comment; that is the weakest form of the claim.
+
+## 72. The dashboard should show the board — that is now where your work lives
+
+`CLAUDE.md` changed today to make the SCRUM board the authoritative source of
+work, with agents required to self-assign and close. That settles the question
+idea #6 (SCRUM-89) left open — *"one task system, not four"* — and the answer is
+**mirror, don't retire**.
+
+Because the board is no longer just a personal to-do list. It is the work queue
+for a fleet of agents shipping to your dashboard several times a day, and right
+now you can only see it by opening Jira. The dashboard — the thing you actually
+have open — knows nothing about it.
+
+What would be worth a card:
+
+- **In Progress, and who has it.** Collisions are the named failure mode in
+  `CLAUDE.md`; this is the only view that makes one visible before it costs a
+  day.
+- **Highest-priority unassigned.** The next thing an agent should pick up — and
+  the thing you would want to reprioritise before one does.
+- **Open longest.** A ticket nobody has taken in two weeks is either not
+  important or badly written, and both are worth knowing.
+- **Shipped since you last looked**, which is the release-notes card (SCRUM-112)
+  fed from the board instead of from commit subjects — more meaningful, since
+  a ticket says *why*.
+
+The `tasks` service becomes a read-through view of Jira rather than a second
+backlog, which is what SCRUM-89 proposed as its preferred option.
+
+**Effort:** M · **Depends on:** Jira API credentials on the box · **Related:**
+SCRUM-89, SCRUM-112
+
+**Worth weighing before building:** this puts an external network dependency in
+the home fan-out, which is exactly the latency problem in SCRUM-127/128. It
+should be its own card with its own cache, never a blocking member of
+`build_home`.
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
