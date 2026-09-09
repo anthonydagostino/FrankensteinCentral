@@ -39,6 +39,30 @@ Two things, and neither is an approval — nobody has to be asked:
 Those are safety nets. Removing the approval layer did not remove them, and
 "ship faster" is not a reason to switch them off.
 
+### Where work comes from — the Jira board
+
+The backlog is the **SCRUM project** at
+<https://anthonysdagostino.atlassian.net>. Read it before inventing a task:
+it is Anthony's actual priority order, and it is not short.
+
+Every ticket is currently **unassigned**, which makes collisions the default
+failure rather than an unlikely one. So, before you start:
+
+1. Pick from the board, highest priority first, rather than from your own idea
+   of what matters. Security and data-loss tickets outrank features.
+2. Check nobody is already on it — `git branch -r`, the recent commits, and
+   the ticket's own comments.
+3. Assign the ticket to yourself and move it to In Progress **before** writing
+   code. An unassigned ticket is an invitation for a second agent to do the
+   same work.
+4. When it ships, comment the production SHA on the ticket and close it. A
+   ticket that is fixed but still open sends the next agent to redo it — that
+   has already happened here (SCRUM-102 was fixed and promoted while the
+   ticket stayed To Do).
+
+If nothing on the board fits what you were asked to do, say so rather than
+silently picking something adjacent.
+
 ### Coordinating with other agents
 
 Several agents work this repo at once. Before starting a feature, check
