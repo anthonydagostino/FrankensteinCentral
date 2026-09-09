@@ -350,3 +350,34 @@ def test_an_account_dropped_for_carrying_a_debt_is_still_named():
     html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
     assert "Discover" in html
     assert "carries a debt" in html
+
+
+@needs_node
+def test_an_open_range_never_turns_the_card_warning_coloured():
+    """A colour change is an alarm, and the floor of an open range is a bound.
+    On the real ledger the floor is one account, so an ordinary transfer
+    between two of the user's own accounts would flip the card red while
+    nothing about the position changed. The rule that nothing may alert on an
+    open bound applies to the stylesheet too."""
+    nw = {**NW, "accounts": [
+        {"name": "Marcus", "balance": 500.0, "kind": "asset", "role": "savingAsset"},
+        {"name": "Chase", "balance": 40000.0, "kind": "asset", "role": "defaultAsset"},
+    ]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw))
+    assert "At least 0.2 months" in html, "fixture no longer produces a low floor"
+    run = html[html.index('class="mny-run'):]
+    assert 'class="mny-run"' in run[:40], f"warning class on an open range: {run[:60]}"
+
+
+@needs_node
+def test_a_certain_runway_below_three_months_still_warns():
+    """The warning is not removed, only confined to the case where the number
+    is a measurement rather than a bound."""
+    nw = {**NW, "accounts": [
+        {"name": "Marcus", "balance": 500.0, "kind": "asset", "role": "savingAsset"},
+        {"name": "Chase", "balance": 40000.0, "kind": "asset", "role": "defaultAsset"},
+    ]}
+    html = _render(_money_nw(_spending(), PAYCHECK_ABSENT, networth=nw,
+                             settings={"finance": {"not_spendable": ["Chase"]}}))
+    assert "months</b> of runway" in html
+    assert "mny-run warn" in html

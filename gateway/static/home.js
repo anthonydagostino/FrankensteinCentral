@@ -1108,8 +1108,15 @@
         // and 64.7 is precisely the number that shipped. The ceiling is stated
         // as conditional, because that is what it is.
         const amb = rw.ambiguous || [];
-        const cls = rw.months_low < 3 ? "warn" : "";
-        runLine = `<p class="mny-run ${cls}">🧭 <b>At least ${rw.months_low} months</b> of runway
+        // NO warning colour on an open range, deliberately. A colour change is
+        // an alarm, and `months_low` is a BOUND, not a measurement: on this
+        // ledger the floor is one account, so moving money between two of your
+        // own accounts would turn the card red while nothing about your
+        // position changed. The rule that no consumer may alert on an open
+        // bound applies to the stylesheet too — it was the last consumer still
+        // reading the floor. The `certain` branch above keeps the warning,
+        // because there the number IS a measurement.
+        runLine = `<p class="mny-run">🧭 <b>At least ${rw.months_low} months</b> of runway
           <span class="sub">— ${money(rw.liquid)} of confirmed cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days. Could be as much as ${rw.months_high} months.</span>${counted}
           <br><span class="sub">Firefly can't say whether ${esch(amb.slice(0, 4).join(", "))}${
              amb.length > 4 ? ` and ${amb.length - 4} more` : ""
