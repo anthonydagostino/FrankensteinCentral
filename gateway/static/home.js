@@ -1597,9 +1597,22 @@
   q("#launcher").onclick = (e) => { if (e.target.id === "launcher") closeLauncher(); };
 
   // ---- settings -------------------------------------------------------------
+  // Accounts as the ledger reports them, kept by index so a name never has to
+  // survive a round-trip through an HTML attribute — `esch` does not escape
+  // quotes and an account is named by the user.
+  let _runwayAccounts = [];
+  let _financeSettings = {};
   async function openSettings() {
     let s = {};
     try { s = await fetch("/api/core/settings").then((r) => r.json()); } catch {}
+    let nw = {};
+    try { nw = await fetch("/api/firefly/networth").then((r) => r.json()); } catch {}
+    // Only asset-side accounts can be candidates: a Firefly liability or a
+    // ccAsset card is already excluded by the engine and offering it here
+    // would imply the choice matters.
+    _runwayAccounts = ((nw || {}).accounts || []).filter(
+      (a) => a && a.kind !== "liability" && a.role !== "ccAsset");
+    _financeSettings = s.finance || {};
     const w = s.score_weights || {};
     const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
     const pc = s.paycheck || {};
@@ -1615,6 +1628,16 @@
         <div class="set-field"><label>Date (YYYY-MM-DD)</label><input id="s-ed" value="${esch(s.exam_date || "")}"></div>
         <div class="set-field"><label>Target study hours</label><input id="s-eh" type="number" value="${s.exam_target_hours ?? ""}"></div>
       </div></div>
+      <div class="set-group"><h4>Cash runway — which of these is not spendable cash?</h4>
+        <div class="set-field" style="grid-column:1/-1"><label>Firefly has no account type for a brokerage, so it cannot tell a current account from a retirement fund — both are "defaultAsset". Tick the ones that are NOT money you could spend this month. Until you do, the runway is shown as a range instead of a number.</label>
+        <div class="set-runway">${
+          _runwayAccounts.length
+            ? _runwayAccounts.map((a, i) => `<label class="set-check"><input type="checkbox" class="runway-x" data-i="${i}"${
+                (_financeSettings.not_spendable || []).includes(a.name) ? " checked" : ""
+              }> ${esch(a.name)}</label>`).join("")
+            : `<span class="muted">No accounts to show — Firefly did not answer.</span>`
+        }</div></div>
+      </div>
       <div class="set-group"><h4>Investments</h4><div class="set-grid">
         <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line (or comma-separated): SYMBOL shares cost — cost optional, fractional shares OK</label>
           <textarea id="s-hold" placeholder="NVDA 10 150&#10;AAPL 2.5&#10;VOO:1.25:380">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
@@ -1800,6 +1823,13 @@
       exam_date: q("#s-ed").value.trim() || null,
       exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
       important_senders: list("#s-imp"),
+      // Merged, not replaced: large_txn and low_balance are not editable here
+      // and a bare {not_spendable} would drop them on every save.
+      finance: { ..._financeSettings, not_spendable:
+        [...q("#settings-body").querySelectorAll(".runway-x")]
+          .filter((c) => c.checked)
+          .map((c) => (_runwayAccounts[Number(c.dataset.i)] || {}).name)
+          .filter(Boolean) },
       budgets: budgets,
       market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
       score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
