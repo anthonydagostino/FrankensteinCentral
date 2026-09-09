@@ -1103,25 +1103,40 @@
     // with a reason rather than a cheerful guess.
     const rw = m.runway || {};
     let runLine = "";
-    if (rw.available && rw.months != null) {
-      const at = rw.lower_bound ? "at least " : "";
-      const cls = rw.months < 3 ? "warn" : "";
-      const excl = (rw.excluded || []).length
-        ? ` · ${(rw.excluded || []).join(", ")} not counted` : "";
-      // Name what was COUNTED, not only what wasn't. A bare "64.5 months" is
+    if (rw.available && rw.months_low != null) {
+      // Name what was COUNTED, not only what wasn't. A bare "64.7 months" is
       // exactly the number that passed unexamined for a day while it was
       // silently dividing by brokerages and credit-card balances.
       const counted = (rw.liquid_accounts || []).length
         ? `<br><span class="sub">Counting: ${esch((rw.liquid_accounts || []).join(", "))}.</span>` : "";
-      const unk = rw.lower_bound
-        ? `<br><span class="sub">${(rw.unclassified || []).join(", ")} ${
-             (rw.unclassified || []).length === 1 ? "isn't" : "aren't"
-           } marked as cash in Firefly, so it's left out — counting it could only make this longer.</span>`
+      // An account that is dropped must still be SEEN to be dropped. Discover
+      // fell out of this card entirely once, into no list at all.
+      const owed = (rw.debts || []).length
+        ? `<br><span class="sub">${esch((rw.debts || []).join(", "))} ${
+             (rw.debts || []).length === 1 ? "carries a debt" : "carry debts"
+           }, so ${(rw.debts || []).length === 1 ? "it is" : "they are"} not part of the pot.</span>`
         : "";
-      const alt = rw.months_without_resale != null
-        ? ` · ${rw.months_without_resale} without resale` : "";
-      runLine = `<p class="mny-run ${cls}">🧭 <b>${at}${rw.months} months</b> of runway${alt}
-        <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days${esch(excl)}</span>${counted}${unk}</p>`;
+      const excl = (rw.excluded || []).length
+        ? `<br><span class="sub">Not counted, because you said so: ${esch((rw.excluded || []).join(", "))}.</span>` : "";
+      if (rw.certain) {
+        const cls = rw.months < 3 ? "warn" : "";
+        const alt = rw.months_without_resale != null
+          ? ` · ${rw.months_without_resale} without resale` : "";
+        runLine = `<p class="mny-run ${cls}">🧭 <b>${rw.months} months</b> of runway${alt}
+          <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days</span>${counted}${excl}${owed}</p>`;
+      } else {
+        // The range is open. Lead with the FLOOR, never the ceiling: the high
+        // end is the optimistic direction and the expensive one to anchor on,
+        // and 64.7 is precisely the number that shipped. The ceiling is stated
+        // as conditional, because that is what it is.
+        const amb = rw.ambiguous || [];
+        const cls = rw.months_low < 3 ? "warn" : "";
+        runLine = `<p class="mny-run ${cls}">🧭 <b>At least ${rw.months_low} months</b> of runway
+          <span class="sub">— ${money(rw.liquid)} of confirmed cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days. Could be as much as ${rw.months_high} months.</span>${counted}
+          <br><span class="sub">Firefly can't say whether ${esch(amb.slice(0, 4).join(", "))}${
+             amb.length > 4 ? ` and ${amb.length - 4} more` : ""
+           } ${amb.length === 1 ? "is" : "are"} spendable — it has no account type for a brokerage, so a TSP and a current account look identical to it. Tell it which of these aren't cash in Settings and this becomes one number.</span>${excl}${owed}</p>`;
+      }
     } else if (rw.reason) {
       // Named, not blank: a missing runway with no explanation reads as a bug.
       runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;

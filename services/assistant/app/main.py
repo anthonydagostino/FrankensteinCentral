@@ -731,6 +731,10 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
             last_30, 30,
             freshness={"window_complete": month_complete,
                        "ingest_days": days_stale},
+            # Which accounts are not cash. Firefly has no field that can say
+            # this — see runway.py — so it is a setting, and an unset setting
+            # is reported as a range rather than guessed at.
+            not_spendable=(settings.get("finance", {}) or {}).get("not_spendable"),
         ),
         "last_30": last_30,
         "last_30_trend_pct": last_30_trend,
