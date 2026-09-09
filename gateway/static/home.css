@@ -69,6 +69,13 @@ body.cc[data-mode="evening"] {
 
 /* ---- grid ---- */
 .cc-main { display: flex; flex-direction: column; gap: 16px; }
+/* Money and the portfolio, side by side, directly under the calendar. They and
+   the week grid are what this page is opened for; everything below is what you
+   read once you are already here. */
+.cc-money-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start;
+}
+@media (max-width: 900px) { .cc-money-row { grid-template-columns: 1fr; } }
 .cc-cols { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start; }
 .cc-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
@@ -110,14 +117,18 @@ body.cc[data-mode="evening"] {
 }
 .cc-loading { color: var(--muted); }
 @media (max-width: 900px) {
-  .cc-card, .cc-card.hero, .cc-card.wide { grid-column: span 12; }
+  .cc-card, .cc-card.hero, .cc-card.compact, .cc-card.wide { grid-column: span 12; }
 }
 
-/* ---- Do This Next (hero) ---- */
-.donext { display: flex; flex-direction: column; gap: 6px; }
-.donext .title { font-size: clamp(20px, 2.6vw, 26px); font-weight: 700; letter-spacing: -0.4px; }
-.donext .reason { color: var(--muted); font-size: 14.5px; line-height: 1.5; max-width: 60ch; }
-.donext .cta { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+/* ---- Do This Next ----
+   Demoted from the hero slot: it sits low in the left column and is sized as
+   an ordinary card. It is a suggestion, not the headline. */
+.cc-card.compact { padding: 12px 14px; }
+.donext { display: flex; flex-direction: column; gap: 3px; }
+.donext .title { font-size: 15px; font-weight: 600; letter-spacing: -0.1px; }
+.donext .reason { color: var(--muted); font-size: 12.5px; line-height: 1.45; max-width: 60ch; }
+.donext .cta { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.donext .cta .big-btn { padding: 7px 13px; font-size: 13px; border-radius: 9px; }
 .donext.calm .title { color: var(--accent); }
 .big-btn {
   background: var(--accent-2); color: #0b0e14; border: 0; border-radius: 12px;
@@ -869,9 +880,17 @@ body.cc[data-mode="evening"] {
   font-size: 12px; opacity: .35; color: var(--muted);
 }
 .snz-b:hover, .snz-b:focus-visible { opacity: 1; }
+/* `display: flex` here outranks the UA stylesheet's `[hidden] { display: none }`
+   — a class selector beats it — so every one of these menus rendered OPEN, on
+   every card, permanently. The JS has always toggled `hidden` correctly and it
+   has never once had an effect. Three of them hung over the money card.
+   `:not([hidden])` gives the attribute back its meaning. */
+.snz-menu:not([hidden]) {
+  display: flex;
+}
 .snz-menu {
   position: absolute; right: 0; top: 100%; z-index: 40; margin-top: 4px;
-  display: flex; flex-direction: column; min-width: 152px;
+  flex-direction: column; min-width: 152px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
   box-shadow: 0 12px 30px -12px rgba(0,0,0,.7); overflow: hidden;
 }
@@ -895,6 +914,22 @@ body.cc[data-mode="evening"] {
 }
 .hid-x:hover { color: var(--text); border-color: var(--accent-2); }
 
+
+/* The weekly review's six-days-a-week form: one line, carrying only the
+   week-over-week trend. The three bars it used to draw are restated in full by
+   the Health & Discipline card directly above it — and this card used to sit
+   above the calendar, which is a lot of prime page to spend saying something
+   twice. On Sunday evening it still expands and takes the top. */
+.wr-line {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 13px; color: var(--text);
+}
+.wr-l {
+  font-size: 10px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.wr-line .muted { color: var(--muted); }
+.wr-trend.flat { color: var(--muted); }
 /* "While you were away" (PRODUCT_IDEAS #4) — one shared baseline, so a
    second device does not re-report what the first already showed. */
 #cc-since .it.urgent { color: var(--imp, #e0574a); font-weight: 600; }

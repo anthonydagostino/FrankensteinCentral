@@ -859,7 +859,8 @@ def test_a_failed_deploy_is_failed_and_names_the_older_running_build():
     assert d["running"] != d["attempted"]
 
 
-@pytest.mark.parametrize("result", ["failed", "tests_failed", "aborted", "?", "SUCCESS"])
+@pytest.mark.parametrize("result", ["failed", "tests_failed", "aborted", "?", "SUCCESS",
+                                    "started_unhealthy"])
 def test_anything_that_is_not_exactly_success_is_a_failed_deploy(result):
     """`SUCCESS` included: deploy.sh writes the literal lowercase string, so a
     case-insensitive read here would accept a value it never writes."""
