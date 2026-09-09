@@ -1570,6 +1570,207 @@ card, what changed about it.
 
 ---
 
+# Wave 7 — the security surface
+
+Everything below is from reading `gateway/app/main.py`, `docker-compose.yml`
+and `services/gmail/app/main.py` on production `44b951d`. I have not run any of
+it against your box; each item includes the one command that confirms or
+refutes it in a few seconds, and I'd rather you verify than take my word.
+
+The context that makes this wave worth its length: **this repository is
+public**, and the project has otherwise been scrupulous about credentials.
+`verify.sh` "never prints secrets, email bodies, or tokens". The `plex` service
+notes "the token never reaches the browser". `firefly` "never sends the token to
+the browser". `vault` "stores nothing". That care is real and consistent — and
+one route defeats all of it.
+
+## 52. `/api/gmail/internal/token` returns a live Google access token to anyone who can load the dashboard
+
+The gateway proxies anything, to any registered service, with no path filter and
+no authentication:
+
+```python
+@app.api_route("/api/{app_key}/{path:path}", methods=["GET","POST","PUT","PATCH","DELETE"])
+async def proxy(app_key: str, path: str, request: Request):
+    sub = REGISTRY.get(app_key)
+    ...
+    target = f"{sub.url}/{path}"
+```
+
+`gmail` registers as `gmail` and exposes:
+
+```python
+@app.get("/internal/token")
+async def internal_token():
+    """Access token for OTHER sub-apps on the internal docker network only …
+    Not linked from the UI and not meaningful to call from outside the
+    compose network."""
+    ...
+    return {"access_token": token, "scopes": granted_scopes(), ...}
+```
+
+The docstring describes an intent. Nothing enforces it. `/internal/` is a naming
+convention, and the proxy has never heard of it, so:
+
+```
+GET http://<box>:8080/api/gmail/internal/token
+```
+
+returns a live OAuth access token carrying `gmail.modify` **and**
+`calendar.events` — read and modify the whole inbox, read and write the
+calendar. The gateway has no auth (confirmed: the only match for "auth" in
+`gateway/app/` is a comment), so there is nothing to get past.
+
+Verify or refute in one command, from any other machine on the network:
+
+```bash
+curl -s http://<box-ip>:8080/api/gmail/internal/token | head -c 120
+```
+
+If that returns `access_token`, it is real. If it returns `not connected`, the
+route is still open and will start returning one the moment Gmail is connected.
+
+**Proposal.** Two changes, both small:
+
+1. The proxy refuses any path segment `internal` (and returns 404, not 403 —
+   don't confirm the route exists).
+2. `/internal/token` requires a shared secret injected into both containers by
+   compose. The internal network is a convenience, not a boundary; a token this
+   powerful should be asking for a credential.
+
+Then rotate — see #56. A token that has been reachable should be treated as
+having been reached.
+
+**Effort:** XS for the fix · **Priority:** this is the one item in the whole
+document I would do today.
+
+## 53. And it isn't only "someone on your network" — it's any website you visit
+
+The escalation that makes #52 urgent rather than theoretical.
+
+There is no `TrustedHostMiddleware`, no `CORSMiddleware`, no `Host` validation
+anywhere in the gateway or any service (confirmed: zero matches). A
+no-authentication HTTP service on a LAN, with no `Host` header check, is the
+textbook target for **DNS rebinding**: a page you visit resolves its own domain
+to your box's private address after the page loads, and from then on the
+browser treats requests to it as same-origin. Same-origin means the script can
+*read the response*.
+
+So the exposure isn't limited to devices on your network. It's any page loaded
+in any browser on any device on your network — which includes an ad iframe.
+
+Two independent mitigations, both cheap: validate the `Host` header against an
+allowlist (a rebinding attack must send an attacker-controlled `Host`, so this
+breaks it), and put the dashboard behind Tailscale-only binding plus single-user
+auth — which is SCRUM-98, filed in wave 1 and still open. That ticket was
+written when the argument was "net worth is on the page". The argument is now
+"a Google access token is on the page".
+
+**Effort:** XS (Host allowlist) · **Related:** SCRUM-98
+
+## 54. All seventeen services publish host ports, so the gateway is not a boundary
+
+`docker-compose.yml` publishes a host port for every single service — 8080–8099,
+and:
+
+```yaml
+  db:
+    ports:
+      - "5432:5432"
+```
+
+Postgres is on the network. `.env.example` ships `POSTGRES_USER=frank` /
+`POSTGRES_PASSWORD=frank`, so if those defaults were kept, the database holding
+your gym history, focus sessions, Big 3, captures, calendar, net-worth accounts
+and budget definitions is one `psql -h <box> -U frank` away for anything on the
+LAN.
+
+```bash
+grep POSTGRES_PASSWORD .env      # is it still 'frank'?
+```
+
+The rest of the range means every "internal" service contract — not just
+`/internal/token` — is directly reachable without even going through the
+gateway. The gateway's role as the single front door is a diagram, not a
+control.
+
+Worth knowing while fixing this: on Linux, Docker's published ports insert rules
+into its own iptables chain that **bypass a host `ufw` policy**. A firewall you
+believe is protecting these ports quite likely isn't.
+
+**Proposal.** Bind everything except the gateway to `127.0.0.1` (`"127.0.0.1:8083:8000"`)
+so the ports stay available for debugging on the box and vanish from the
+network, and drop the `db` publish entirely — nothing outside compose needs it.
+That is a one-line-per-service change and it removes most of this wave's surface
+in a single commit.
+
+**Effort:** XS
+
+## 55. "Internal" needs to be a control, not a convention — and a test can hold it
+
+#52 is one instance of a general gap: the codebase distinguishes internal from
+external endpoints **by name**, and nothing enforces the distinction. The next
+service that adds an `/internal/` route inherits the same exposure silently.
+
+The project already has the right pattern for turning a convention into a check.
+`tests/test_no_orphans.py` exists because "who consumes this?" was expensive to
+answer late, and its docstring says the point is "to make the question one you
+answer when it is cheap." `tests/test_wire_names.py` and
+`tests/test_deploy_boundary.py` are the same instinct.
+
+**Proposal.** A `tests/test_internal_not_proxyable.py`: enumerate every route in
+every service, and assert that anything under `/internal/` is rejected by the
+gateway proxy. It fails the moment someone adds a new one, which is the only
+time it's cheap to fix.
+
+**Effort:** S
+
+## 56. There is no credential-rotation runbook, and after #52 you need one
+
+`docs/SETUP-GMAIL.md`, `SETUP-FIREFLY.md`, `SETUP-PLEX.md` and `SETUP-VAULT.md`
+all explain how to obtain and install a credential. None explains how to
+**revoke and replace one**, which is the procedure you need when something has
+been exposed, when a laptop is sold — you have nine resale MacBooks — or when
+the move happens and hardware changes hands.
+
+Concretely, right now: the Google OAuth token from #52 should be revoked at
+`myaccount.google.com/permissions`, and the client secret rotated in the Cloud
+console. Neither step is written down anywhere in the repo.
+
+**Proposal.** One `docs/ROTATION.md`: for each credential, where it lives, how to
+revoke it, how to mint a replacement, what breaks while it's rotating, and how
+to confirm the new one took. Then the infra card (SCRUM-67) can show the age of
+each credential, which turns rotation from a thing you remember into a thing you
+can see.
+
+**Effort:** S · **Related:** SCRUM-67, SCRUM-68
+
+## 57. The repository is public, which changes the calculus rather than the severity
+
+None of the above is *caused* by the repo being public — the exposure is the
+same either way. What changes is that the map is published: the exact route, the
+port assignments, the default database credentials, and the docstring explaining
+what the endpoint returns are all readable by anyone, and indexed.
+
+This matters more than usual for you specifically. You are job hunting, and a
+public repository of this quality is exactly the thing a hiring manager clicks
+through to — so the population reading this code carefully is not hypothetical,
+and it is not all friendly.
+
+That cuts both ways, and it is worth saying plainly: this codebase reads
+extremely well. The honesty rules in the money layer, the calendar-sweep tests,
+the docstrings that explain *why* rather than *what* — those are the marks of a
+strong engineer, and they're publicly visible too. Which is exactly why the one
+open credential route is worth closing before more people go looking.
+
+**Proposal.** Fix #52 and #54 first. Then decide, deliberately rather than by
+default, whether this repo stays public — and if it does, add a `SECURITY.md`
+saying how to report something, because people will find things.
+
+**Effort:** XS
+
+---
+
 # Where I'd start
 
 Across all three waves, in order:
