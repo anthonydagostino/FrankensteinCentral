@@ -309,6 +309,8 @@ To keep that number green, put both on a timer (SCRUM-67). As the user that
 owns the backups:
 
 ```cron
+# Skip the backup line if Backrest is installed (SETUP-BACKUP.md): dump-all.sh
+# runs backup.sh inside every nightly snapshot. Keep the drill either way.
 17 3 * * *  cd ~/FrankensteinCentral && bash scripts/backup.sh          >> ~/.frankenstein/backup.log 2>&1
 41 4 * * 0  cd ~/FrankensteinCentral && bash scripts/restore.sh --drill >> ~/.frankenstein/drill.log  2>&1
 ```

@@ -265,6 +265,12 @@ def test_the_legacy_lounge_is_gone_and_unreferenced():
     for f in ("index.html", "home.js", "app.js"):
         assert "lounge.html" not in (static / f).read_text(), f
     assert 'getElementById("stage")' not in (static / "app.js").read_text()
+    # ...and not in the gateway's Python either: the auth allowlist shipped
+    # naming both retired pages as public paths — dead entries that read as
+    # live routes to the next person.
+    for p in list((ROOT / "gateway" / "app").glob("*.py")) + list((ROOT / "gateway" / "tests").glob("*.py")):
+        text = p.read_text()
+        assert "lounge.html" not in text and "jobs.html" not in text, p.name
 
 
 # ── duplicate element ids ──────────────────────────────────────────────────

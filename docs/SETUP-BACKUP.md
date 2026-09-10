@@ -15,7 +15,7 @@ the ticket is not Done until it has been performed once and put on a calendar.
 
 | target | how | why that way |
 |---|---|---|
-| **dashboard** | delegates to `scripts/backup.sh` | already shipped and restore-tested (`tests/test_backup_restore.py`); one restore path |
+| **dashboard** | delegates to `scripts/backup.sh`, which writes to `~/frankenstein-backups` as always | already shipped and restore-tested; `restore.sh --drill` and the **Data safety** card (SCRUM-67) read that directory and `data-safety.json`, so it is not redirected — Backrest snapshots it as a second path |
 | **firefly** | engine read from the `firefly` container's own `DB_CONNECTION`; `mariadb-dump --single-transaction --quick --all-databases` or `pg_dump -Fc` inside the DB container | the engine is documented nowhere in this repo, so it is discovered, not assumed; the root password is read inside the container and never reaches the host |
 | **vaultwarden** | `vaultwarden backup` (its own `VACUUM INTO`), then `/data` minus the live DB as a tarball | copying a WAL-mode SQLite file loses committed rows; keys/attachments/sends are not in the DB |
 | **pihole** | `pihole-FTL --teleporter` | the sanctioned export; a zip of every setting |
@@ -149,7 +149,22 @@ output: the dump runs first, then restic. Check healthchecks.io went green.
 
 ## 8. Restore drill (SCRUM-15 / SCRUM-30) — the ticket is not Done without this
 
-Same day. Pick one file at random and prove it comes back byte-identical:
+Two proofs, because they answer different questions.
+
+**Weekly, automated — does the dashboard database restore?** `restore.sh
+--drill` restores the newest backup into a scratch database, compares row
+counts against what `backup.sh` recorded at dump time, drops the scratch, and
+writes the date to `data-safety.json`. That date is what the **Data safety**
+card shows as "days since the last verified restore". Keep the weekly drill
+cron from [OPERATIONS.md](OPERATIONS.md#backups); drop its *nightly*
+`backup.sh` line once Backrest is running — `dump-all.sh` runs `backup.sh`
+as part of every snapshot, and two nightly dumps of the same database is
+just noise in the log.
+
+**Quarterly, by hand — is the OFFSITE copy readable?** The drill proves the
+local backup; it says nothing about whether the bytes on B2 come back. Same
+day as the first snapshot, then quarterly: pick one file and prove it returns
+byte-identical from B2:
 
 ```bash
 # in the Backrest UI: Snapshots -> latest -> Restore, or from a shell:

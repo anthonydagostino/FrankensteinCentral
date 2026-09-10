@@ -56,7 +56,7 @@ SESSION_DAYS = int(os.environ.get("GATEWAY_SESSION_DAYS", "30") or 30)
 # otherwise. Adding to this list is a decision to expose something to the LAN.
 PUBLIC_EXACT = {"/", "/index.html", "/login", "/logout", "/api/auth/status",
                 "/api/health", "/api/apps", "/manifest.webmanifest", "/icon.svg",
-                "/sw.js", "/jobs.html", "/lounge.html"}
+                "/sw.js"}
 PUBLIC_SUFFIXES = (".js", ".css", ".svg", ".webmanifest", ".png", ".ico")
 
 router = APIRouter()

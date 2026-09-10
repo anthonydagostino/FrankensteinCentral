@@ -46,6 +46,7 @@
       "repo": "b2",
       "paths": [
         "/srv/dumps/current",
+        "/home/REPLACE_WITH_USER/frankenstein-backups",
         "/home/REPLACE_WITH_USER/FrankensteinCentral/docker-compose.yml",
         "/home/REPLACE_WITH_USER/FrankensteinCentral/.env",
         "/home/REPLACE_WITH_USER/docker"

@@ -14,7 +14,10 @@
 #   dashboard    The hub's own Postgres + Gmail token. Delegated to
 #                scripts/backup.sh — the shipped, restore-tested mechanism
 #                (tests/test_backup_restore.py). Called, not copied: one restore
-#                path, one set of tests.
+#                path, one set of tests. It writes to ITS directory, not this
+#                set, so `restore.sh --drill` and the Data safety card
+#                (SCRUM-67) keep seeing the newest backup; Backrest snapshots
+#                that directory too.
 #   firefly      Firefly III's database. Its ENGINE IS NOT DOCUMENTED ANYWHERE
 #                in this repo, and the ticket says "MariaDB or Postgres". So it
 #                is read from the firefly container's own environment
@@ -105,9 +108,14 @@ echo "  Staging:   $STAGE"
 # ---- dashboard: the hub's own Postgres + Gmail token ------------------------
 dump_dashboard() {
   local out="$STAGE/dashboard"; mkdir -p "$out"
-  # backup.sh keeps its own retention; here it is one run into one directory.
-  if FRANKENSTEIN_BACKUP_DIR="$out" FRANKENSTEIN_BACKUP_KEEP=1 \
-       bash scripts/backup.sh > "$out/backup.log" 2>&1; then
+  # backup.sh runs where it ALWAYS runs (~/frankenstein-backups, its own
+  # retention) and records the run in data-safety.json — which is what
+  # `restore.sh --drill` and the Data safety card read (SCRUM-67). Redirecting
+  # it into this staging set would hide the newest backup from both. So only
+  # its log lands here, and Backrest snapshots its directory as a second path.
+  local root="${FRANKENSTEIN_BACKUP_DIR:-$HOME/frankenstein-backups}"
+  if bash scripts/backup.sh > "$out/backup.log" 2>&1; then
+    echo "  dashboard:   backup.sh wrote to $root"
     record dashboard ok
   else
     record dashboard "failed: scripts/backup.sh exited non-zero ($(grep -m1 'FAILED' "$out/backup.log" | clip))"

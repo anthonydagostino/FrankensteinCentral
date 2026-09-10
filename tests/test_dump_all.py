@@ -132,6 +132,10 @@ def box(tmp_path):
             "FAKE_FF_CONN": conn, "FAKE_FF_HOST": "db", "FAKE_FF_PROJECT": project,
             "FAKE_VW_DATA": str(vw), "FAKE_PIHOLE_TMP": str(pt),
             "FRANKENSTEIN_DUMP_DIR": str(dumps), "DUMP_SKIP": skip,
+            # backup.sh (run for real in one test) and data-safety.sh write to
+            # $HOME by default; neither may touch the machine running the tests.
+            "FRANKENSTEIN_BACKUP_DIR": str(tmp_path / "pg-backups"),
+            "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state"),
         }
         env.update(extra or {})
         r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)

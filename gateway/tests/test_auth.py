@@ -213,7 +213,7 @@ def test_next_cannot_leave_the_origin(bad):
     assert auth.safe_next(bad) == "/"
 
 
-@pytest.mark.parametrize("good", ["/", "/jobs.html", "/api/x?y=1", "/a/b/c"])
+@pytest.mark.parametrize("good", ["/", "/notes/page.html", "/api/x?y=1", "/a/b/c"])
 def test_next_keeps_a_same_origin_path(good):
     assert auth.safe_next(good) == good
 
