@@ -24,7 +24,11 @@ jobs:
         with:
           node-version: "20"
       - name: Install deps
-        run: pip install pytest fastapi httpx uvicorn
+        # psycopg is here so tests/test_jobhunt_endpoints.py RUNS rather than
+        # skips: it is the only test that exercises core's SQL against a real
+        # PostgreSQL, and a DB-backed endpoint whose test always skips is the
+        # "untested service cannot fail the gate" problem in miniature.
+        run: pip install pytest fastapi httpx uvicorn 'psycopg[binary]' psycopg-pool
 
       # The worker refuses to run a child unconfined, so without working
       # unprivileged user namespaces the entire containment suite cannot run.

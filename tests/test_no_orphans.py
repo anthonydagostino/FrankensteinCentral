@@ -238,6 +238,31 @@ def test_the_job_board_is_reachable_from_the_hub():
     assert "/jobs.html" in HOME_JS
 
 
+JOBS_HTML = (ROOT / "gateway" / "static" / "jobs.html").read_text()
+
+
+def test_job_research_lives_on_the_server_not_in_one_browser():
+    """SCRUM-131. The board saved the weighted ranking, the per-factor scores,
+    the pros, cons and salary floors to localStorage — one browser, no backup —
+    and said so in its own subtitle. It now reads and writes core's /jobhunt.
+
+    The only localStorage access left is the one-time import of whatever a
+    browser still holds, and that only reads and removes. Nothing may be
+    WRITTEN there again, or the split-brain this fixed comes straight back
+    while every unit test stays green."""
+    assert "/api/core/jobhunt" in JOBS_HTML, "the page no longer talks to the server"
+    # The TAG, not the string: a comment mentioning the module satisfied a
+    # substring check while the page loaded nothing. Verified by deleting the
+    # tag — this assertion was green until it named the markup.
+    assert '<script src="/jobhunt.js">' in JOBS_HTML, (
+        "the tested migration/stamp rules are not loaded")
+    assert "localStorage.setItem" not in JOBS_HTML, (
+        "something writes to localStorage again — the one-browser store "
+        "this change retired")
+    assert "saves in this browser" not in JOBS_HTML, "the copy claims the browser again"
+    assert "(this browser)" not in JOBS_HTML, "the saved stamp claims the browser again"
+
+
 # ── duplicate element ids ──────────────────────────────────────────────────
 #
 # A duplicate id is the same orphan defect wearing different clothes. `home.js`

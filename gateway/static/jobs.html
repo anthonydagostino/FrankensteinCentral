@@ -135,15 +135,22 @@
   .rank-row .bar-track { flex: 1; background: rgba(255,255,255,0.05); border-radius: 6px; height: 16px; overflow: hidden; position: relative; }
   .rank-row .bar-fill { height: 100%; border-radius: 6px; }
   .rank-row .rscore { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .jh-banner {
+    margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--down);
+    border-radius: 8px; background: rgba(255, 80, 80, .08); font-size: 13px;
+  }
+  .jh-banner button { margin: 6px 8px 0 0; }
+  .saved-note.unsaved { color: var(--down); font-weight: 600; }
 </style>
 </head>
 <body>
+<div id="jh-banner" class="jh-banner" hidden></div>
   <div class="wrap">
     <header>
       <div class="top-row">
         <div>
           <h1>🧭 Job Hunt Tracker</h1>
-          <p class="sub">Ongoing pros/cons — 233 Analytics · DeepL · AIRIA · EliseAI. Click into any list to edit; it saves in this browser as you go.</p>
+          <p class="sub">Ongoing pros/cons — 233 Analytics · DeepL · AIRIA · EliseAI. Click into any list to edit; it saves to the server as you go, so it follows you between machines and is inside the database backup.</p>
         </div>
         <span class="badge-temp">TEMPORARY — delete this file once you've decided</span>
       </div>
@@ -184,7 +191,7 @@
         <h3>⚖️ Weighted ranking — ongoing</h3>
         <button class="reset-btn" id="rank-reset">Reset weights/scores to defaults</button>
       </div>
-      <p class="sub">Score each company -2 (bad) to +2 (great) per factor, and set how much each factor matters to you (weight). The ranking below re-sorts live and saves in this browser. Update the scores as you get more info — new offers, comp details, whatever changes.</p>
+      <p class="sub">Score each company -2 (bad) to +2 (great) per factor, and set how much each factor matters to you (weight). The ranking below re-sorts live and saves to the server. Update the scores as you get more info — new offers, comp details, whatever changes.</p>
       <div class="rank-table-wrap">
         <table class="rank-table" id="rank-table"></table>
       </div>
@@ -196,6 +203,7 @@
     <footer>Research compiled from public sources (company sites, Ashby/BuiltIn/Glassdoor listings, Crunchbase/PitchBook, press coverage) — see each card's sources. Not a substitute for asking your recruiter directly.</footer>
   </div>
 
+<script src="/jobhunt.js"></script>
 <script>
 const COMPANIES = [
   {
@@ -351,15 +359,155 @@ const DEFAULT_SCORES = {
 };
 const RANK_COLORS = { "233analytics": "#6ee7b7", "deepl": "#7c9cff", "airia": "#ff8a5b", "eliseai": "#c58cff" };
 
+// ---- persistence (SCRUM-131) ------------------------------------------------
+// This page used to save to localStorage and say so. That meant the ranking,
+// the scores, the pros/cons and the salary floors existed in ONE browser and
+// in no backup. They now live in core, one row per key, under the same
+// jobhunt_* names — the decisions around that are in /jobhunt.js and tested.
+//
+// STORE mirrors the server's entries. Reads come from it; writes go to it
+// first (so the page stays consistent while typing) and then to the server,
+// debounced into one PUT. A write the server has not confirmed is DIRTY and
+// the card's stamp says NOT SAVED until it is — "saved" is only ever the
+// server's word. Nothing here writes to localStorage; the only access left is
+// the one-time import in boot(), and that only ever reads and removes.
+const API = "/api/core/jobhunt";
+const STORE = {};
+const DIRTY = {};             // key -> value|null the server has not confirmed
+const CARD_STATE = {};        // company id -> "saving" | "saved" | "failed"
+let BOOTED = false;           // true once the server's entries have been read
+let flushTimer = null;
+
+function get(key) { return Object.prototype.hasOwnProperty.call(STORE, key) ? STORE[key] : null; }
+
+function cardFor(key) {
+  const m = /^jobhunt_([a-z0-9]+)_(pros|cons|notes|floor|expected)$/.exec(key);
+  return m ? m[1] : null;
+}
+
+function stamp(id, status) {
+  CARD_STATE[id] = status;
+  const el = document.getElementById(`saved-${id}`);
+  if (!el) return;
+  el.textContent = Jobhunt.savedLabel({ status });
+  el.classList.toggle("unsaved", status === "failed");
+}
+function restamp() { for (const id of Object.keys(CARD_STATE)) stamp(id, CARD_STATE[id]); }
+
+function showBanner(text, mode, h) {
+  const el = document.getElementById("jh-banner");
+  if (!el) return;
+  el.textContent = "";
+  el.dataset.mode = mode || "";
+  if (!text) { el.hidden = true; return; }
+  el.append(document.createTextNode(text));
+  const btn = (label, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = async () => { b.disabled = true; try { await fn(); } finally { b.disabled = false; } };
+    el.append(b);
+  };
+  if (mode === "retry") btn("Retry", h.retry);
+  if (mode === "ask") {
+    btn("Use this browser's values (they override the server's where both exist)", h.useLocal);
+    btn("Keep the server's copy (discard this browser's)", h.keepServer);
+  }
+  el.hidden = false;
+}
+
+async function putNow(entries) {
+  try {
+    const r = await fetch(API, { method: "PUT", headers: { "Content-Type": "application/json" },
+                                 body: JSON.stringify({ entries }) });
+    return r.ok;
+  } catch { return false; }
+}
+
+// Queue a write. `id` is the card whose stamp tracks it (ranking has none).
+function save(entries, id) {
+  for (const [k, v] of Object.entries(entries)) {
+    if (v === null) delete STORE[k]; else STORE[k] = v;
+    DIRTY[k] = v;
+  }
+  if (id) stamp(id, "saving");
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(flush, 350);
+}
+
+async function flush() {
+  // Send everything unconfirmed, not just the latest keystroke, so a failed
+  // earlier write is retried by the next one.
+  const batch = { ...DIRTY };
+  if (!Object.keys(batch).length) { if (banner().dataset.mode === "retry") showBanner(null); return; }
+  const ok = await putNow(batch);
+  if (ok) for (const k of Object.keys(batch)) if (DIRTY[k] === batch[k]) delete DIRTY[k];
+  const cards = new Set(Object.keys(batch).map(cardFor).filter(Boolean));
+  for (const id of cards) stamp(id, ok ? "saved" : "failed");
+  if (ok) {
+    if (banner().dataset.mode === "retry") showBanner(null);
+    // Edits queued while the server was down have landed; now fetch what it
+    // holds, or the page keeps showing defaults over saved values.
+    if (!BOOTED) boot();
+  } else {
+    showBanner(Jobhunt.unreachableBanner(), "retry", { retry: flush });
+  }
+}
+function banner() { return document.getElementById("jh-banner") || { dataset: {} }; }
+
+function safeStorage() { try { return window.localStorage; } catch { return null; } }
+function forgetLocal(entries) {
+  const st = safeStorage();
+  if (!st) return;
+  for (const k of Object.keys(entries)) { try { st.removeItem(k); } catch {} }
+}
+
+async function boot() {
+  let server = null;
+  try {
+    const r = await fetch(API, { cache: "no-store" });
+    if (r.ok) server = (await r.json()).entries || {};
+  } catch { server = null; }
+
+  if (server === null) {
+    // Render the research defaults, labelled as defaults. Do NOT fall back to
+    // reading localStorage here: that is the one-browser store this change
+    // retires, and quietly reading it would bring the split-brain back.
+    showBanner(Jobhunt.unreachableBanner(), "retry", { retry: boot });
+    render(); renderRanking();
+    return;
+  }
+  Object.assign(STORE, server);
+  BOOTED = true;
+
+  const local = Jobhunt.localEntries(safeStorage());
+  const plan = Jobhunt.migrationPlan(server, local);
+  if (plan.action === "import") {
+    if (await putNow(plan.entries)) { Object.assign(STORE, plan.entries); forgetLocal(local); }
+    else showBanner(Jobhunt.importFailedBanner(), "retry", { retry: boot });
+  } else if (plan.action === "clear") {
+    forgetLocal(local);
+  } else if (plan.action === "ask") {
+    showBanner(Jobhunt.askBanner(plan), "ask", {
+      useLocal: async () => {
+        if (!(await putNow(local))) return;
+        Object.assign(STORE, local); forgetLocal(local); showBanner(null);
+        render(); renderRanking();
+      },
+      keepServer: () => { forgetLocal(local); showBanner(null); },
+    });
+  }
+  render(); renderRanking();
+}
+
 function rankWeightKey(factor) { return `jobhunt_rank_weight_${factor}`; }
 function rankScoreKey(id, factor) { return `jobhunt_rank_score_${id}_${factor}`; }
 
 function getWeight(factor, fallback) {
-  const raw = localStorage.getItem(rankWeightKey(factor));
+  const raw = get(rankWeightKey(factor));
   return raw !== null ? Number(raw) : fallback;
 }
 function getScore(id, factor, fallback) {
-  const raw = localStorage.getItem(rankScoreKey(id, factor));
+  const raw = get(rankScoreKey(id, factor));
   return raw !== null ? Number(raw) : fallback;
 }
 
@@ -392,14 +540,14 @@ function renderRanking() {
 
   table.querySelectorAll("[data-weight]").forEach((input) => {
     input.addEventListener("input", () => {
-      localStorage.setItem(rankWeightKey(input.dataset.weight), input.value);
+      save({ [rankWeightKey(input.dataset.weight)]: input.value });
       renderRanking();
     });
   });
   table.querySelectorAll("[data-score]").forEach((input) => {
     input.addEventListener("input", () => {
       const [id, factor] = input.dataset.score.split("|");
-      localStorage.setItem(rankScoreKey(id, factor), input.value);
+      save({ [rankScoreKey(id, factor)]: input.value });
       renderRanking();
     });
   });
@@ -422,8 +570,10 @@ function renderRanking() {
 
 document.getElementById("rank-reset").addEventListener("click", () => {
   if (!confirm("Reset all ranking weights and scores back to defaults?")) return;
-  for (const f of FACTORS) localStorage.removeItem(rankWeightKey(f.key));
-  for (const c of COMPANIES) for (const f of FACTORS) localStorage.removeItem(rankScoreKey(c.id, f.key));
+  const gone = {};
+  for (const f of FACTORS) gone[rankWeightKey(f.key)] = null;
+  for (const c of COMPANIES) for (const f of FACTORS) gone[rankScoreKey(c.id, f.key)] = null;
+  save(gone);
   renderRanking();
 });
 
@@ -431,30 +581,30 @@ const LS_KEY = (id, field) => `jobhunt_${id}_${field}`;
 
 function loadList(id, field, fallback) {
   try {
-    const raw = localStorage.getItem(LS_KEY(id, field));
+    const raw = get(LS_KEY(id, field));
     return raw ? JSON.parse(raw) : fallback;
   } catch { return fallback; }
 }
-function saveList(id, field, items) {
-  localStorage.setItem(LS_KEY(id, field), JSON.stringify(items));
-  stampSaved(id);
-}
-function loadNotes(id) { return localStorage.getItem(LS_KEY(id, "notes")) || ""; }
-function saveNotes(id, text) { localStorage.setItem(LS_KEY(id, "notes"), text); stampSaved(id); }
+function saveList(id, field, items) { save({ [LS_KEY(id, field)]: JSON.stringify(items) }, id); }
+function loadNotes(id) { return get(LS_KEY(id, "notes")) || ""; }
+function saveNotes(id, text) { save({ [LS_KEY(id, "notes")]: text }, id); }
 function loadFloor(id, fallback) {
-  const raw = localStorage.getItem(LS_KEY(id, "floor"));
+  const raw = get(LS_KEY(id, "floor"));
   return raw !== null ? Number(raw) : fallback;
 }
-function saveFloor(id, value) { localStorage.setItem(LS_KEY(id, "floor"), value); stampSaved(id); }
-function loadExpected(id, fallback) { return localStorage.getItem(LS_KEY(id, "expected")) ?? fallback; }
-function saveExpected(id, value) { localStorage.setItem(LS_KEY(id, "expected"), value); stampSaved(id); }
-function stampSaved(id) {
-  const el = document.getElementById(`saved-${id}`);
-  if (el) el.textContent = "Saved just now (this browser)";
-}
+function saveFloor(id, value) { save({ [LS_KEY(id, "floor")]: value }, id); }
+function loadExpected(id, fallback) { return get(LS_KEY(id, "expected")) ?? fallback; }
+function saveExpected(id, value) { save({ [LS_KEY(id, "expected")]: value }, id); }
 
+// User text goes through esc() on the way into markup. It used to be
+// concatenated raw; a "</textarea>" in a note or a quote in an expected-offer
+// field broke the page. Reading back is textContent, so escaping is lossless.
+function esc(v) {
+  return String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 function editableList(items) {
-  return items.map((t) => `<li contenteditable="true" spellcheck="false">${t}</li>`).join("");
+  return items.map((t) => `<li contenteditable="true" spellcheck="false">${esc(t)}</li>`).join("");
 }
 
 function render() {
@@ -466,12 +616,12 @@ function render() {
       <p class="blurb">${c.blurb}</p>
       <div class="floor-row">
         <label for="floor-${c.id}">Lowest base to take:</label>
-        <input type="number" id="floor-${c.id}" data-floor="${c.id}" step="1000" value="${loadFloor(c.id, c.floor)}" />
+        <input type="number" id="floor-${c.id}" data-floor="${c.id}" step="1000" value="${esc(loadFloor(c.id, c.floor))}" />
         <span class="floor-hint">${c.floorNote}</span>
       </div>
       <div class="expect-row">
         <label for="expect-${c.id}">Expected actual offer:</label>
-        <input type="text" id="expect-${c.id}" data-expect="${c.id}" value="${loadExpected(c.id, c.expected)}" />
+        <input type="text" id="expect-${c.id}" data-expect="${c.id}" value="${esc(loadExpected(c.id, c.expected))}" />
         <span class="expect-hint">${c.expectedNote}</span>
       </div>
       <div class="cols">
@@ -488,7 +638,7 @@ function render() {
       </div>
       <div class="notes">
         <h4>Your running notes</h4>
-        <textarea data-field="notes" placeholder="e.g. recruiter said next round is Thursday...">${loadNotes(c.id)}</textarea>
+        <textarea data-field="notes" placeholder="e.g. recruiter said next round is Thursday...">${esc(loadNotes(c.id))}</textarea>
       </div>
       <div class="sources">Sources: ${c.sources.map(([label, url]) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`).join(" · ")}</div>
       <div class="card-foot">
@@ -538,17 +688,15 @@ function render() {
     btn.addEventListener("click", () => {
       const id = btn.dataset.reset;
       if (!confirm("Reset this card's pros/cons/notes/floor/expected back to the original research? This clears anything you've added.")) return;
-      localStorage.removeItem(LS_KEY(id, "pros"));
-      localStorage.removeItem(LS_KEY(id, "cons"));
-      localStorage.removeItem(LS_KEY(id, "notes"));
-      localStorage.removeItem(LS_KEY(id, "floor"));
-      localStorage.removeItem(LS_KEY(id, "expected"));
+      const gone = {};
+      for (const f of ["pros", "cons", "notes", "floor", "expected"]) gone[LS_KEY(id, f)] = null;
+      save(gone, id);
       render();
     });
   });
+  restamp();
 }
-render();
-renderRanking();
+boot();
 </script>
 </body>
 </html>

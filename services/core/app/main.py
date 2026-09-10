@@ -18,10 +18,12 @@ import os
 from datetime import datetime, timedelta
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
+
+from .jobhunt import validate_entries
 
 app = FastAPI(title="Core Service")
 
@@ -98,6 +100,16 @@ CREATE TABLE IF NOT EXISTS seen (
     device     TEXT,
     seen_at    TIMESTAMPTZ,
     CONSTRAINT seen_is_singleton CHECK (id = 1)
+);
+-- Job-hunt research (SCRUM-131). This lived in the browser's localStorage
+-- under jobhunt_* keys, so it existed on exactly one machine and in no
+-- backup. Kept as key/value rather than one document: the page saves per
+-- FIELD, and two devices editing different companies must not clobber each
+-- other. The namespace is closed by app/jobhunt.py.
+CREATE TABLE IF NOT EXISTS jobhunt (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS focus_day_idx ON focus_sessions(day);
 CREATE INDEX IF NOT EXISTS big3_day_idx ON big3(day);
@@ -765,6 +777,52 @@ async def put_seen(s: SeenIn):
             "device = EXCLUDED.device, seen_at = EXCLUDED.seen_at",
             (json.dumps(s.snapshot)[:20000], (s.device or "")[:60] or None))
     return {"ok": True}
+
+
+# ---- job-hunt research (SCRUM-131) -----------------------------------------
+# jobs.html kept this in localStorage: one browser, no backup. Stored per key
+# rather than as one document so two devices editing different companies do
+# not overwrite each other. Which keys are allowed is decided in app/jobhunt.py.
+
+class JobhuntIn(BaseModel):
+    entries: dict[str, str | None]
+
+
+@app.get("/jobhunt")
+async def get_jobhunt():
+    """Every saved field. Empty is a real answer: nothing has been saved yet."""
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute(
+            "SELECT key, value, updated_at FROM jobhunt ORDER BY key")
+        rows = await cur.fetchall()
+    latest = max((r["updated_at"] for r in rows), default=None)
+    return {"entries": {r["key"]: r["value"] for r in rows},
+            "count": len(rows),
+            "updated_at": latest.isoformat() if latest else None}
+
+
+@app.put("/jobhunt")
+async def put_jobhunt(body: JobhuntIn):
+    """Upsert every string value; a null deletes its key. All or nothing, so
+    the page can never be told "saved" about half a batch."""
+    try:
+        upserts, deletes = validate_entries(body.entries)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            if deletes:
+                await conn.execute(
+                    "DELETE FROM jobhunt WHERE key = ANY(%s)", (deletes,))
+            for key, value in upserts.items():
+                await conn.execute(
+                    "INSERT INTO jobhunt (key, value, updated_at) "
+                    "VALUES (%s, %s, now()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+                    "updated_at = EXCLUDED.updated_at",
+                    (key, value))
+    return {"ok": True, "saved": len(upserts), "removed": len(deletes)}
 
 
 @app.get("/weekly-review")
