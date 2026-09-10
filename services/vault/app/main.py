@@ -29,6 +29,10 @@ app = FastAPI(title="Vault Service")
 
 VAULT_MODE = os.environ.get("VAULT_MODE", "off").strip().lower()
 BW_SERVE_URL = os.environ.get("BW_SERVE_URL", "").rstrip("/")
+# The Vaultwarden WEB VAULT (port 8222 on the box) for the dashboard's launch
+# button. Deliberately independent of VAULT_MODE: the password-health sub-app
+# may be off, the vault itself is still there to open.
+VAULTWARDEN_WEB_URL = os.environ.get("VAULTWARDEN_WEB_URL", "").rstrip("/")
 
 COMMON = {
     "password", "123456", "12345678", "hunter2", "password123", "qwerty",
@@ -148,7 +152,7 @@ def analyze(items: list[dict]) -> tuple[list[dict], dict]:
 @app.get("/health")
 async def health():
     return {"service": "vault", "mode": "live" if _connected() else "disconnected",
-            "connected": _connected()}
+            "connected": _connected(), "web_url": VAULTWARDEN_WEB_URL or None}
 
 
 @app.get("/summary")
@@ -158,7 +162,7 @@ async def summary():
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "vault unreachable", "detail": str(exc)}, status_code=502)
     _, s = analyze(items)
-    return s
+    return {**s, "web_url": VAULTWARDEN_WEB_URL or None}
 
 
 @app.get("/items")

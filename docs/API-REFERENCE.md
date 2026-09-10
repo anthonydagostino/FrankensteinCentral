@@ -53,12 +53,9 @@ boundaries.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/briefing` | The attention seed — what needs you right now, assembled across sub-apps. |
-| `GET` | `/overview` | The number row on the homepage. |
 | `GET` | `/home?fresh=0` | The composed homepage payload. `fresh=1` forces a re-read of upstream sub-apps instead of serving the cached composition. |
 | `GET` | `/ask?q=` | Free-text query answered from what the assistant can read. |
-| `GET` | `/agents` | Agent roster for the lounge view. |
-| `GET` | `/space` | Lounge/canvas layout state. |
-| `POST` | `/sync` | **The main action.** Runs the full cross-app pass: reads gmail, diffs threads against `thread_state`, creates/updates/declines schedule events, refreshes derived state. This is what the hub's "Sync now" / "Dispatch team" buttons call. Idempotent — an unchanged thread is a no-op. |
+| `POST` | `/sync` | **The main action.** Runs the full cross-app pass: reads gmail, diffs threads against `thread_state`, creates/updates/declines schedule events, refreshes derived state. Runs on a timer via `AUTO_SYNC_SECONDS`; the route is the manual trigger. Idempotent — an unchanged thread is a no-op. |
 | `POST` | `/notify?text=` | Send a digest to the configured channel now. Without `text`, sends the generated digest. This is the "📱 Text me" button. |
 
 `AUTO_SYNC_SECONDS` makes `/sync` run on a timer; `0` (the default) means

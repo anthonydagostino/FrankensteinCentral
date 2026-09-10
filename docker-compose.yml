@@ -146,6 +146,7 @@ services:
     environment:
       VAULT_MODE: ${VAULT_MODE:-off}
       BW_SERVE_URL: ${BW_SERVE_URL:-}
+      VAULTWARDEN_WEB_URL: ${VAULTWARDEN_WEB_URL:-}
     ports:
       - "127.0.0.1:8091:8000"
 
@@ -159,6 +160,7 @@ services:
       PLEX_TOKEN: ${PLEX_TOKEN:-}
       PLEX_SERVER_NAME: ${PLEX_SERVER_NAME:-}
       PLEX_URL: ${PLEX_URL:-}
+      PLEX_WEB_URL: ${PLEX_WEB_URL:-}
     ports:
       - "127.0.0.1:8092:8000"
 

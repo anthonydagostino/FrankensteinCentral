@@ -114,8 +114,10 @@ a token or scope is a credential operation — treat it as high-risk under
 | `PLEX_TOKEN` | plex | empty | Your plex.tv account token; the server is auto-discovered from it. Never sent to the browser. Empty = "not connected". |
 | `PLEX_SERVER_NAME` | plex | empty | Disambiguates when several servers are shared with you. |
 | `PLEX_URL` | plex | empty | Skip discovery and talk to a server directly. |
+| `PLEX_WEB_URL` | plex | empty | Browser-facing override for the dashboard's 🎬 launch button. Empty = derived from the shared server, or `app.plex.tv/desktop` when not connected. |
 | `VAULT_MODE` | vault | `off` | `off` or `bitwarden`. |
 | `BW_SERVE_URL` | vault | empty | A running `bw serve` endpoint. Read-only; no secret is ever returned or stored. |
+| `VAULTWARDEN_WEB_URL` | vault | empty | Browser-facing URL of the Vaultwarden web vault (port 8222) for the dashboard's 🔐 launch button. Independent of `VAULT_MODE`. |
 
 ## Assistant behavior
 

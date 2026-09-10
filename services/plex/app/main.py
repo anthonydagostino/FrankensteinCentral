@@ -26,6 +26,10 @@ app = FastAPI(title="Plex Service")
 PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "")
 PLEX_SERVER_NAME = os.environ.get("PLEX_SERVER_NAME", "")
 PLEX_URL = os.environ.get("PLEX_URL", "").rstrip("/")
+# Browser-facing override for the dashboard's launch button (mirrors
+# FIREFLY_WEB_URL). Empty = derive from the shared server, or fall back to
+# app.plex.tv, so the button works even when the sub-app is not connected.
+PLEX_WEB_URL = os.environ.get("PLEX_WEB_URL", "").rstrip("/")
 PLEX_TV = os.environ.get("PLEX_TV_BASE", "https://plex.tv").rstrip("/")
 
 HEADERS = {
@@ -172,7 +176,10 @@ async def _live() -> dict:
     }
 
 
-def _web_url(machine: str | None) -> str | None:
+def _web_url(machine: str | None) -> str:
+    """Where the Plex button goes. Never None: Plex is always openable."""
+    if PLEX_WEB_URL:
+        return PLEX_WEB_URL
     if not machine:
         return "https://app.plex.tv/desktop"
     return f"https://app.plex.tv/desktop/#!/server/{machine}"
@@ -200,7 +207,7 @@ async def summary():
         "server": d.get("server", "Plex"),
         "libraries": len(d.get("libraries", [])),
         "continue_count": len(d.get("continue", [])),
-        "web_url": _web_url(d.get("machine")) if _connected() else None,
+        "web_url": _web_url(d.get("machine")),
         "mode": "live" if _connected() else "disconnected",
         "connected": _connected(),
     }
@@ -213,7 +220,7 @@ async def dashboard():
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": "plex unreachable", "detail": str(exc)}, status_code=502)
     machine = d.pop("machine", None)
-    return {**d, "web_url": _web_url(machine) if _connected() else None,
+    return {**d, "web_url": _web_url(machine),
             "connected": _connected()}
 
 

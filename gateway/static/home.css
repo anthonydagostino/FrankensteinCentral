@@ -51,6 +51,9 @@ body.cc[data-mode="evening"] {
   color: var(--text); font-size: 17px; cursor: pointer; text-decoration: none;
 }
 .cc-icon-btn:hover { border-color: var(--accent-2); }
+/* A launch button whose target is not configured yet: visible (so you know it
+   exists) but obviously not live, and its click explains itself. */
+.cc-icon-btn.unconfigured { opacity: .45; }
 .cc-score-pill {
   display: inline-flex; align-items: baseline; gap: 1px; padding: 8px 14px;
   border-radius: 12px; background: var(--panel); border: 1px solid var(--line);

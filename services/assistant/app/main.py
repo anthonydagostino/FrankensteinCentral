@@ -352,11 +352,6 @@ async def build_overview() -> dict:
     }
 
 
-@app.get("/overview")
-async def overview():
-    return await build_overview()
-
-
 # ============================================================================
 # /home — the single aggregated payload the Today command center renders from.
 # One fast call: fan out concurrently to every service + core + stocks, then
@@ -1114,30 +1109,6 @@ async def ask(q: str = ""):
     return answers.answer(q, sources, short=_short, sender=_sender_name)
 
 
-@app.get("/agents")
-async def agents():
-    """The roster the lounge renders: manager + one worker per station."""
-    return {"agents": AGENTS}
-
-
-@app.get("/space")
-async def space():
-    """The assistant's persistent memory: notes, open deadlines, recent activity."""
-    async with pool.connection() as conn:
-        conn.row_factory = dict_row
-        mem = await (await conn.execute(
-            "SELECT content, created_at FROM memory ORDER BY id DESC LIMIT 8"
-        )).fetchall()
-        dls = await (await conn.execute(
-            "SELECT title, due_at, source FROM deadlines ORDER BY due_at NULLS LAST LIMIT 20"
-        )).fetchall()
-        act = await (await conn.execute(
-            "SELECT agent, station, action, detail, created_at "
-            "FROM activity ORDER BY id DESC LIMIT 30"
-        )).fetchall()
-    return {"memory": mem, "deadlines": dls, "activity": act}
-
-
 async def _sync_availability_threads(conn, client: httpx.AsyncClient) -> tuple[int, list[str]]:
     """Threads where you proposed your own availability ("I'm available
     Monday at 2pm"). Turns them into pending/confirmed/countered calendar
@@ -1229,12 +1200,13 @@ async def _sync_availability_threads(conn, client: httpx.AsyncClient) -> tuple[i
 
 @app.post("/sync")
 async def sync():
-    """Core orchestration pass, now narrated as agent jobs for the lounge.
+    """Core orchestration pass. _auto_sync_loop calls this on AUTO_SYNC_SECONDS;
+    the route is the manual trigger (curl -X POST /api/assistant/sync).
 
-    Each worker "visits" its station: Posty reads the inbox, Cal books any
-    interview found, Rep checks purchases, Coach checks the plan. Bones writes a
-    note summarising. Everything is logged to the persistent space, and the list
-    of jobs is returned so the lounge can animate the workers walking out.
+    Each step reads one sub-app and files what it finds — inbox triage into
+    deadlines, availability threads into calendar holds, and so on. The
+    per-agent narration (jobs, activity log) dates from the retired lounge
+    view and is kept only until the sub-app roster is settled (SCRUM-140).
     """
     jobs: list[dict] = []
     created = []

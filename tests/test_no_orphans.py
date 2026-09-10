@@ -113,6 +113,10 @@ ENDPOINTS_REACHED_ANOTHER_WAY = {
     ("firefly", "/audit"): "manual diagnostic, documented in docs/BUDGETS.md",
     ("stocks", "/quotes"): "manual diagnostic; the dashboard reads /portfolio",
     ("core", "/history"): "manual diagnostic; the dashboard reads /today",
+    ("assistant", "/sync"): (
+        "manual trigger of the orchestration pass (curl -X POST); "
+        "_auto_sync_loop calls the same function on AUTO_SYNC_SECONDS. Its "
+        "only UI caller was the retired lounge (SCRUM-140)."),
 }
 
 
@@ -232,10 +236,24 @@ def test_a_focus_session_can_be_labelled():
     assert "hx-focus-label" in HOME_JS, "the UI only ever writes 'Study' again"
 
 
-def test_the_job_board_is_reachable_from_the_hub():
-    """jobs.html was linked only from the legacy lounge, so demoting that page
-    took the board offline with it."""
-    assert "/jobs.html" in HOME_JS
+def test_the_job_board_is_gone_and_unreferenced():
+    """jobs.html was a 554-line hand-maintained comparison of four job offers
+    (SCRUM-140). Retired on Anthony's instruction; a dangling link to it would
+    be a 404 on the home screen."""
+    assert not (ROOT / "gateway" / "static" / "jobs.html").exists()
+    assert "/jobs.html" not in HOME_JS
+    assert "jobs.html" not in (ROOT / "gateway" / "static" / "index.html").read_text()
+
+
+def test_the_legacy_lounge_is_gone_and_unreferenced():
+    """lounge.html and ~700 lines of canvas code in app.js drew an animated
+    office of agent personas (SCRUM-140). Retired; the modals it shared with
+    the home screen stay in app.js."""
+    static = ROOT / "gateway" / "static"
+    assert not (static / "lounge.html").exists()
+    for f in ("index.html", "home.js", "app.js"):
+        assert "lounge.html" not in (static / f).read_text(), f
+    assert 'getElementById("stage")' not in (static / "app.js").read_text()
 
 
 # ── duplicate element ids ──────────────────────────────────────────────────

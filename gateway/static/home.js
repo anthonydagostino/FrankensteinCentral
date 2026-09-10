@@ -895,8 +895,8 @@
 
   // ---- Deadlines ------------------------------------------------------------
   // The assistant has been extracting interview times and bill due dates on
-  // every sync and filing them since the pipeline was written. Until now the
-  // only page that could display them was the legacy lounge.
+  // every sync and filing them since the pipeline was written; this card is
+  // where they surface.
   function renderDeadlines(dl) {
     const el = q("#cc-deadlines");
     if (!el) return;
@@ -1537,9 +1537,10 @@
       { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
       { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
       { ic: "📬", label: "Open Gmail (web)", hint: "gmail mail email inbox", run: () => openGmail() },
+      { ic: "🎬", label: "Open Plex", hint: "plex media movies tv", run: () => window.open(q("#cc-plex").href, "_blank", "noopener") },
+      { ic: "🔐", label: "Open Vaultwarden", hint: "vault vaultwarden passwords bitwarden", run: () => q("#cc-vault").click() },
       { ic: "▦", label: "Apps & services launcher", hint: "apps containers launcher", run: () => openLauncher() },
       { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
-      { ic: "🦴", label: "Legacy lounge view", hint: "lounge legacy old", run: () => (location.href = "/lounge.html") },
     ];
     // one command per app -> opens its modal, with natural aliases
     const ALIASES = {
@@ -1621,9 +1622,36 @@
       const px = await fetch("/api/plex/summary").then((r) => r.json());
       if (px.web_url) links.plex = px.web_url;
     } catch {}
+    try {
+      const vw = await fetch("/api/vault/summary").then((r) => r.json());
+      if (vw.web_url) links.vault = vw.web_url;
+    } catch {}
     EXT_LINKS = links;
     return links;
   }
+
+  // ---- launch buttons: Plex and Vaultwarden, on the main screen --------------
+  // Not behind the launcher. The two things opened every day are one click from
+  // the home screen. Plex always has somewhere to go (app.plex.tv even when the
+  // sub-app is not connected); Vaultwarden needs VAULTWARDEN_WEB_URL and SAYS
+  // so on click rather than 404ing — an instruction on this dashboard has to
+  // point at a control that exists.
+  async function wireLaunchButtons() {
+    const links = await externalLinks();
+    const plex = q("#cc-plex"), vault = q("#cc-vault");
+    if (plex && links.plex) plex.href = links.plex;
+    if (!vault) return;
+    if (links.vault) {
+      vault.href = links.vault;
+      vault.classList.remove("unconfigured");
+      vault.onclick = null;
+    } else {
+      vault.classList.add("unconfigured");
+      vault.title = "Vaultwarden — set VAULTWARDEN_WEB_URL in .env to enable";
+      vault.onclick = (e) => { e.preventDefault(); toast("Set VAULTWARDEN_WEB_URL in .env (e.g. http://<box>:8222) and redeploy"); };
+    }
+  }
+  wireLaunchButtons();
   async function openLauncher() {
     q("#launcher").hidden = false;
     const grid = q("#launcher-grid");
@@ -1642,12 +1670,6 @@
       tiles.push(`<a class="launch-tile" href="${links._importer}" target="_blank" rel="noopener" title="Firefly data importer">
         <span class="ic">📥</span><span class="nm">Importer</span><span class="dot"></span><span class="ext">↗</span></a>`);
     }
-    // jobs.html shipped in gateway/static and was linked ONLY from the legacy
-    // lounge, so demoting that page took the job-hunt board offline with it.
-    // A static page rather than a registered service, so it gets a tile of its
-    // own rather than a registry entry.
-    tiles.push(`<a class="launch-tile" href="/jobs.html" title="Job hunt board">
-      <span class="ic">💼</span><span class="nm">Job hunt</span><span class="dot"></span></a>`);
     grid.innerHTML = tiles.join("") || '<p class="att-empty">No apps registered.</p>';
     grid.querySelectorAll(".launch-tile[data-key]").forEach((el) => {
       el.onclick = (e) => {

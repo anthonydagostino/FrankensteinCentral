@@ -58,7 +58,7 @@ endpoints at `/` and `/health`. Full port map in
 
 | App        | Port | What it does                                              |
 |------------|------|-----------------------------------------------------------|
-| Assistant  | 8085 | The orchestrator. Reads every sub-app, briefing, agent lounge |
+| Assistant  | 8085 | The orchestrator. Reads every sub-app, briefing, home payload |
 | Core       | 8098 | Personal state & daily score — study, water, nutrition, Big 3, captures |
 | Gmail      | 8083 | Whole-inbox triage + sent-mail availability detection. Own Google OAuth |
 | Schedule   | 8084 | Your calendar. Idempotent, color-coded, pushes to real Google Calendar |

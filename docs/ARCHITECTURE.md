@@ -254,8 +254,6 @@ A static SPA served by the gateway from `gateway/static/`:
 |---|---|
 | `index.html` + `home.js` + `home.css` | the homepage / dashboard |
 | `app.js` + `styles.css` | sub-app detail views and the `RENDERERS` map |
-| `lounge.html` | the canvas "agent lounge" view |
-| `jobs.html` | job/activity view |
 
 There is no build step, no bundler, and no framework — the files are served as
 written. `scripts/test.sh` runs `node --check` on each `.js` file, so a syntax
