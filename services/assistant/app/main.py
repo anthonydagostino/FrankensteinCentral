@@ -1,0 +1,1518 @@
+import asyncio
+import json
+import os
+import shutil
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import httpx
+from fastapi import FastAPI
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
+
+from . import answers, notify, runway
+from .dashboard import (data_safety, deadline_rows, deploy_state, disk_state,
+                        firefly_state,
+                        first_undismissed, low_balance_accounts,
+                        parse_event_dt, portfolio_alerts, portfolio_state,
+                        resale_brief, schedule_state, since_changes,
+                        since_snapshot, upcoming_events, week_window,
+                        weekly_review)
+from .orchestrator import extract_datetime
+
+app = FastAPI(title="Assistant Service")
+
+POWERBUY_URL = os.environ.get("POWERBUY_URL", "http://powerbuy:8000")
+FITNESS_URL = os.environ.get("FITNESS_URL", "http://fitness:8000")
+GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
+SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
+FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
+TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
+BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
+DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
+NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
+VAULT_URL = os.environ.get("VAULT_URL", "http://vault:8000")
+PLEX_SVC_URL = os.environ.get("PLEX_SVC_URL", "http://plex:8000")
+FIREFLY_SVC_URL = os.environ.get("FIREFLY_URL_SVC", "http://firefly:8000")
+CORE_URL = os.environ.get("CORE_URL", "http://core:8000")
+STOCKS_URL = os.environ.get("STOCKS_URL", "http://stocks:8000")
+# The deploy record `deploy.sh` writes on the HOST, mounted read-only. It is
+# deliberately outside the repo — `git reset --hard` during a deploy would
+# erase anything tracked, and the point is to still be able to say what is
+# running after a deploy that failed. Absent mount reads as "unknown".
+DEPLOY_RECORD = os.environ.get("FRANKENSTEIN_DEPLOY_RECORD",
+                               "/var/frankenstein/deployed.json")
+# Written by scripts/backup.sh and scripts/restore.sh, in the same host state
+# directory and through the same read-only mount. SCRUM-67.
+DATA_SAFETY_RECORD = os.environ.get("FRANKENSTEIN_DATA_SAFETY_RECORD",
+                                    "/var/frankenstein/data-safety.json")
+# The mount itself. Disk free is read from it: statvfs through a bind mount
+# reports the host filesystem, so this is the OptiPlex's data disk — but only
+# while the directory is actually there (SCRUM-67).
+STATE_DIR = os.path.dirname(DATA_SAFETY_RECORD) or "/var/frankenstein"
+LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
+AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
+# Text a digest automatically after each sync (only when it changed). Off by default.
+NOTIFY_ON_SYNC = os.environ.get("NOTIFY_ON_SYNC", "false").lower() in ("1", "true", "yes")
+# Two-way Telegram: if both are set, Bones answers questions you text it.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+DATABASE_URL = os.environ["DATABASE_URL"]
+pool = AsyncConnectionPool(DATABASE_URL, open=False, min_size=1, max_size=5)
+
+# Last computed briefing, so the dashboard can read it without re-polling.
+STATE: dict = {"items": [], "summary": "Not synced yet."}
+
+# The floor: one manager plus a worker specialised to each sub-app. The lounge
+# UI renders these; each worker walks to its station when it has a job.
+AGENTS = [
+    {"id": "bones", "name": "Bones", "role": "manager", "station": "desk",
+     "color": "#e23b5a", "blurb": "Runs the floor. Assigns jobs and keeps your notes."},
+    {"id": "posty", "name": "Posty", "role": "worker", "station": "gmail",
+     "color": "#4aa3ff", "blurb": "Inbox runner — triages what needs a reply."},
+    {"id": "cal", "name": "Cal", "role": "worker", "station": "schedule",
+     "color": "#7bd88f", "blurb": "Calendar keeper — books what Bones finds."},
+    {"id": "rep", "name": "Rep", "role": "worker", "station": "powerbuy",
+     "color": "#ff8a5b", "blurb": "Arbitrage desk — profit, unpaid, expiring."},
+    {"id": "coach", "name": "Coach", "role": "worker", "station": "fitness",
+     "color": "#c58cff", "blurb": "Gym & food — today's plan and groceries."},
+    {"id": "penny", "name": "Penny", "role": "worker", "station": "finance",
+     "color": "#5bd6c0", "blurb": "Money desk — bills, subscriptions, what's due."},
+    {"id": "tess", "name": "Tess", "role": "worker", "station": "tasks",
+     "color": "#f2b8d0", "blurb": "To-do runner — tracks what's still open."},
+    {"id": "buck", "name": "Buck", "role": "worker", "station": "budget",
+     "color": "#f5c542", "blurb": "Budget desk — spending by category, what's left."},
+    {"id": "scout", "name": "Scout", "role": "worker", "station": "deals",
+     "color": "#a3e635", "blurb": "Deal hunter — flags real discounts from your inbox."},
+    {"id": "wade", "name": "Wade", "role": "worker", "station": "networth",
+     "color": "#38bdf8", "blurb": "Wealth desk — account balances, applies recurring contributions."},
+    {"id": "vic", "name": "Vic", "role": "worker", "station": "vault",
+     "color": "#8b98a9", "blurb": "Vault guard — password health: weak, reused, no-2FA."},
+    {"id": "milo", "name": "Milo", "role": "worker", "station": "plex",
+     "color": "#e5a00d", "blurb": "Media runner — continue watching and what's newly added on Plex."},
+    {"id": "fitz", "name": "Fitz", "role": "worker", "station": "firefly",
+     "color": "#e0592a", "blurb": "Ledger keeper — Firefly III net worth, spend, transactions."},
+]
+_BY_STATION = {a["station"]: a for a in AGENTS}
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS memory (
+    id SERIAL PRIMARY KEY, content TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deadlines (
+    id SERIAL PRIMARY KEY, title TEXT NOT NULL, due_at TEXT,
+    source TEXT NOT NULL, external_id TEXT UNIQUE, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS activity (
+    id SERIAL PRIMARY KEY, agent TEXT NOT NULL, station TEXT NOT NULL,
+    action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+);
+-- One row per gmail scheduling thread (a "I'm available X" email you sent
+-- and whatever happened after). `signature` fingerprints status + all the
+-- slots involved, so a sync where nothing about the thread changed is a
+-- total no-op: no duplicate schedule events, no duplicate notable/digest
+-- lines, no wasted Google Calendar API calls.
+CREATE TABLE IF NOT EXISTS thread_state (
+    thread_id TEXT PRIMARY KEY, signature TEXT NOT NULL, status TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+async def _auto_sync_loop():
+    """Keep the floor and briefing fresh on their own, no browser needed."""
+    await asyncio.sleep(min(15, AUTO_SYNC_SECONDS))  # let siblings boot first
+    while True:
+        try:
+            await sync()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            pass
+        await asyncio.sleep(AUTO_SYNC_SECONDS)
+
+
+async def _telegram_listen_loop():
+    """Long-poll Telegram for messages from the owner and answer them with
+    the same offline Q&A the dashboard's ask box uses.
+
+    Long-polling (not a webhook) so nothing here needs to be reachable from
+    the internet — this box just makes outbound calls to Telegram's API,
+    same as sending a digest already does.
+    """
+    offset = 0
+    async with httpx.AsyncClient(timeout=35) as client:
+        while True:
+            try:
+                r = await client.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                    params={"offset": offset, "timeout": 25},
+                )
+                for u in r.json().get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message") or {}
+                    text = msg.get("text")
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    if not text or chat_id != TELEGRAM_CHAT_ID:
+                        continue  # ignore anyone but the owner
+                    answer = (await ask(text)).get("answer", "Not sure about that one.")
+                    await client.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={"chat_id": chat_id, "text": answer},
+                    )
+            except Exception:  # noqa: BLE001 - never let the loop die
+                await asyncio.sleep(5)
+
+
+@app.on_event("startup")
+async def startup():
+    await pool.open(wait=True, timeout=30)
+    async with pool.connection() as conn:
+        await conn.execute(SCHEMA)
+    if AUTO_SYNC_SECONDS > 0:
+        asyncio.create_task(_auto_sync_loop())
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        asyncio.create_task(_telegram_listen_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await pool.close()
+
+
+def _now() -> str:
+    return datetime.utcnow().isoformat()
+
+
+async def _log(conn, agent: str, station: str, action: str, detail: str = "") -> None:
+    await conn.execute(
+        "INSERT INTO activity (agent, station, action, detail, created_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (agent, station, action, detail, _now()),
+    )
+
+
+async def _remember(conn, content: str) -> None:
+    await conn.execute(
+        "INSERT INTO memory (content, created_at) VALUES (%s, %s)", (content, _now())
+    )
+
+
+async def _add_deadline(conn, title: str, due_at, source: str, external_id: str) -> None:
+    await conn.execute(
+        "INSERT INTO deadlines (title, due_at, source, external_id, created_at) "
+        "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (external_id) DO NOTHING",
+        (title, due_at, source, external_id, _now()),
+    )
+
+
+@app.get("/health")
+async def health():
+    return {"service": "assistant", "briefing_items": len(STATE["items"])}
+
+
+async def _get_or_none(client: httpx.AsyncClient, url: str):
+    """Like _get, but returns None when the service did not answer.
+
+    _get() returns {} for a failure so a down sub-app just contributes nothing
+    to the dashboard — right for a tile that can render less, wrong for /ask,
+    which would then state the {} as a confident zero. Prose has no em dash to
+    hide behind, so /ask needs to tell the two apart.
+    """
+    try:
+        r = await client.get(url, timeout=8)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _get(client: httpx.AsyncClient, url: str) -> dict:
+    try:
+        r = await client.get(url, timeout=8)
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001 - a down sub-app just contributes nothing
+        return {}
+
+
+async def build_briefing() -> list[dict]:
+    """What Bones' Desk shows — things that actually need your attention.
+
+    Deliberately NOT a status dump: routine numbers (today's workout, next
+    event, net worth, "budget's fine") already live on the overview tiles,
+    so repeating them here is just noise. Only alerts and things with an
+    action attached to them (reply, pay, review) make the cut.
+    """
+    items: list[dict] = []
+    # Concurrent, like build_home: these seven services know nothing about each
+    # other, so awaiting them one at a time only added their latencies together
+    # — and each _get waits up to 8s, so one slow container used to delay every
+    # service queued behind it.
+    async with httpx.AsyncClient() as client:
+        (emails, powerbuy, finance, budget, deals, vault,
+         availability) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+            _get(client, f"{GMAIL_URL}/thread-availability"),
+        )
+
+    for e in emails.get("emails", [])[:5]:
+        verb = "Interview" if e.get("category") == "interview" else "Reply needed"
+        items.append(
+            {"source": "gmail", "message": f"{verb}: {_short(e['subject'])} — {_sender_name(e['from'])}"}
+        )
+    extra_emails = len(emails.get("emails", [])) - 5
+    if extra_emails > 0:
+        items.append({"source": "gmail", "message": f"+{extra_emails} more email(s) need a reply."})
+
+    s = powerbuy.get("summary")
+    if s:
+        alerts = []
+        if s.get("unpaid_count"):
+            alerts.append(f"{s['unpaid_count']} unpaid")
+        if s.get("expiring_soon_count"):
+            alerts.append(f"{s['expiring_soon_count']} expiring soon")
+        if s.get("not_delivered_count"):
+            alerts.append(f"{s['not_delivered_count']} not delivered")
+        if alerts:  # only worth a line when something actually needs a look
+            items.append(
+                {"source": "powerbuy", "message": f"PowerBuy needs a look: {'; '.join(alerts)}."}
+            )
+
+    due = finance.get("upcoming", [])
+    if due:
+        names = ", ".join(f"{b['name']} (${b['amount']})" for b in due[:3])
+        items.append(
+            {"source": "finance", "message": f"Bills due soon: {names}."}
+        )
+
+    over = budget.get("over_budget", [])
+    if over:
+        items.append(
+            {"source": "budget", "message": f"Over budget on: {', '.join(over)}."}
+        )
+
+    if deals.get("top"):
+        items.append(
+            {"source": "deals", "message": f"Deals spotted: {', '.join(deals['top'])}."}
+        )
+
+    # Reused passwords are the actionable one — flag them (weak/old live on the tile).
+    if vault.get("reused"):
+        items.append(
+            {"source": "vault", "message": f"{vault['reused']} reused password(s) — rotate them."}
+        )
+
+    threads = availability.get("threads", [])
+    awaiting = [t for t in threads if t.get("status") == "pending"]
+    countered = [t for t in threads if t.get("status") == "countered"]
+    if countered:  # the ball's in your court — surface these above plain "waiting"
+        names = ", ".join(_sender_name(t.get("counterparty", "")) for t in countered[:3])
+        items.append(
+            {"source": "schedule", "message": f"{len(countered)} countered your availability, "
+                                               f"needs a reply: {names}."}
+        )
+    if awaiting:
+        names = ", ".join(_sender_name(t.get("counterparty", "")) for t in awaiting[:3])
+        items.append(
+            {"source": "schedule", "message": f"Awaiting reply on {len(awaiting)} proposed "
+                                               f"time(s): {names}."}
+        )
+
+    return items
+
+
+@app.get("/briefing")
+async def briefing():
+    return STATE
+
+
+async def build_overview() -> dict:
+    """A glanceable set of numbers across every app — the command-center row."""
+    async with httpx.AsyncClient() as client:
+        (emails, powerbuy, cal, fitness, finance, tasks, budget, deals,
+         networth, vault) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{SCHEDULE_URL}/events"),
+            _get(client, f"{FITNESS_URL}/plan"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{TASKS_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{NETWORTH_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+        )
+    pb = powerbuy.get("summary", {})
+    tp = fitness.get("today_plan") or {}
+    # Only a *confirmed* event counts as "next up" — a still-pending proposal
+    # you sent isn't a real commitment yet, so it shouldn't read as one.
+    events = _upcoming_events(cal.get("events", []), datetime.now(LOCAL_TZ),
+                              limit=None, statuses=("confirmed",))
+    return {
+        "emails_to_reply": len(emails.get("emails", [])),
+        "expected_profit": pb.get("expected_profit", 0),
+        "unpaid": pb.get("unpaid_count", 0),
+        "bills_due": len(finance.get("upcoming", [])),
+        "monthly_bills": finance.get("monthly_total", 0),
+        "open_tasks": tasks.get("open", 0),
+        "budget_left": budget.get("remaining", 0),
+        "budget_over": len(budget.get("over_budget", [])),
+        "deals_count": deals.get("count", 0),
+        "net_worth": networth.get("total", 0),
+        "vault_score": vault.get("score"),
+        "vault_reused": vault.get("reused", 0),
+        "next_event": events[0]["title"] if events else None,
+        "next_event_at": events[0]["starts_at"] if events else None,
+        "today_focus": tp.get("focus"),
+        "synced_at": STATE.get("synced_at"),
+    }
+
+
+# ============================================================================
+# /home — the single aggregated payload the Today command center renders from.
+# One fast call: fan out concurrently to every service + core + stocks, then
+# assemble greeting/mode, briefing line, unified Needs Attention feed, Do This
+# Next (explainable rules), Money, Portfolio, Health, Score, Big 3, captures.
+# Any one service failing contributes nothing rather than breaking the page.
+# ============================================================================
+
+_HOME_CACHE: dict = {"at": None, "data": None}
+_HOME_TTL = 30  # seconds
+
+
+def _home_time(settings: dict) -> dict:
+    now = datetime.now(LOCAL_TZ)
+    h = now.hour
+    if h < 12:
+        greeting = "Good morning"
+    elif h < 17:
+        greeting = "Good afternoon"
+    else:
+        greeting = "Good evening"
+    morning_end = settings.get("morning_end_hour", 12)
+    evening_start = settings.get("evening_start_hour", 18)
+    mode = "morning" if h < morning_end else ("evening" if h >= evening_start else "day")
+    return {
+        "now": now.isoformat(),
+        "greeting": greeting,
+        "mode": mode,
+        "date_label": now.strftime("%A, %B %-d"),
+        "hour": h,
+    }
+
+
+def _parse_event_dt(raw):
+    return parse_event_dt(raw, LOCAL_TZ)
+
+
+def _upcoming_events(events, now, limit=6, statuses=None):
+    return upcoming_events(events, now, LOCAL_TZ, limit=limit, statuses=statuses)
+
+
+def _event_minutes_until(events, now) -> tuple | None:
+    """(minutes_until, event) for the next confirmed event, if parseable.
+
+    Callers pass an already-bounded, soonest-first list, so the first parseable
+    entry is the next one. It used to be handed every event ever recorded, and
+    the first of those is the oldest — which made the minutes-until figure
+    hugely negative and meant the "starts in 30 min" rules could never fire.
+    """
+    for e in events:
+        dt = _parse_event_dt(e.get("starts_at") or e.get("start"))
+        if dt is None:
+            continue
+        return ((dt - now).total_seconds() / 60, e)
+    return None
+
+
+def _study_pace_behind(study, hour) -> int:
+    """Minutes behind a linear 8am→10pm pace toward today's goal (0 if ahead)."""
+    goal = study.get("goal_min", 0)
+    done = study.get("today_min", 0)
+    if not goal:
+        return 0
+    frac = max(0.0, min(1.0, (hour - 8) / 14))
+    expected = goal * frac
+    return int(max(0, expected - done))
+
+
+def _do_next_candidates(core, inbox, money, events, settings, t):
+    """Every recommendation that applies right now, best first.
+
+    This was one `return`-per-rule chain. It is a generator now for one
+    reason: dismissing the top suggestion has to fall through to the NEXT one.
+    "I have handled that, tell me the next thing" is the whole point of being
+    able to say handled — a chain that returns the first match can only ever
+    hide the answer and show nothing in its place.
+
+    Every candidate carries a stable `key` identifying the THING, not the
+    moment, so a snooze survives the recompute that happens on every load.
+    """
+    now = datetime.now(LOCAL_TZ)
+    hour = t["hour"]
+    study = (core or {}).get("study", {})
+    gym = (core or {}).get("gym", {})
+    water = (core or {}).get("water", {})
+    big3 = (core or {}).get("big3", [])
+
+    ev = _event_minutes_until(events, now)
+
+    # 1) A calendar event that's imminent beats everything
+    if ev and 0 <= ev[0] <= 30:
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Head to {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
+
+    # 2) An important email that needs a response
+    needs = [i for i in inbox.get("items", []) if i.get("needs_reply") and i.get("important")]
+    for e in sorted(needs, key=lambda x: x.get("age_hours") or 0, reverse=True):
+        aged = f" — it's been sitting {e['age'].replace(' ago', '')}" if e.get("age") else ""
+        yield {"key": f"email:{e.get('id') or e.get('subject','')}",
+               "title": f"Reply to {e['from']}",
+               "reason": f"\"{e['subject']}\" looks like it needs a response{aged}.",
+               "action": {"type": "gmail"}}
+
+    # 3) A calendar event starting soon
+    if ev and 0 <= ev[0] <= 75:
+        yield {"key": f"event:{ev[1].get('id') or ev[1].get('title','')}",
+               "title": f"Get ready for {_short(ev[1].get('title',''), 40)}",
+               "reason": f"It starts in {int(ev[0])} min.",
+               "action": {"type": "open", "app": "schedule"}}
+
+    # 4) Study, if you're behind pace
+    behind = _study_pace_behind(study, hour)
+    goal = study.get("goal_min", 0); done = study.get("today_min", 0)
+    if goal and done < goal and (behind >= 15 or hour >= 18):
+        rem = goal - done
+        mins = min(60, rem) or 25
+        why = (f"you're {behind} min behind today's pace" if behind >= 15
+               else f"{done//60}h {done%60}m / {goal//60}h done and the day's almost over")
+        yield {"key": "study", "title": f"Start a {mins}-minute study session",
+               "reason": f"{why}.", "action": {"type": "focus", "minutes": mins}}
+
+    # 5) Gym, if the week is slipping
+    if gym.get("available") and gym.get("week", 0) < gym.get("goal", 0):
+        rem = gym["goal"] - gym["week"]
+        days_left = 7 - now.weekday()
+        if rem >= days_left or hour >= settings.get("evening_start_hour", 18):
+            yield {"key": "gym", "title": "Go to the gym",
+                   "reason": f"{gym['week']}/{gym['goal']} workouts this week — {rem} to go and {days_left} day(s) left.",
+                   "action": {"type": "gym"}}
+
+    # 6) A Big 3 item
+    for b in [b for b in big3 if not b.get("done")]:
+        if hour >= 10:
+            yield {"key": f"big3:{b['id']}",
+                   "title": f"Knock out: {_short(b['text'], 40)}",
+                   "reason": "It's one of your Big 3 for today.",
+                   "action": {"type": "big3", "id": b["id"]}}
+
+    # 7) Hydration, late in the day
+    if water.get("goal") and water.get("oz", 0) < water["goal"] and hour >= 16:
+        gap = water["goal"] - water["oz"]
+        yield {"key": "water", "title": "Drink some water",
+               "reason": f"{gap} oz short of your {water['goal']} oz goal.",
+               "action": {"type": "water", "oz": 16}}
+
+
+def _do_next(core, inbox, money, events, settings, t, dismissed=None) -> dict:
+    """ONE explainable recommendation — the best one you have not waved off.
+
+    `dismissed` is a set of currently-active dismissal keys. The fallback is
+    NOT dismissible: "You're on track" is the absence of a recommendation, and
+    there is nothing behind it to fall through to.
+    """
+    return first_undismissed(
+        _do_next_candidates(core, inbox, money, events, settings, t),
+        dismissed or set())
+
+
+def _briefing_line(core, inbox, stocks, money, events) -> list[str]:
+    out: list[str] = []
+    need = inbox.get("need_reply", 0)
+    imp = sum(1 for i in inbox.get("items", []) if i.get("important"))
+    if need:
+        out.append(f"{need} email(s) need a reply" + (f" ({imp} important)" if imp else ""))
+    elif inbox.get("mode") == "live":
+        out.append("Inbox looks clear")
+    if stocks and stocks.get("configured"):
+        pct = stocks.get("day_change_pct", 0)
+        out.append(f"Portfolio {'up' if pct >= 0 else 'down'} {abs(pct):.1f}% today")
+    if money.get("today") is not None:
+        out.append(f"${money['today']:,.0f} spent today")
+    gym = (core or {}).get("gym", {})
+    if gym.get("available"):
+        out.append(f"Gym {gym.get('week',0)}/{gym.get('goal',0)} this week")
+    study = (core or {}).get("study", {})
+    if study.get("goal_min"):
+        d = study.get("today_min", 0)
+        out.append(f"{d//60}h {d%60}m / {study['goal_min']//60}h studying")
+    water = (core or {}).get("water", {})
+    if water.get("goal"):
+        out.append(f"{water.get('oz',0)}/{water['goal']} oz water")
+    return out[:6]
+
+
+def _age_str(hours) -> str:
+    if hours is None:
+        return ""
+    if hours < 1:
+        return "just now"
+    if hours < 24:
+        return f"{int(round(hours))}h ago"
+    return f"{int(hours // 24)}d ago"
+
+
+def _is_important_sender(addr: str, important: list) -> bool:
+    a = (addr or "").lower()
+    return any(s and s.lower() in a for s in (important or []))
+
+
+def _inbox(gmail_emails, availability, settings, gmail_mode, gmail_sync=None,
+           dismissed=None) -> dict:
+    """The email signal: which messages actually matter, with sender/subject/
+    age — not a count of 40 unread."""
+    important = settings.get("important_senders", [])
+    tier = {"interview": 50, "deadline": 40, "personal": 20, "finance": 12,
+            "notification": 4, "deal": 5, "fyi": 0}
+    scored = []
+    for e in gmail_emails:
+        rank = tier.get(e.get("category"), 0)
+        if _is_important_sender(e.get("from", ""), important):
+            rank += 100
+        if e.get("needs_reply"):
+            rank += 15
+        age = e.get("age_hours")
+        if age is not None:
+            rank += min(20, age / 6)
+        scored.append((rank, e))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Dismissed messages are dropped BEFORE the top-5 slice, so waving one off
+    # promotes the sixth rather than leaving a gap. Filtering after the slice
+    # would shrink the card every time you handled something.
+    hidden = dismissed or set()
+    scored = [(r, e) for r, e in scored
+              if f"email:{e.get('id') or e.get('subject','')}" not in hidden]
+
+    items = []
+    for rank, e in scored[:5]:
+        age = e.get("age_hours")
+        items.append({
+            "id": e.get("id"), "thread_id": e.get("thread_id"),
+            # Stable across the recompute that happens on every page load —
+            # it names the message, not this render of it.
+            "key": f"email:{e.get('id') or e.get('subject','')}",
+            "from": _sender_name(e.get("from", "")),
+            "subject": _short(e.get("subject", ""), 60),
+            "snippet": _short(e.get("snippet", ""), 90),
+            "category": e.get("category"),
+            "age": _age_str(age), "age_hours": age,
+            "needs_reply": e.get("needs_reply", False),
+            "important": _is_important_sender(e.get("from", ""), important)
+            or e.get("category") in ("interview", "deadline"),
+            "stale": age is not None and age >= 48 and e.get("needs_reply"),
+        })
+
+    replies = []
+    for t in (availability.get("threads", []) if availability else []):
+        if t.get("status") == "countered":
+            replies.append({"counterparty": _sender_name(t.get("counterparty", "")),
+                            "subject": _short(t.get("subject", ""), 50)})
+
+    need = sum(1 for i in items if i["needs_reply"])
+    if gmail_mode == "disconnected":
+        empty = "Gmail not connected."
+    elif gmail_mode == "error":
+        empty = "Couldn't reach Gmail — token may need re-auth."
+    elif not items:
+        empty = "Inbox looks clear. 🎉"
+    else:
+        empty = None
+    # sync freshness is about the CHECK, not the messages: a 72h-old message
+    # can sit in an inbox that was checked 4 minutes ago. Both are exposed.
+    return {"items": items, "replies": replies, "need_reply": need,
+            "total": len(gmail_emails), "empty": empty, "mode": gmail_mode,
+            "sync": gmail_sync or {}}
+
+
+def _money(firefly, spending, finance, budget, networth, settings) -> dict:
+    # Three states, not two. `_get` swallows a timeout and returns {}, so an
+    # empty payload means the service could not be reached — which is NOT the
+    # same as Firefly answering "I have no credentials". Rendering both as
+    # "not connected — set FIREFLY_URL" sends you to fix configuration that is
+    # already correct, every time a container blinks.
+    state = firefly_state(firefly)
+    connected = state == "ok"
+    sp = spending if (spending and spending.get("connected")) else {}
+    thr = (settings.get("finance", {}) or {}).get("large_txn", 200)
+
+    def _m(key):
+        v = (firefly or {}).get(key)
+        return v if isinstance(v, dict) else {}
+
+    # Zero vs unknown: a ledger that hasn't been updated can't tell you what
+    # you spent today. Suppress current-period figures instead of implying $0.
+    # Suppression keys off INGESTION recency (when data last entered the
+    # ledger), not spending recency — a synced ledger with a quiet few days
+    # legitimately shows $0 today. Falls back to activity if no ingest signal.
+    ingest_days = sp.get("ingest_days")
+    days_stale = ingest_days if ingest_days is not None else sp.get("days_stale")
+    stale = days_stale is not None and days_stale >= 2
+    # A brand-new month with nothing imported yet is unknown, not $0.
+    month_ingested = sp.get("month_ingested")
+    month_spend = None if month_ingested is False else sp.get("month")
+    # The pay-cycle engine computes the same month with savings transfers
+    # taken back out (moving $1,100 to Fidelity is not $1,100 spent), so its
+    # number is the more accurate answer to "what did I spend". Fall back to
+    # the raw withdrawal total when the pay cycle isn't configured.
+    pay = (budget or {}).get("paycheck") or {}
+    pay_month = pay.get("month") or {}
+    month_label = pay_month.get("label")
+    # Month completeness is carried INDEPENDENTLY of the paycheck. A truncated
+    # window with no matching paycheck takes the unavailable brief path, which
+    # drops every pay-cycle field — so if the headline relied on those, it
+    # would quietly print a partial read as an exact month-to-date total.
+    # Either source saying "truncated" makes it truncated; they read one ledger.
+    month_complete = sp.get("window_complete", True) is not False
+    if pay_month.get("window_complete") is False:
+        month_complete = False
+    if pay.get("configured") and pay_month.get("spent") is not None:
+        month_spend = pay_month.get("spent")
+    today_spend = None if stale else sp.get("today")
+    week_spend = None if (days_stale is not None and days_stale >= 7) else sp.get("week")
+    # Homepage headline: a trailing 30-day window, NOT the calendar month the
+    # budgets use. It survives a stale ledger (it is a 30-day history, not a
+    # same-day claim) but the UI states how far the data actually reaches.
+    last_30 = sp.get("last_30")
+    last_30_trend = sp.get("last_30_trend_pct")
+
+    big = sp.get("biggest_today")
+    unusual = big if (not stale and big and big.get("amount", 0) >= thr) else None
+
+    obs = []
+    if stale:
+        obs.append(f"Financial data hasn't been imported for {days_stale} days — "
+                   "today's spending is unknown, not zero.")
+    cyc = pay.get("cycle") or {}
+    if pay.get("available") and cyc.get("text"):
+        obs.append(cyc["text"])
+    pace = sp.get("pace_pct")
+    baseline = sp.get("baseline")
+    if pace is not None:
+        if pace >= 15:
+            obs.append(f"Spending is {pace}% ahead of last month's pace.")
+        elif pace <= -15:
+            obs.append(f"Spending is {abs(pace)}% below last month's pace — nice.")
+    elif baseline in ("partial_history", "stale_data") and sp.get("pace_note"):
+        # Label, don't manufacture: partial windows produce arithmetic, not insight.
+        obs.append(f"Month-over-month comparison hidden — {sp['pace_note']}.")
+    if unusual:
+        obs.append(f"Unusual charge today: {unusual['desc']} ${unusual['amount']:,.0f}.")
+    upcoming = (finance.get("upcoming", []) if finance else [])
+    soon = [b for b in upcoming if (b.get("days_until") is None or b.get("days_until", 99) <= 7)]
+    if soon:
+        tot = sum(float(b.get("amount") or 0) for b in soon)
+        obs.append(f"{len(soon)} bill(s) totaling ${tot:,.0f} due within a week.")
+    cats = (firefly or {}).get("categories", []) or []
+    if not obs and cats:
+        top = max(cats, key=lambda c: c.get("amount", 0))
+        obs.append(f"{top['name']} leads this month at ${top['amount']:,.0f}.")
+    if connected and not obs:
+        obs.append("No unusual spending detected.")
+
+    return {
+        "connected": connected,
+        "today": today_spend, "week": week_spend, "month": month_spend,
+        "month_label": month_label,
+        # False => `month` is at least this much, not exactly this much.
+        "month_complete": month_complete,
+        "month_savings": pay_month.get("savings"),
+        "month_ingested": month_ingested,
+        # What's left of the current paycheck after the savings that come out
+        # of it — the homepage's "left to spend". Never a bank balance.
+        "paycheck": _paycheck_brief(pay),
+        # Cash runway: the one forward-looking money figure on the card.
+        # Fed the trailing 30-day window it is already computing, and the
+        # SAME completeness flag every other figure here respects — a
+        # truncated read understates burn, which overstates runway.
+        "runway": runway.cash_runway(
+            (networth or {}).get("accounts") or [],
+            last_30, 30,
+            freshness={"window_complete": month_complete,
+                       "ingest_days": days_stale},
+            # Which accounts are not cash. Firefly has no field that can say
+            # this — see runway.py — so it is a setting, and an unset setting
+            # is reported as a range rather than guessed at.
+            not_spendable=(settings.get("finance", {}) or {}).get("not_spendable"),
+        ),
+        "last_30": last_30,
+        "last_30_trend_pct": last_30_trend,
+        "last_30_note": sp.get("last_30_note"),
+        "last_30_through": sp.get("last_30_through"),
+        "last_30_window": sp.get("last_30_window"),
+        "stale_days": days_stale if stale else None,
+        "pace_pct": pace, "baseline": baseline, "daily_avg": sp.get("daily_avg"),
+        "net_worth": (_m("net_worth").get("display")) or (
+            f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
+        "left_to_spend": _m("left_to_spend").get("display"),
+        "income_month": _m("earned").get("value"),
+        "state": state,
+        # Everything the Firefly sub-app puts on screen except its recent
+        # transactions, so the headline figures need no second click.
+        "earned": _m("earned").get("display"),
+        "spent": _m("spent").get("display"),
+        "accounts": [
+            {"name": a.get("name"), "balance": a.get("balance")}
+            for a in ((firefly or {}).get("accounts") or [])
+            if a.get("name")
+        ],
+        "categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True),
+        "top_categories": sorted(cats, key=lambda c: c.get("amount", 0), reverse=True)[:4],
+        "recent": (sp.get("recent") or (firefly or {}).get("recent", []))[:6],
+        "upcoming_bills": soon[:4],
+        "unusual": unusual,
+        "observations": obs[:3],
+    }
+
+
+def _paycheck_brief(pay: dict) -> dict:
+    """The homepage's slice of the pay cycle — the numbers behind "left to
+    spend", not the whole cycle payload. Unavailable states keep their reason
+    so the card can say why rather than showing a blank."""
+    pay = pay or {}
+    if not pay.get("available"):
+        return {"available": False, "configured": bool(pay.get("configured")),
+                "reason": pay.get("reason")}
+    c = pay.get("cycle") or {}
+    return {
+        "available": True, "configured": True,
+        "fresh": pay.get("fresh"), "stale_reason": pay.get("stale_reason"),
+        "as_of": pay.get("as_of"),
+        "paycheck": c.get("paycheck"), "cycle_start": c.get("start"),
+        "savings_total": c.get("savings_total"),
+        # Money that came back OUT of savings, and any ambiguous allocation
+        # config — both surfaced rather than folded silently into a total.
+        "from_savings": c.get("from_savings"),
+        "allocation_overlaps": c.get("allocation_overlaps", []),
+        "unmatched_savings": c.get("unmatched_savings", []),
+        "withheld_rule_conflicts": c.get("withheld_rule_conflicts", []),
+        # One flag, not two. `figures_complete` (from the cycle block) and
+        # `window_complete` (from the top) were always the same boolean, and
+        # flattening both into this dict now means the same key — so they
+        # collapse. The top-level one is the more reliable source: it survives
+        # the degraded path where the cycle block is dropped entirely.
+        "window_complete": pay.get("window_complete",
+                                   c.get("window_complete", True)),
+        "allocations": c.get("allocations", []),
+        "spendable": c.get("spendable"), "spent": c.get("spent"),
+        "left": c.get("left"), "per_day": c.get("per_day"),
+        "next_payday": c.get("next_payday"), "days_to_next": c.get("days_to_next"),
+        "overdue": c.get("overdue"), "state": c.get("state"), "text": c.get("text"),
+    }
+
+
+def _budget_brief(status) -> dict:
+    """The homepage's budget signal: budget room, the single worst warning,
+    and whether everything is on track — never the whole budget database."""
+    if not status or not status.get("available"):
+        return {"available": False,
+                "configured": bool(status and status.get("configured")),
+                "recurring": (status or {}).get("recurring")
+                             or {"available": False, "events": []}}
+    warns = status.get("warnings", [])
+    freshness = status.get("freshness") or {}
+    fresh = freshness.get("current_ok", False)
+    return {
+        "available": True,
+        "configured": status.get("configured", False),
+        "fresh": fresh,
+        "paused_reason": freshness.get("paused_reason"),
+        "importer_url": status.get("importer_url"),
+        "budget_room": status.get("budget_room"),
+        "budget_room_scope": status.get("budget_room_scope"),
+        "worst": warns[0] if warns else None,
+        "on_track": fresh and not warns and bool(status.get("budgets")),
+        "budget_count": len(status.get("budgets", [])),
+        "days_left": (status.get("month") or {}).get("days_left"),
+        "uncat_flag": (status.get("uncategorized") or {}).get("low_confidence", False),
+        # Subscriptions that appeared, moved price, or came back. Passed
+        # through as the budget service framed it — this layer must not
+        # turn an unavailable read into an empty one.
+        "recurring": status.get("recurring") or {"available": False, "events": []},
+    }
+
+
+
+def _read_deploy_record(path=None):
+    """The host's deploy record, or {} when we cannot read it.
+
+    Every failure — no mount, no file, bad JSON, a JSON scalar where an object
+    belongs — collapses to {}, which `deploy_state` reads as `unknown`. That is
+    the point: this function must never be able to manufacture a healthy-
+    looking state out of a read it did not manage to do.
+    """
+    try:
+        with open(path or DEPLOY_RECORD) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def _disk_usage():
+    """{"total", "free"} for the state volume, or None when the mount is not
+    there. None, not the container's own filesystem: that would be a number
+    about the wrong disk, which is worse than no number."""
+    if not os.path.isdir(STATE_DIR):
+        return None
+    try:
+        u = shutil.disk_usage(STATE_DIR)
+    except OSError:
+        return None
+    return {"total": u.total, "free": u.free}
+
+
+def _read_data_safety_record(path=None):
+    """The host's backup/restore record, or {} when we cannot read it.
+
+    Same contract as _read_deploy_record for the same reason: every failure
+    collapses to {}, which `data_safety` reads as `unknown`. It must not be
+    possible for a read that did not happen to produce a safe-looking answer.
+    """
+    try:
+        with open(path or DATA_SAFETY_RECORD) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+def _since_block(seen, data, now):
+    """The "since you last checked" block, plus the fingerprint to store."""
+    seen = seen if isinstance(seen, dict) else {}
+    seen_at = parse_event_dt(seen.get("seen_at"), LOCAL_TZ) if seen.get("seen_at") else None
+    current = since_snapshot(data)
+    block = since_changes(seen.get("snapshot"), current, seen_at, now)
+    # The client stores this back verbatim, so the baseline is always the
+    # fingerprint of a payload that was actually rendered.
+    block["snapshot"] = current
+    block["seen_at"] = seen.get("seen_at")
+    block["seen_on"] = seen.get("device")
+    return block
+
+
+async def _deadline_rows(limit: int = 40) -> list[dict]:
+    """The deadlines the sync already files, read for the HOME screen.
+
+    These rows have existed and accumulated since the pipeline was written; the
+    only endpoint that exposed them was `/space`, i.e. only the legacy lounge.
+    Read here directly rather than over HTTP -- it is this service's own table.
+    """
+    try:
+        async with pool.connection() as conn:
+            conn.row_factory = dict_row
+            cur = await conn.execute(
+                "SELECT title, due_at, source FROM deadlines "
+                "ORDER BY due_at NULLS LAST LIMIT %s", (limit,))
+            return await cur.fetchall()
+    except Exception:  # noqa: BLE001 - a card that cannot load is not a 500
+        return []
+
+async def build_home(fresh: bool = False) -> dict:
+    cached = _HOME_CACHE
+    if (not fresh and cached["data"] and cached["at"]
+            and (datetime.now(LOCAL_TZ) - cached["at"]).total_seconds() < _HOME_TTL):
+        return cached["data"]
+
+    async with httpx.AsyncClient() as client:
+        (settings, core, seen, emails_r, avail, finance, budget, firefly,
+         spending, networth, schedule, cal_health, deals, stocks, vault,
+         captures, review, dismissals, powerbuy_home) = await asyncio.gather(
+            _get(client, f"{CORE_URL}/settings"),
+            _get(client, f"{CORE_URL}/today"),
+            # The shared "already shown" baseline. Fetched here so the diff is
+            # computed once, server-side, instead of five devices each keeping
+            # their own answer in localStorage.
+            _get(client, f"{CORE_URL}/seen"),
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{GMAIL_URL}/thread-availability"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/status"),
+            _get(client, f"{FIREFLY_SVC_URL}/dashboard"),
+            _get(client, f"{FIREFLY_SVC_URL}/spending"),
+            _get(client, f"{NETWORTH_URL}/summary"),
+            _get(client, f"{SCHEDULE_URL}/events"),
+            # Read-only Calendar reachability. Fetched alongside the rest so it
+            # costs no extra round trip; `_get` swallows failures into {}, which
+            # correctly reads as "no evidence" rather than as health.
+            _get(client, f"{SCHEDULE_URL}/calendar-health"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{STOCKS_URL}/portfolio"),
+            _get(client, f"{VAULT_URL}/summary"),
+            _get(client, f"{CORE_URL}/captures"),
+            # PRODUCT_IDEAS #5: core has exposed this since it was written and
+            # nothing ever rendered it.
+            _get(client, f"{CORE_URL}/weekly-review"),
+            # PRODUCT_IDEAS #34. `_get` swallows a failure into {}, which
+            # yields NO active keys — so a core outage shows you everything
+            # rather than silently hiding items it could not check.
+            _get(client, f"{CORE_URL}/dismissals"),
+            # SCRUM-71: POWERBUY_URL is configured in docker-compose and used
+            # elsewhere in this service, and was missing from this fan-out — so
+            # the home screen was structurally incapable of showing an expiring
+            # unpaid resale buy, however loudly PowerBuy computed one.
+            _get(client, f"{POWERBUY_URL}/summary"),
+        )
+
+    down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
+    gmail_emails = emails_r.get("emails", []) if emails_r else []
+    gmail_mode = (emails_r or {}).get("mode", "disconnected")
+    # The calendar card shows what is actually coming, including the pending
+    # and countered holds Bones writes from your sent mail — an interview slot
+    # awaiting a reply is exactly the thing you need to see. Rules that act on
+    # a real commitment still take confirmed events only.
+    all_events = [e for e in (schedule.get("events", []) if schedule else [])
+                  if e.get("status", "confirmed") != "declined"]
+    now_local = datetime.now(LOCAL_TZ)
+    calendar = _upcoming_events(all_events, now_local, limit=6)
+    events = _upcoming_events(all_events, now_local, limit=None,
+                              statuses=("confirmed",))
+    # The week grid gets the same already-filtered events the flat card gets.
+    # `state` travels with it because an unreachable schedule service and a
+    # genuinely clear week are not the same fact, and the card must not render
+    # the first as the second.
+    week = week_window(all_events, now_local, LOCAL_TZ)
+    # gmail is passed as NEGATIVE evidence only — it can establish that no
+    # OAuth consent exists, and nothing more. It cannot establish Calendar
+    # health: gmail keeps mode="live" while serving cached mail after a failed
+    # fetch, and a shared credential is not proof of Calendar API access.
+    # `calendar_evidence` comes from the schedule service's read-only
+    # /calendar-health probe, which is the only thing here that actually talks
+    # to Calendar. Absent or failed, the answer is "unknown", never "ok".
+    # See dashboard.schedule_state. The RAW payload is passed because the
+    # `gmail_mode` local above defaults an unreachable gmail to "disconnected",
+    # which would turn "we cannot tell" into a confident claim.
+    week["state"] = schedule_state(schedule, emails_r, calendar_evidence=cal_health)
+    settings = settings or {}
+
+    # Which attention items you have waved off. An unreachable core yields an
+    # empty set, and showing you something you had hidden is the safe
+    # direction — hiding something because we could not check is not.
+    hidden = set((dismissals or {}).get("active_keys") or [])
+
+    t = _home_time(settings)
+    inbox = _inbox(gmail_emails, avail, settings, gmail_mode,
+                   (emails_r or {}).get("sync"), hidden)
+    money = _money(firefly, spending, finance, budget, networth, settings)
+
+    data = {
+        **t,
+        "briefing": _briefing_line(core, inbox, stocks, money, events),
+        "big3": (core or {}).get("big3", []),
+        # The attention feed AUDIT.md section 3 promised. core._nudges()
+        # computes it -- severity, icon, title, detail and a typed action per
+        # item -- on every /today, which this function already fetches, and it
+        # was dropped on the floor here while the home screen rendered a single
+        # do_next instead. The feed existed the whole time; nothing asked for it.
+        # Nudges already carry stable keys ("study", "gym"), and they are the
+        # SAME keys Do-Next uses on purpose: waving off study should quiet it
+        # on both surfaces, because it is one thing, not two.
+        "nudges": [n for n in (core or {}).get("nudges", [])
+                   if n.get("key") not in hidden],
+        # Written on every sync since the pipeline was built, readable only
+        # from the demoted lounge until now.
+        "deadlines": deadline_rows(await _deadline_rows(), now_local, LOCAL_TZ),
+        # finance.low_balance has been in DEFAULT_SETTINGS and consumed nowhere.
+        "low_balance": {
+            "floor": (settings.get("finance", {}) or {}).get("low_balance"),
+            "accounts": low_balance_accounts(
+                ((firefly or {}).get("accounts") or []),
+                (settings.get("finance", {}) or {}).get("low_balance")),
+        },
+        "do_next": _do_next(core, inbox, money, events, settings, t, hidden),
+        "inbox": inbox,
+        "money": money,
+        "budget": _budget_brief(budget),
+        # `state` travels with it: an unreachable stocks service is not an
+        # empty portfolio, and must not read as "add your stocks". `alerts`
+        # is what finally makes the "Alert on move >= (%)" setting do
+        # something -- it round-tripped through Settings and was read by
+        # nothing.
+        "portfolio": {
+            **(stocks or {}), "state": portfolio_state(stocks),
+            "alerts": portfolio_alerts(
+                stocks, (settings.get("market", {}) or {}).get("move_threshold_pct")),
+            "move_threshold_pct": (settings.get("market", {}) or {}).get("move_threshold_pct")},
+        "health": {
+            "study": (core or {}).get("study", {}),
+            "gym": (core or {}).get("gym", {}),
+            "water": (core or {}).get("water", {}),
+            "nutrition": (core or {}).get("nutrition", {}),
+            # core has reported this on every /today and nothing carried it
+            # to a screen, so the sleep column stayed null forever.
+            "sleep": (core or {}).get("sleep", {}),
+        },
+        # A missing core payload means we do not KNOW the score. The old
+        # default asserted 0, which the header then displayed as a real bad day
+        # during any core outage.
+        "score": (core or {}).get(
+            "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
+        # The resale book: profit expected, money owed, and — the only figure
+        # here with a deadline — buys whose window closes within 7 days.
+        "resale": resale_brief(powerbuy_home),
+        "captures": (captures.get("items", []) if captures else [])[:8],
+        # What is hidden right now, so the UI can offer to bring it back
+        # rather than leaving you wondering where something went.
+        "dismissed": sorted(hidden),
+        "next_event": events[0] if events else None,
+        "calendar": calendar,
+        "week": week,
+        "weekly_review": weekly_review(review, now_local, LOCAL_TZ),
+        # NOT a claim about the stack. This only ever probed the two sub-apps
+        # the home payload itself needs, so `healthy: true` meant "core and
+        # gmail answered" while thirteen other services could be down. The
+        # footer now renders the gateway's /api/health, which probes every
+        # registered service; this field says what it actually looked at, so
+        # no reader can mistake it for the whole picture again.
+        "systems": {"checked": ["core", "email"], "down": down,
+                    "covers_all_services": False},
+        # What the box is actually running. A failed deploy leaves the
+        # PREVIOUS build serving and is otherwise completely silent from
+        # the UI, so this is the only place a stale build announces itself.
+        "deploy": deploy_state(_read_deploy_record(), now_local),
+        # Days since the last VERIFIED restore, and "never" until one happens.
+        # A backup you have never restored is a belief, not a backup.
+        "data_safety": data_safety(_read_data_safety_record(), now_local),
+        # Fact 1 of SCRUM-67, the half that needs no privileged access.
+        "disk": disk_state(_disk_usage()),
+        "last_updated": t["now"],
+    }
+    # Computed against the payload we are ABOUT to return, so the fingerprint
+    # the client marks as seen is exactly what it was shown.
+    data["since"] = _since_block(seen, data, now_local)
+    _HOME_CACHE["data"] = data
+    _HOME_CACHE["at"] = datetime.now(LOCAL_TZ)
+    return data
+
+
+@app.get("/home")
+async def home(fresh: int = 0):
+    return await build_home(fresh=bool(fresh))
+
+
+async def compose_digest() -> str:
+    """A short, texty summary from Bones — the message the manager sends you."""
+    o = await build_overview()
+    bits = []
+    if o.get("emails_to_reply"):
+        bits.append(f"{o['emails_to_reply']} emails to reply")
+    if o.get("open_tasks"):
+        bits.append(f"{o['open_tasks']} open tasks")
+    if o.get("bills_due"):
+        bits.append(f"{o['bills_due']} bills due soon")
+    if o.get("budget_over"):
+        bits.append("over budget")
+    if o.get("unpaid"):
+        bits.append(f"{o['unpaid']} unpaid buys")
+    if o.get("deals_count"):
+        bits.append(f"{o['deals_count']} deals spotted")
+    head = "; ".join(bits) if bits else "you're all clear"
+    tail = f" Next up: {o['next_event']}." if o.get("next_event") else ""
+    focus = o.get("today_focus") or "rest"
+    worth = f" Net worth: ${o['net_worth']:,.2f}." if o.get("net_worth") is not None else ""
+    return f"🦴 Bones here — {head}. Today is {focus} day.{tail}{worth}"
+
+
+@app.post("/notify")
+async def notify_now(text: str | None = None):
+    """Have Bones text you now (custom text, or the current digest)."""
+    msg = text or await compose_digest()
+    result = await notify.send(msg)
+    return {"message": msg, **result}
+
+
+def _sender_name(addr: str) -> str:
+    """'Yeji Jong <yeji.jong@meetelise.com>' -> 'Yeji Jong'. Falls back to the
+    address itself (or its domain) when there's no display name to show."""
+    name = addr.split("<")[0].strip().strip('"')
+    return name or addr
+
+
+def _short(text: str, limit: int = 48) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+@app.get("/ask")
+async def ask(q: str = ""):
+    """A lightweight, offline Q&A over your apps — intent-matched, no LLM.
+
+    The wording and every figure come from answers.py, which is pure and
+    refuses to state anything sourced from a service that did not answer. See
+    that module for why: this endpoint used to render a down service as $0.
+    """
+    async with httpx.AsyncClient() as client:
+        names = ["emails", "tasks", "finance", "fitness", "powerbuy",
+                 "budget", "deals", "networth", "availability"]
+        urls = [f"{GMAIL_URL}/needs-reply", f"{TASKS_URL}/summary",
+                f"{FINANCE_URL}/summary", f"{FITNESS_URL}/plan",
+                f"{POWERBUY_URL}/summary", f"{BUDGET_URL}/summary",
+                f"{DEALS_URL}/summary", f"{NETWORTH_URL}/summary",
+                f"{GMAIL_URL}/thread-availability"]
+        payloads = await asyncio.gather(*(_get_or_none(client, u) for u in urls))
+    sources = dict(zip(names, payloads))
+    return answers.answer(q, sources, short=_short, sender=_sender_name)
+
+
+async def _sync_availability_threads(conn, client: httpx.AsyncClient) -> tuple[int, list[str]]:
+    """Threads where you proposed your own availability ("I'm available
+    Monday at 2pm"). Turns them into pending/confirmed/countered calendar
+    events and, once one slot is confirmed, clears the other proposed slots
+    for that thread so the calendar never shows three tentative holds for a
+    meeting that's already locked to one time.
+
+    Skips any thread whose state hasn't changed since the last sync (see
+    thread_state table) — that's what keeps this from re-creating the same
+    pending event or re-announcing the same "still waiting" status forever.
+    """
+    avail = await _get(client, f"{GMAIL_URL}/thread-availability")
+    threads = avail.get("threads", [])
+    cur = await conn.execute("SELECT thread_id, signature FROM thread_state")
+    prev = {tid: sig for tid, sig in await cur.fetchall()}
+
+    lines: list[str] = []
+    changed = 0
+    for t in threads:
+        tid = t["thread_id"]
+        proposed = t.get("proposed_slots") or []
+        countered = t.get("countered_slots") or []
+        confirmed = t.get("confirmed_slot")
+        status = t.get("status", "pending")
+        signature = f"{status}|{','.join(proposed)}|{confirmed or ''}|{','.join(countered)}"
+        if prev.get(tid) == signature:
+            continue  # nothing new since last time — no-op, on purpose
+
+        changed += 1
+        subject = t.get("subject", "")
+        who = _sender_name(t.get("counterparty", ""))
+        base_ext = f"thread:{tid}"
+        label = "Interview" if "interview" in subject.lower() else "Meeting"
+
+        # Slot external_ids are keyed by the slot's own ISO time (not a plain
+        # index) so a slot that survives across rounds (e.g. still offered
+        # after a counter) maps to the same calendar event, while a slot
+        # that's no longer offered has no id in `keep_ids` and gets cleaned
+        # up below instead of lingering as a stale "pending" hold forever.
+        keep_ids: list[str] = []
+        if status in ("pending", "countered"):
+            slots = countered if status == "countered" else proposed
+            for slot in slots:
+                ext = f"{base_ext}:slot:{slot}"
+                keep_ids.append(ext)
+                await client.post(
+                    f"{SCHEDULE_URL}/events",
+                    json={"title": f"{label} — {who}", "starts_at": slot, "source": "gmail",
+                          "external_id": ext, "status": status, "thread_id": tid},
+                    timeout=8,
+                )
+            if status == "pending":
+                lines.append(f"⏳ Sent availability: {_short(subject)} — {len(slots)} time(s) "
+                              f"proposed, awaiting {who}'s reply")
+            else:
+                lines.append(f"🔁 {who} countered: {_short(subject)} — new time(s) offered, your move")
+        elif status == "confirmed" and confirmed:
+            ext = f"{base_ext}:confirmed"
+            keep_ids = [ext]
+            await client.post(
+                f"{SCHEDULE_URL}/events",
+                json={"title": f"{label} — {who}", "starts_at": confirmed, "source": "gmail",
+                      "external_id": ext, "status": "confirmed", "thread_id": tid},
+                timeout=8,
+            )
+            lines.append(f"✅ Confirmed: {_short(subject)} — {who} — {confirmed}")
+        elif status == "declined":
+            lines.append(f"🚫 No time worked out: {_short(subject)} — {who}")
+
+        # Whatever wasn't just (re)created above — a prior round's slots
+        # that got superseded, or everything if this thread just declined —
+        # gets declined and pulled off the calendar right now.
+        await client.post(
+            f"{SCHEDULE_URL}/events/resolve-thread",
+            json={"thread_id": tid, "keep_external_ids": keep_ids}, timeout=8,
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO thread_state (thread_id, signature, status, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (thread_id) DO UPDATE
+                SET signature = %s, status = %s, updated_at = %s
+            """,
+            (tid, signature, status, _now(), signature, status, _now()),
+        )
+    return changed, lines
+
+
+@app.post("/sync")
+async def sync():
+    """Core orchestration pass. _auto_sync_loop calls this on AUTO_SYNC_SECONDS;
+    the route is the manual trigger (curl -X POST /api/assistant/sync).
+
+    Each step reads one sub-app and files what it finds — inbox triage into
+    deadlines, availability threads into calendar holds, and so on. The
+    per-agent narration (jobs, activity log) dates from the retired lounge
+    view and is kept only until the sub-app roster is settled (SCRUM-140).
+    """
+    jobs: list[dict] = []
+    created = []
+    # Things actually worth telling the user about this cycle — not "I
+    # synced", but real new events. Bones' Notebook and the auto-text only
+    # ever get entries from this list, never a routine heartbeat.
+    notable: list[str] = []
+    async with pool.connection() as conn:
+        async with httpx.AsyncClient() as client:
+            # Posty -> Gmail
+            emails = await _get(client, f"{GMAIL_URL}/needs-reply")
+            mails = emails.get("emails", [])
+            posty = _BY_STATION["gmail"]
+            summary = f"{len(mails)} need a reply" if mails else "inbox clear"
+            await _log(conn, posty["name"], "gmail", "triaged inbox", summary)
+            jobs.append({"agent": posty["id"], "name": posty["name"], "station": "gmail",
+                         "summary": summary})
+            for e in mails:
+                if e.get("category") == "deadline":
+                    await _add_deadline(conn, e["subject"], None, "gmail", f"mail:{e['id']}")
+
+            # Cal -> Schedule (book interviews Posty surfaced)
+            cal_agent = _BY_STATION["schedule"]
+            booked = 0
+            for e in mails:
+                if e.get("category") != "interview":
+                    continue
+                when = extract_datetime(f"{e.get('subject','')} {e.get('snippet','')}")
+                if not when:
+                    continue
+                # Keyed by thread, not message id — a back-and-forth ("here's
+                # a time" / "confirming that works") is multiple messages in
+                # one thread, and should book ONE event, not one per message.
+                thread_key = e.get("thread_id") or e["id"]
+                ext_id = f"thread:{thread_key}:interview"
+                resp = await client.post(
+                    f"{SCHEDULE_URL}/events",
+                    json={"title": f"Interview — {e['from']}", "starts_at": when,
+                          "source": "gmail", "external_id": ext_id, "thread_id": thread_key},
+                    timeout=8,
+                )
+                if resp.status_code < 300 and resp.json().get("created"):
+                    created.append(resp.json()["event"])
+                    booked += 1
+                    await _add_deadline(conn, f"Interview — {e['from']}", when,
+                                        "schedule", f"evt:{thread_key}")
+            # Cal -> Schedule (your own sent "I'm available..." proposals —
+            # pending until they reply, confirmed/countered/declined after)
+            thread_changes, thread_lines = await _sync_availability_threads(conn, client)
+            notable.extend(thread_lines)
+
+            # Cal -> Schedule (pull in anything added straight to Google
+            # Calendar — e.g. from your phone — that this app didn't push
+            # itself; the other direction of sync from the steps above)
+            try:
+                pull_resp = await client.post(f"{SCHEDULE_URL}/sync-from-calendar", timeout=15)
+                pull = pull_resp.json() if pull_resp.status_code < 300 else {}
+            except Exception:  # noqa: BLE001 - schedule unreachable, just skip this cycle
+                pull = {}
+            imported = pull.get("imported", 0)
+            if imported:
+                notable.append(f"📱 Pulled {imported} event(s) from Google Calendar")
+
+            cal_summary = f"booked {booked} event(s)" if booked else "calendar up to date"
+            if thread_changes:
+                cal_summary += f"; {thread_changes} availability thread(s) updated"
+            if imported:
+                cal_summary += f"; {imported} pulled from Calendar"
+            await _log(conn, cal_agent["name"], "schedule", "checked calendar", cal_summary)
+            jobs.append({"agent": cal_agent["id"], "name": cal_agent["name"],
+                         "station": "schedule", "summary": cal_summary})
+            for ev in created:
+                notable.append(f"📅 Booked: {_short(ev['title'])} — {ev['starts_at']}")
+
+            # Rep -> PowerBuy
+            pb = await _get(client, f"{POWERBUY_URL}/summary")
+            rep = _BY_STATION["powerbuy"]
+            s = pb.get("summary", {})
+            rep_summary = (
+                f"${s.get('expected_profit', 0)} profit, {s.get('unpaid_count', 0)} unpaid"
+                if s else "no data"
+            )
+            await _log(conn, rep["name"], "powerbuy", "checked purchases", rep_summary)
+            jobs.append({"agent": rep["id"], "name": rep["name"], "station": "powerbuy",
+                         "summary": rep_summary})
+
+            # Coach -> Fitness
+            fit = await _get(client, f"{FITNESS_URL}/plan")
+            coach = _BY_STATION["fitness"]
+            tp = fit.get("today_plan") or {}
+            coach_summary = f"{tp.get('focus', 'rest')} day" if tp else "rest day"
+            await _log(conn, coach["name"], "fitness", "checked plan", coach_summary)
+            jobs.append({"agent": coach["id"], "name": coach["name"], "station": "fitness",
+                         "summary": coach_summary})
+
+            # Penny -> Finance
+            fin = await _get(client, f"{FINANCE_URL}/summary")
+            penny = _BY_STATION["finance"]
+            due = fin.get("upcoming", [])
+            penny_summary = (
+                f"{len(due)} bill(s) due soon" if due
+                else f"${fin.get('monthly_total', 0)}/mo tracked"
+            )
+            await _log(conn, penny["name"], "finance", "checked bills", penny_summary)
+            jobs.append({"agent": penny["id"], "name": penny["name"], "station": "finance",
+                         "summary": penny_summary})
+            for b in due:
+                await _add_deadline(conn, f"{b['name']} bill (${b['amount']})", None,
+                                    "finance", f"bill:{b['id']}")
+
+            # Tess -> Tasks (turn deadline emails into real, checkable to-dos)
+            tess = _BY_STATION["tasks"]
+            new_task_titles = []
+            for e in mails:
+                if e.get("category") != "deadline":
+                    continue
+                resp = await client.post(
+                    f"{TASKS_URL}/tasks",
+                    json={"title": e["subject"], "external_id": f"mail:{e['id']}"},
+                    timeout=8,
+                )
+                if resp.status_code < 300 and resp.json().get("created"):
+                    new_task_titles.append(e["subject"])
+            tsk = await _get(client, f"{TASKS_URL}/summary")
+            tess_summary = f"{tsk.get('open', 0)} open" if tsk else "no tasks"
+            if new_task_titles:
+                tess_summary += f" ({len(new_task_titles)} new from email)"
+            await _log(conn, tess["name"], "tasks", "reviewed to-dos", tess_summary)
+            jobs.append({"agent": tess["id"], "name": tess["name"], "station": "tasks",
+                         "summary": tess_summary})
+            for t in new_task_titles[:3]:
+                notable.append(f"✅ New to-do: {_short(t)}")
+            if len(new_task_titles) > 3:
+                notable.append(f"✅ +{len(new_task_titles) - 3} more to-dos from email")
+
+            # Buck -> Budget
+            bud = await _get(client, f"{BUDGET_URL}/summary")
+            buck = _BY_STATION["budget"]
+            over = bud.get("over_budget", [])
+            buck_summary = (
+                f"over on {', '.join(over)}" if over
+                else f"${bud.get('remaining', 0)} left this month"
+            )
+            await _log(conn, buck["name"], "budget", "checked budget", buck_summary)
+            jobs.append({"agent": buck["id"], "name": buck["name"], "station": "budget",
+                         "summary": buck_summary})
+
+            # Scout -> Deals (real discounts Posty spotted while triaging)
+            gmail_deals = await _get(client, f"{GMAIL_URL}/deals")
+            spotted = gmail_deals.get("deals", [])
+            scout = _BY_STATION["deals"]
+            new_deal_items = []
+            for d in spotted:
+                resp = await client.post(
+                    f"{DEALS_URL}/deals",
+                    json={"merchant": d.get("merchant") or d.get("from", "Unknown"),
+                          "offer": d.get("offer") or d.get("subject", ""),
+                          "source": "gmail", "external_id": d["id"]},
+                    timeout=8,
+                )
+                if resp.status_code < 300 and resp.json().get("created"):
+                    new_deal_items.append(d)
+            scout_summary = f"{len(new_deal_items)} new deal(s)" if new_deal_items else "no new deals"
+            await _log(conn, scout["name"], "deals", "scanned for discounts", scout_summary)
+            jobs.append({"agent": scout["id"], "name": scout["name"], "station": "deals",
+                         "summary": scout_summary})
+            for d in new_deal_items[:3]:
+                notable.append(f"🏷️ Deal: {d.get('merchant', '?')} — {d.get('offer', '?')}")
+            if len(new_deal_items) > 3:
+                notable.append(f"🏷️ +{len(new_deal_items) - 3} more deals")
+
+            # Wade -> Net Worth (apply any recurring contributions that came due)
+            wade = _BY_STATION["networth"]
+            resp = await client.post(f"{NETWORTH_URL}/recurring/apply", timeout=8)
+            applied = resp.json().get("applied", []) if resp.status_code < 300 else []
+            if applied:
+                total_in = sum(a["amount"] for a in applied)
+                wade_summary = f"applied ${total_in:,.0f} across {len(applied)} contribution(s)"
+            else:
+                nw = await _get(client, f"{NETWORTH_URL}/summary")
+                wade_summary = f"${nw.get('total', 0):,.0f} total — nothing due"
+            await _log(conn, wade["name"], "networth", "checked contributions", wade_summary)
+            for a in applied:
+                notable.append(f"💰 +${a['amount']:,.0f} to {a['account']} "
+                                f"(now ${a['new_balance']:,.0f})")
+            jobs.append({"agent": wade["id"], "name": wade["name"], "station": "networth",
+                         "summary": wade_summary})
+
+            # Vic -> Vault (password health). Standing state, not an event, so it
+            # doesn't go on `notable` (no repeated texts about the same weak pws).
+            vic = _BY_STATION["vault"]
+            vh = await _get(client, f"{VAULT_URL}/summary")
+            if vh:
+                vic_summary = (
+                    f"{vh.get('weak', 0)} weak, {vh.get('reused', 0)} reused "
+                    f"(score {vh.get('score', 0)})"
+                )
+            else:
+                vic_summary = "vault not connected"
+            await _log(conn, vic["name"], "vault", "checked passwords", vic_summary)
+            jobs.append({"agent": vic["id"], "name": vic["name"], "station": "vault",
+                         "summary": vic_summary})
+
+            # Milo -> Plex (shared media server)
+            milo = _BY_STATION["plex"]
+            px = await _get(client, f"{PLEX_SVC_URL}/summary")
+            if px.get("connected"):
+                milo_summary = f"{px.get('continue_count', 0)} to continue watching"
+            elif px:
+                milo_summary = "plex not connected"
+            else:
+                milo_summary = "media server offline"
+            await _log(conn, milo["name"], "plex", "checked media", milo_summary)
+            jobs.append({"agent": milo["id"], "name": milo["name"], "station": "plex",
+                         "summary": milo_summary})
+
+            # Fitz -> Firefly (personal finances)
+            fitz = _BY_STATION["firefly"]
+            ff = await _get(client, f"{FIREFLY_SVC_URL}/summary")
+            nw = (ff.get("net_worth") or {}).get("display")
+            fitz_summary = f"net worth {nw}" if nw else "no data"
+            await _log(conn, fitz["name"], "firefly", "checked finances", fitz_summary)
+            jobs.append({"agent": fitz["id"], "name": fitz["name"], "station": "firefly",
+                         "summary": fitz_summary})
+
+        STATE["items"] = await build_briefing()
+        STATE["summary"] = f"{len(STATE['items'])} things on your plate."
+        STATE["synced_at"] = datetime.utcnow().isoformat()
+        # Only ever write real events to the notebook — no routine "I synced"
+        # heartbeat. If nothing notable happened, Bones says nothing.
+        for n in notable:
+            await _remember(conn, n)
+
+    # Only text you when something on `notable` is actually new — not on
+    # every fluctuation (email counts, etc.) like it used to.
+    notified = False
+    if NOTIFY_ON_SYNC and notify.configured() and notable:
+        digest = "🦴 Bones — " + "; ".join(notable)
+        result = await notify.send(digest)
+        notified = bool(result.get("sent"))
+
+    return {"synced": True, "events_created": created, "jobs": jobs,
+            "briefing": STATE, "notified": notified, "notable": notable}
+
+
+@app.get("/")
+async def root():
+    return {"app": "Assistant", "endpoints": ["/briefing", "/sync", "/agents", "/space", "/health"]}

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FrankensteinCentral</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#12151c" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Frankenstein" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/home.css" />
+  </head>
+  <body class="cc" data-mode="day">
+    <header class="cc-top">
+      <div class="cc-hello">
+        <div class="cc-time" id="cc-clock">—</div>
+        <h1 id="cc-greeting">Good day</h1>
+        <p class="cc-date" id="cc-date"></p>
+      </div>
+      <div class="cc-top-actions">
+        <button class="cc-k" id="cc-open-palette" title="Command palette (Ctrl/⌘ K)">
+          <span>⌘K</span> Quick actions
+        </button>
+        <a class="cc-icon-btn cc-launch" id="cc-plex" href="https://app.plex.tv/desktop" target="_blank" rel="noopener" title="Open Plex">🎬</a>
+        <a class="cc-icon-btn cc-launch" id="cc-vault" href="#" target="_blank" rel="noopener" title="Open Vaultwarden">🔐</a>
+        <button class="cc-icon-btn" id="cc-apps" title="Apps & services">▦</button>
+        <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
+        <!-- Shown by auth.js only when a password is set AND this browser holds
+             a session (SCRUM-98). A session you cannot end is half a feature. -->
+        <form id="fc-logout" method="post" action="/logout" hidden>
+          <button class="cc-icon-btn" type="submit" title="Sign out">⎋</button>
+        </form>
+        <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
+          <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="cc-since" id="cc-since" hidden></div>
+    <div class="cc-briefing" id="cc-briefing"></div>
+
+    <!-- Ordered by what actually gets opened. The calendar, the money and the
+         portfolio are the three things this dashboard is used for, so they are
+         the first screen; everything else follows. `.cc-wr` carries an `order`
+         that drops the weekly review below them for six days of the week and
+         lifts it to the top on Sunday evening, which is the one time it leads. -->
+    <main class="cc-main" id="cc-grid">
+      <section class="cc-card cc-cal" id="cc-calendar"></section>
+      <div class="cc-money-row">
+        <section class="cc-card" id="cc-money"></section>
+        <section class="cc-card" id="cc-portfolio"></section>
+        <section class="cc-card" id="cc-resale"></section>
+      </div>
+      <section class="cc-card" id="cc-attention" hidden></section>
+      <div class="cc-cols">
+        <div class="cc-col">
+          <section class="cc-card" id="cc-inbox"></section>
+          <section class="cc-card" id="cc-health"></section>
+          <!-- Where the weekly review lives six days a week. renderWeeklyReview
+               moves the card itself up to the top of the grid on Sunday evening
+               rather than rendering a second copy — two elements with one id is
+               how the previous weekly card became unreachable. -->
+          <div id="cc-weekly-slot">
+            <section class="cc-card cc-wr" id="cc-weekly" hidden></section>
+          </div>
+          <!-- "Do this next" is deliberately NOT in the hero slot: it is the
+               last thing Anthony wants to read, not the first, so it sits at
+               the bottom of this column and renders compact. renderDoNext
+               re-applies the class on every paint, so the demotion lives in
+               home.js too — changing only this line reverts on first render. -->
+          <section class="cc-card compact" id="cc-donext"><div class="cc-loading">Loading your day…</div></section>
+        </div>
+        <div class="cc-col">
+          <section class="cc-card" id="cc-safety"></section>
+          <section class="cc-card" id="cc-today"></section>
+          <section class="cc-card" id="cc-deadlines" hidden></section>
+          <section class="cc-card" id="cc-capture"></section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="cc-foot">
+      <span id="cc-updated">—</span>
+      <span id="cc-systems"></span>
+      <span id="cc-deploy"></span>
+    </footer>
+
+    <!-- Command palette -->
+    <div class="palette-overlay" id="palette" hidden>
+      <div class="palette" role="dialog" aria-modal="true">
+        <input id="palette-input" placeholder="Type a command…  (study 45, water 16, gym, email, firefly, add task…)" autocomplete="off" />
+        <ul class="palette-list" id="palette-list"></ul>
+      </div>
+    </div>
+
+    <!-- Focus timer -->
+    <div class="focus-overlay" id="focus" hidden>
+      <div class="focus-box">
+        <div class="focus-label" id="focus-label">Focus</div>
+        <div class="focus-clock" id="focus-clock">45:00</div>
+        <div class="focus-actions">
+          <button class="btn" id="focus-toggle">Pause</button>
+          <button class="btn btn-ghost" id="focus-done">Log &amp; finish</button>
+          <button class="btn btn-ghost" id="focus-cancel">Cancel</button>
+        </div>
+        <p class="focus-hint">Time is logged to your study total when you finish.</p>
+      </div>
+    </div>
+
+    <!-- Apps & services launcher -->
+    <div class="launcher-overlay" id="launcher" hidden>
+      <div class="launcher" role="dialog" aria-modal="true">
+        <div class="launcher-head">
+          <h2>Apps &amp; services</h2>
+          <button class="close" id="launcher-close" aria-label="Close">×</button>
+        </div>
+        <p class="launcher-hint">Click a tile for its dashboard view · <b>↗</b> opens the full app</p>
+        <div class="launcher-grid" id="launcher-grid"><p class="att-empty">Loading…</p></div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="settings-overlay" id="settings" hidden>
+      <div class="settings-box">
+        <div class="settings-head">
+          <h2>Settings</h2>
+          <button class="close" id="settings-close" aria-label="Close">×</button>
+        </div>
+        <div class="settings-body" id="settings-body"></div>
+        <div class="settings-foot">
+          <button class="btn" id="settings-save">Save</button>
+          <span id="settings-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- App detail modal (reused by app.js) -->
+    <div class="overlay" id="overlay">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="card-icon" id="modal-icon"></span>
+          <div>
+            <h2 id="modal-title"></h2>
+            <span class="mode" id="modal-mode"></span>
+          </div>
+          <button class="close" id="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+      </div>
+    </div>
+
+    <script src="/auth.js"></script>
+    <script src="/weekclock.js"></script>
+    <script src="/evcolor.js"></script>
+    <script src="/attention.js"></script>
+    <script src="/health.js"></script>
+    <script src="/deploy.js"></script>
+    <script src="/donut.js"></script>
+    <script src="/offline.js"></script>
+    <script src="/app.js"></script>
+    <script src="/home.js"></script>
+  </body>
+</html>
