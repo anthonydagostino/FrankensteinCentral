@@ -28,6 +28,11 @@
         <a class="cc-icon-btn cc-launch" id="cc-vault" href="#" target="_blank" rel="noopener" title="Open Vaultwarden">🔐</a>
         <button class="cc-icon-btn" id="cc-apps" title="Apps & services">▦</button>
         <button class="cc-icon-btn" id="cc-settings-btn" title="Settings">⚙</button>
+        <!-- Shown by auth.js only when a password is set AND this browser holds
+             a session (SCRUM-98). A session you cannot end is half a feature. -->
+        <form id="fc-logout" method="post" action="/logout" hidden>
+          <button class="cc-icon-btn" type="submit" title="Sign out">⎋</button>
+        </form>
         <div class="cc-score-pill" id="cc-score-pill" title="Today's score">
           <span class="n" id="cc-score-n">–</span><span class="pct">%</span>
         </div>
@@ -47,6 +52,7 @@
       <div class="cc-money-row">
         <section class="cc-card" id="cc-money"></section>
         <section class="cc-card" id="cc-portfolio"></section>
+        <section class="cc-card" id="cc-resale"></section>
       </div>
       <section class="cc-card" id="cc-attention" hidden></section>
       <div class="cc-cols">
@@ -68,6 +74,7 @@
           <section class="cc-card compact" id="cc-donext"><div class="cc-loading">Loading your day…</div></section>
         </div>
         <div class="cc-col">
+          <section class="cc-card" id="cc-safety"></section>
           <section class="cc-card" id="cc-today"></section>
           <section class="cc-card" id="cc-deadlines" hidden></section>
           <section class="cc-card" id="cc-capture"></section>
@@ -145,6 +152,7 @@
       </div>
     </div>
 
+    <script src="/auth.js"></script>
     <script src="/weekclock.js"></script>
     <script src="/evcolor.js"></script>
     <script src="/attention.js"></script>

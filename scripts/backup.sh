@@ -26,6 +26,7 @@
 #     contents never touch stdout, the manifest or the log.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. scripts/data-safety.sh
 
 BACKUP_ROOT="${FRANKENSTEIN_BACKUP_DIR:-$HOME/frankenstein-backups}"
 KEEP="${FRANKENSTEIN_BACKUP_KEEP:-14}"
@@ -35,7 +36,7 @@ PGUSER_="${POSTGRES_USER:-frank}"
 PGDB_="${POSTGRES_DB:-frankensteincentral}"
 TOKEN_VOLUME="${FRANKENSTEIN_TOKEN_VOLUME:-gmail_token}"
 
-fail() { echo "BACKUP FAILED: $1" >&2; exit 1; }
+fail() { ds_record backup failed; echo "BACKUP FAILED: $1" >&2; exit 1; }
 
 # ---- verify: is this directory a restorable backup? -------------------------
 # Split out so restore.sh can call the identical check before it touches
@@ -100,6 +101,27 @@ fi
 rm -f "$DEST/pg_dump.err"
 echo "  database:  $(du -h "$DEST/database.dump" | cut -f1)"
 
+# ---- what went in, so a drill can prove the same came out -------------------
+# A dump can restore "successfully" and be empty: pg_restore returns 0 for an
+# archive whose tables are all zero rows, and every structural check —
+# checksums, the table of contents, file size — passes on it. The only thing
+# that catches that is knowing what the row counts were at dump time and
+# comparing after a restore. That is what makes `restore.sh --drill` a
+# verification rather than another belief.
+#
+# Counts, not contents: no column value is read, so nothing here can leak.
+ROWCOUNTS="$DEST/rowcounts.txt"
+if PGPASSWORD="${POSTGRES_PASSWORD:-frank}" psql -h "$PGHOST_" -p "$PGPORT_"      -U "$PGUSER_" -d "$PGDB_" -At -F $'\t' -q -c "
+       SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY relname
+     " > "$ROWCOUNTS" 2>/dev/null; then
+  echo "  rowcounts: $(wc -l < "$ROWCOUNTS") table(s)"
+else
+  # Not fatal. An older PostgreSQL or a permissions problem loses the drill's
+  # strongest check, and saying so beats writing a file that claims zero tables.
+  rm -f "$ROWCOUNTS"
+  echo "  rowcounts: unavailable (a drill will fall back to a weaker check)"
+fi
+
 # ---- the Gmail refresh token ------------------------------------------------
 # Losing it means re-consenting to Google by hand. Copied as an opaque blob:
 # its contents are never read, printed or logged.
@@ -119,7 +141,9 @@ fi
 echo "  token:     $TOKEN_STATE"
 
 # ---- checksums, then the verdict --------------------------------------------
-( cd "$DEST" && sha256sum database.dump $( [ -f gmail_token.tgz ] && echo gmail_token.tgz ) \
+( cd "$DEST" && sha256sum database.dump \
+    $( [ -f gmail_token.tgz ] && echo gmail_token.tgz ) \
+    $( [ -f rowcounts.txt ] && echo rowcounts.txt ) \
     > SHA256SUMS )
 
 {
@@ -139,6 +163,12 @@ if ! verify_backup "$DEST" quiet; then
 fi
 
 echo "  verified:  yes"
+
+# Recorded only now — after the archive proved readable. The whole point of
+# this record is that the dashboard can trust it, and a verdict written before
+# verification is the failure this script was built to remove.
+ds_record backup ok "dir=$(basename "$DEST")" \
+  "tables=$( [ -f "$DEST/rowcounts.txt" ] && wc -l < "$DEST/rowcounts.txt" || echo unknown )"
 
 # ---- retention --------------------------------------------------------------
 # Oldest first, and only ever complete backups: a half-written directory from

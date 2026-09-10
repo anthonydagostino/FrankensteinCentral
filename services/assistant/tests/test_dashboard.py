@@ -828,6 +828,9 @@ def rec(**kw):
     return base
 
 
+NOW_FOR_DEPLOY = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
+
+
 def test_deploy_state_reports_current_when_the_last_attempt_succeeded():
     now = datetime(2026, 9, 7, 15, 0, tzinfo=NY)
     d = dash.deploy_state(rec(), now)
@@ -1515,3 +1518,320 @@ def test_the_whole_cross_device_sequence():
     nextday = visit(home_payload(inbox={"items": [{"id": "m3", "important": True}]}),
                     t + timedelta(days=1))
     assert nextday["show"] is True and nextday["changes"]
+
+
+# --- the resale book (SCRUM-139) --------------------------------------------
+#
+# What replaced the habit-logging form on the home screen. PowerBuy already
+# computed every one of these figures; build_home simply never fetched it
+# (SCRUM-71), so none of them could reach a screen.
+#
+# The same three-states-not-two rule as firefly_state and portfolio_state, and
+# for the sharpest version of the reason: this is the card whose entire job is
+# to say when money is about to be lost, so rendering an outage as "$0 expected,
+# 0 expiring" would be the most reassuring possible account of something it
+# does not know.
+
+LIVE_RESALE = {"mode": "live", "summary": {
+    "total_purchases": 12, "expected_profit": 418.55, "unpaid_count": 3,
+    "not_delivered_count": 5, "expiring_soon_count": 2}}
+
+
+def test_an_unreachable_powerbuy_is_not_an_empty_book():
+    for payload in ({}, None):
+        assert dash.resale_state(payload) == "unreachable"
+        brief = dash.resale_brief(payload)
+        assert brief["state"] == "unreachable"
+        # Suppressed, never zeroed — docs/BUDGETS.md.
+        for key in ("profit", "unpaid", "expiring", "in_flight", "total"):
+            assert brief[key] is None, key
+        assert brief["urgent"] is False
+
+
+def test_a_disconnected_powerbuy_says_so_rather_than_reading_as_an_outage():
+    """No credentials is a setup problem you can fix; an outage is not. Telling
+    you to set POWERBUY_EMAIL every time a container blinks sends you to repair
+    configuration that is already correct."""
+    payload = {"mode": "disconnected", "summary": {"total_purchases": 0}}
+    assert dash.resale_state(payload) == "not_configured"
+    assert dash.resale_brief(payload)["state"] == "not_configured"
+
+
+def test_a_live_book_reports_what_powerbuy_computed():
+    brief = dash.resale_brief(LIVE_RESALE)
+    assert brief["state"] == "ok"
+    assert brief["profit"] == 418.55
+    assert brief["unpaid"] == 3
+    assert brief["expiring"] == 2
+    assert brief["in_flight"] == 5
+    assert brief["total"] == 12
+
+
+def test_expiring_buys_are_the_only_thing_allowed_to_shout():
+    """Of the four figures PowerBuy tracks, `expiring_soon_count` is the only
+    one with a deadline attached — and a deadline is the whole reason a number
+    earns a place on a screen you glance at."""
+    assert dash.resale_brief(LIVE_RESALE)["urgent"] is True
+    calm = {"mode": "live", "summary": dict(LIVE_RESALE["summary"], expiring_soon_count=0)}
+    assert dash.resale_brief(calm)["urgent"] is False
+    # Profit alone never makes it urgent, however large.
+    rich = {"mode": "live", "summary": {"expected_profit": 99999,
+                                        "expiring_soon_count": 0, "unpaid_count": 0}}
+    assert dash.resale_brief(rich)["urgent"] is False
+
+
+def test_a_live_but_empty_book_is_zero_and_not_unknown():
+    """Zero and unknown are different states. A connected account with nothing
+    in it genuinely HAS nothing expiring, and must not be hidden."""
+    brief = dash.resale_brief({"mode": "live", "summary": {
+        "total_purchases": 0, "expected_profit": 0, "unpaid_count": 0,
+        "not_delivered_count": 0, "expiring_soon_count": 0}})
+    assert brief["state"] == "ok"
+    assert brief["total"] == 0 and brief["expiring"] == 0
+    assert brief["urgent"] is False
+
+
+def test_a_missing_field_is_none_rather_than_zero():
+    """PowerBuy is an upstream this app does not own. A field it stops sending
+    is unknown, and drawing unknown as 0 is the bug docs/BUDGETS.md exists to
+    prevent."""
+    brief = dash.resale_brief({"mode": "live", "summary": {"expected_profit": 10}})
+    assert brief["profit"] == 10
+    assert brief["unpaid"] is None
+    assert brief["expiring"] is None
+    assert brief["urgent"] is False
+
+
+def test_resale_mirrors_the_firefly_contract():
+    """firefly_state is the pattern this repo already got right; every reader
+    of an optional upstream must answer with the same three states."""
+    for payload in ({}, None, {"mode": "disconnected"}, {"mode": "live"}):
+        assert dash.resale_state(payload) in ("ok", "unreachable", "not_configured")
+    assert dash.resale_state({}) == dash.firefly_state({}) == dash.portfolio_state({})
+
+# ── did the serving build pass the gate? (SCRUM-108) ────────────────────────
+#
+# `DEPLOY_SKIP_TESTS=1` forces a deploy past the suite. That is a defensible
+# escape hatch — a gate with no override tends to get removed rather than used
+# carefully — but the record used to look IDENTICAL either way, so an hour
+# later nothing could tell a tested deploy from an untested one. An override
+# you can see is a safety net; one you cannot is a hole.
+#
+# The state machine above is orthogonal to this: a deploy can be perfectly
+# `current` and still never have been checked.
+
+def test_a_tested_deploy_says_so():
+    d = dash.deploy_state(rec(running_tests="passed"), NOW_FOR_DEPLOY)
+    assert d["state"] == "current"
+    assert d["tests"] == "passed"
+    assert d["untested"] is False
+
+
+def test_a_skipped_gate_is_visible_on_a_deploy_that_is_otherwise_current():
+    """The whole point. Everything else about this deploy looks healthy."""
+    d = dash.deploy_state(rec(running_tests="skipped"), NOW_FOR_DEPLOY)
+    assert d["state"] == "current"
+    assert d["tests"] == "skipped"
+    assert d["untested"] is True
+
+
+def test_an_absent_verdict_is_unknown_and_never_passed():
+    """A record written before this was tracked has no such key. Reporting
+    'passed' from a missing field invents reassurance out of missing data —
+    the same failure docs/BUDGETS.md bans in the money layer."""
+    d = dash.deploy_state(rec(), NOW_FOR_DEPLOY)          # no running_tests key
+    assert d["tests"] is None
+    assert d["untested"] is False, "unknown is not a warning, but it is not 'passed' either"
+
+
+@pytest.mark.parametrize("record", [None, {}, [], "nope", 0])
+def test_the_unreadable_record_still_has_the_new_keys(record):
+    """A ragged shape between branches is how a consumer starts reading None
+    as False somewhere else. Every return carries the same keys."""
+    d = dash.deploy_state(record, NOW_FOR_DEPLOY)
+    assert d["tests"] is None
+    assert d["untested"] is False
+
+
+def test_a_failed_attempt_reports_the_gate_of_what_is_still_serving():
+    """`running_tests` describes the build that is SERVING, so a later failed
+    attempt must not overwrite it — exactly as `running_commit` behaves."""
+    d = dash.deploy_state(
+        rec(last_result="tests_failed",
+            last_attempt_commit="ffffffffffffffffffffffffffffffffffffffff",
+            running_tests="skipped"),
+        NOW_FOR_DEPLOY)
+    assert d["state"] == "failed"
+    assert d["untested"] is True
+
+
+# --- data safety (SCRUM-67) --------------------------------------------------
+#
+# "A backup you have never restored is a belief, not a backup." The acceptance
+# signal is that the home screen says how many days since the last verified
+# restore, and says "never" until one happens.
+#
+# Every state here exists because it was previously indistinguishable from
+# safety. Per docs/TESTING.md `now` is injected, never read.
+
+from datetime import timezone as _tz  # noqa: E402
+
+NOW_DS = datetime(2026, 9, 9, 12, 0, tzinfo=_tz.utc)
+
+
+def _iso(days_ago):
+    return (NOW_DS - timedelta(days=days_ago)).isoformat()
+
+
+def test_no_readable_record_is_unknown_and_never_reassuring():
+    """The assistant runs in a container and the record is written on the
+    host, so an absent mount lands here. "We cannot see the box" and "the box
+    is safe" must never render the same."""
+    for record in ({}, None, "nonsense", []):
+        d = dash.data_safety(record, NOW_DS)
+        assert d["state"] == "unknown", record
+        assert d["restore_days"] is None
+        assert d["backup_days"] is None
+
+
+def test_a_record_with_no_restore_says_never():
+    """The state every installation starts in, and the one the ticket names."""
+    d = dash.data_safety({"last_backup_at": _iso(1), "last_backup_result": "ok"}, NOW_DS)
+    assert d["state"] == "never"
+    assert d["restore_days"] is None
+    assert d["backup_days"] == 1
+
+
+def test_a_recent_verified_restore_is_ok_and_counts_the_days():
+    d = dash.data_safety({"last_restore_at": _iso(3), "restore_kind": "drill",
+                          "restore_rows": "412", "last_restore_result": "ok"}, NOW_DS)
+    assert d["state"] == "ok"
+    assert d["restore_days"] == 3
+    assert d["restore_kind"] == "drill"
+    assert d["rows"] == "412"
+
+
+def test_a_proof_has_an_expiry_date():
+    """A restore proven two years ago, against a schema that has changed
+    since, is not evidence about today's backup — but it looks like it."""
+    assert dash.data_safety({"last_restore_at": _iso(dash.RESTORE_STALE_DAYS)},
+                            NOW_DS)["state"] == "ok"
+    assert dash.data_safety({"last_restore_at": _iso(dash.RESTORE_STALE_DAYS + 1)},
+                            NOW_DS)["state"] == "stale"
+    assert dash.data_safety({"last_restore_at": _iso(400)}, NOW_DS)["state"] == "stale"
+
+
+def test_an_unreadable_date_is_unknown_rather_than_today():
+    """"We could not read the date" rendered as "0 days ago" is the most
+    reassuring possible version of no information."""
+    for bad in ("not-a-date", "", 12345, None):
+        record = {"last_restore_at": bad}
+        d = dash.data_safety(record, NOW_DS)
+        assert d["restore_days"] is None, bad
+        assert d["state"] in ("never", "unknown"), bad
+
+
+def test_a_future_timestamp_is_not_freshness():
+    """A clock skewed forward on the box would otherwise read as a restore
+    that happens tomorrow, permanently green."""
+    ahead = (NOW_DS + timedelta(days=2)).isoformat()
+    d = dash.data_safety({"last_restore_at": ahead}, NOW_DS)
+    assert d["restore_days"] is None
+    assert d["state"] == "unknown"
+
+
+def test_backup_and_restore_are_reported_separately():
+    """Having one says nothing about the other. A nightly backup nobody has
+    ever restored is exactly the belief this ticket is about."""
+    d = dash.data_safety({"last_backup_at": _iso(0), "last_backup_result": "ok"}, NOW_DS)
+    assert d["backup_days"] == 0 and d["backup_stale"] is False
+    assert d["state"] == "never", "a fresh backup must not imply a verified restore"
+
+    d = dash.data_safety({"last_restore_at": _iso(1)}, NOW_DS)
+    assert d["state"] == "ok"
+    assert d["backup_days"] is None and d["backup_stale"] is None
+
+
+def test_a_stale_backup_is_flagged_without_guessing_when_unknown():
+    assert dash.data_safety({"last_backup_at": _iso(dash.BACKUP_STALE_DAYS + 1)},
+                            NOW_DS)["backup_stale"] is True
+    assert dash.data_safety({"last_backup_at": _iso(0)}, NOW_DS)["backup_stale"] is False
+    # Unknown stays None — never False, which would read as "not stale".
+    assert dash.data_safety({"last_restore_at": _iso(1)}, NOW_DS)["backup_stale"] is None
+
+
+def test_days_since_holds_across_a_calendar_sweep():
+    """Per docs/TESTING.md. Month ends, year ends and the leap day are where an
+    off-by-one in a day count shows up.
+
+    Rewritten from a UTC-anchored sweep that padded every stamp by one hour.
+    That shape can only ever agree with elapsed_seconds // 86400, and it did:
+    the first version of _days_since passed it while calling a drill at 23:00
+    last night "today" at breakfast. `now` here is LOCAL and the stamp is an
+    evening one, because that is how the number is actually read — the
+    assistant hands data_safety a New York `now`, not a UTC one.
+    """
+    start = datetime(2026, 1, 1, tzinfo=NY)
+    for offset in range(0, 900, 7):
+        for hour in (0, 6, 13, 23):
+            now = (start + timedelta(days=offset)).replace(hour=hour)
+            for ago in (0, 1, 29, 30, 31, 365):
+                stamp = (now - timedelta(days=ago)).replace(hour=22, minute=15)
+                if stamp > now:          # ago=0 at hour 0/6/13: 22:15 is later today
+                    continue
+                d = dash.data_safety({"last_restore_at": stamp.isoformat()}, now)
+                assert d["restore_days"] == ago, (now, ago, d["restore_days"])
+
+
+def test_an_evening_drill_is_yesterday_at_breakfast_not_today():
+    """The concrete case the elapsed-seconds count got wrong: 23:00 last
+    night, read at 08:00. Nine hours elapsed; a person says yesterday."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": "2026-09-08T23:00:00-04:00"}, now)
+    assert d["restore_days"] == 1
+
+
+def test_a_utc_stamp_late_at_night_does_not_land_on_tomorrow():
+    """23:30 local on the 8th is 03:30Z on the 9th. Taking the date in UTC
+    would call that -1 days ago at 08:00 on the 9th; taking it in the
+    reader's zone says 1."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": "2026-09-09T03:30:00+00:00"}, now)
+    assert d["restore_days"] == 1
+
+
+@pytest.mark.parametrize("anchor", ["2026-03-08", "2026-11-01", "2027-03-14", "2027-11-07"])
+def test_a_week_is_seven_days_across_a_dst_change(anchor):
+    """Seven local days spanning a clock change are 7*24 +/- 1 hours. An
+    elapsed count floors the short week to 6."""
+    now = (datetime.fromisoformat(anchor).replace(tzinfo=NY) + timedelta(days=4)).replace(hour=8)
+    then = (now - timedelta(days=7)).replace(hour=8)
+    d = dash.data_safety({"last_restore_at": then.isoformat()}, now)
+    assert d["restore_days"] == 7
+
+
+def test_the_future_guard_is_real_time_not_calendar():
+    """A stamp ten minutes ahead is a skewed clock and must be unknown, even
+    though it falls on today's date."""
+    now = datetime(2026, 9, 9, 8, 0, tzinfo=NY)
+    d = dash.data_safety({"last_restore_at": (now + timedelta(minutes=10)).isoformat()}, now)
+    assert d["restore_days"] is None and d["state"] == "unknown"
+
+
+# --- disk free on the state volume (SCRUM-67 fact 1) --------------------------
+
+def test_disk_is_a_percentage_with_a_low_water_mark():
+    ok = dash.disk_state({"total": 1000, "free": 250})
+    assert ok["state"] == "ok" and ok["free_pct"] == 25.0 and ok["free_bytes"] == 250
+    low = dash.disk_state({"total": 1000, "free": 90})
+    assert low["state"] == "low"
+    assert dash.disk_state({"total": 1000, "free": 100})["state"] == "ok"   # exactly 10% is not low
+
+
+@pytest.mark.parametrize("bad", [None, {}, "x", {"total": 0, "free": 0}, {"total": "x", "free": 1},
+                                 {"total": 10, "free": -1}, {"total": 10, "free": 11},
+                                 {"total": True, "free": True}])
+def test_anything_short_of_two_sane_numbers_is_unknown_never_ok(bad):
+    d = dash.disk_state(bad)
+    assert d["state"] == "unknown", bad
+    assert d["free_pct"] is None

@@ -282,9 +282,47 @@ on a schedule — see [SETUP-BACKUP.md](SETUP-BACKUP.md).
 ```bash
 bash scripts/backup.sh              # take one
 bash scripts/restore.sh --list      # what exists, and which are BROKEN
-bash scripts/restore.sh --dry-run <dir>   # prove it restores, change nothing
+bash scripts/restore.sh --drill     # PROVE the newest one restores
+bash scripts/restore.sh --dry-run <dir>   # verify only, change nothing
 bash scripts/restore.sh <dir>       # actually restore
 ```
+
+#### The drill, and the number on the dashboard
+
+`--dry-run` verifies the archive. `--drill` actually restores it — into a
+scratch database, comparing the row counts against what `backup.sh` recorded
+at dump time, then dropping the scratch. It never touches the live database,
+which is what makes it safe to run unattended.
+
+The comparison is the point. An empty dump restores perfectly: correct
+checksums, correct table of contents, `pg_restore` exits 0. Only knowing what
+the counts were when the dump was taken catches a backup that silently stopped
+capturing anything.
+
+Both scripts write `~/.frankenstein/data-safety.json` — the same host state
+directory as the deploy record, already mounted read-only into the assistant —
+and the home screen renders **days since the last verified restore**, saying
+**never** in red until one passes. A failed run never advances the last-success
+date, so a streak of failures cannot make the dashboard look freshly safe.
+
+To keep that number green, put both on a timer (SCRUM-67). As the user that
+owns the backups:
+
+```cron
+17 3 * * *  cd ~/FrankensteinCentral && bash scripts/backup.sh          >> ~/.frankenstein/backup.log 2>&1
+41 4 * * 0  cd ~/FrankensteinCentral && bash scripts/restore.sh --drill >> ~/.frankenstein/drill.log  2>&1
+```
+
+The **Data safety** card also shows disk free on the state volume. That
+needs no host agent: the state directory is a bind mount, and a `statvfs`
+through a bind mount reports the host filesystem, so the container is reading
+the OptiPlex's own data disk. It goes red under 10% free. When the mount is
+absent the line is omitted rather than filled in from the container's disk —
+a number about the wrong disk is worse than none.
+
+A restore proven once is a fact with an expiry date on it: the card turns
+amber-to-red again after 35 days, because a proof against a schema that has
+changed since is not evidence about today's backup.
 
 This replaces `~/docker/backup.sh`, which was referenced here but lived
 outside the repository: nobody reviewing this code could read it, and its

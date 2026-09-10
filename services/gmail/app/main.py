@@ -644,6 +644,36 @@ async def finish(request: Request):
     return _page(body if ok else body + _rescue_form())
 
 
+
+# Gmail has no bulk "give me these messages" endpoint, so a list of ids costs
+# one request each. Fetched one after another, a 25-message inbox was 25 round
+# trips to Google in series — the single slowest thing this service does, and
+# it runs on every background sync.
+#
+# They are independent, so they go out together, capped so a big thread list
+# cannot open an unbounded number of sockets or trip Gmail's per-user rate
+# limit (250 quota units/second; a metadata get costs 5, so ten in flight is
+# comfortably inside it). asyncio.gather preserves argument order, so results
+# still line up with the ids that asked for them.
+_MAX_IN_FLIGHT = 10
+
+
+async def _fetch_each(client, urls_and_params: list, headers: dict) -> list:
+    """GET every (url, params) concurrently, bounded. Results keep input order;
+    a request that did not return 200 becomes None rather than raising, exactly
+    as the sequential loops treated it."""
+    limit = asyncio.Semaphore(_MAX_IN_FLIGHT)
+
+    async def one(url, params):
+        async with limit:
+            try:
+                r = await client.get(url, params=params, headers=headers, timeout=15)
+            except Exception:  # noqa: BLE001 - one bad message is not a failed sync
+                return None
+            return r.json() if r.status_code == 200 else None
+
+    return await asyncio.gather(*(one(u, prm) for u, prm in urls_and_params))
+
 async def _fetch_inbox() -> list[dict] | None:
     """Pull recent primary-inbox messages (not just receipts). None on failure."""
     token = await _access_token()
@@ -661,18 +691,15 @@ async def _fetch_inbox() -> list[dict] | None:
             return None
         ids = [m["id"] for m in r.json().get("messages", [])]
         out = []
-        for mid in ids:
-            mr = await client.get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
-                params={"format": "metadata",
-                        "metadataHeaders": ["From", "Subject", "List-Unsubscribe",
-                                            "Auto-Submitted", "Precedence", "Reply-To"]},
-                headers=headers,
-                timeout=15,
-            )
-            if mr.status_code != 200:
+        payloads = await _fetch_each(client, [
+            (f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+             {"format": "metadata",
+              "metadataHeaders": ["From", "Subject", "List-Unsubscribe",
+                                  "Auto-Submitted", "Precedence", "Reply-To"]})
+            for mid in ids], headers)
+        for mid, payload in zip(ids, payloads):
+            if payload is None:
                 continue
-            payload = mr.json()
             hdrs = {h["name"].lower(): h["value"] for h in payload.get("payload", {}).get("headers", [])}
             received = payload.get("internalDate")  # epoch ms, gmail-provided
             age_hours = None
@@ -841,16 +868,12 @@ async def _fetch_sent_proposal_threads() -> list[dict] | None:
         # Cheap first pass (metadata only) to find which sent messages even
         # look like an availability proposal, before paying for full threads.
         candidate_threads: dict[str, None] = {}
-        for mid in ids:
-            mr = await client.get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
-                params={"format": "metadata", "metadataHeaders": ["From", "Subject"]},
-                headers=headers,
-                timeout=15,
-            )
-            if mr.status_code != 200:
+        for payload in await _fetch_each(client, [
+                (f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                 {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
+                for mid in ids], headers):
+            if payload is None:
                 continue
-            payload = mr.json()
             hdrs = {h["name"]: h["value"] for h in payload.get("payload", {}).get("headers", [])}
             text = f"{hdrs.get('Subject', '')} {payload.get('snippet', '')}"
             if dateparse.is_availability_proposal(text):
@@ -860,17 +883,15 @@ async def _fetch_sent_proposal_threads() -> list[dict] | None:
             return bool(own_email) and own_email.lower() in addr.lower()
 
         threads_out: list[dict] = []
-        for thread_id in candidate_threads:
-            tr = await client.get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}",
-                params={"format": "full"},
-                headers=headers,
-                timeout=15,
-            )
-            if tr.status_code != 200:
+        thread_ids = list(candidate_threads)
+        for thread_id, thread in zip(thread_ids, await _fetch_each(client, [
+                (f"https://gmail.googleapis.com/gmail/v1/users/me/threads/{tid}",
+                 {"format": "full"})
+                for tid in thread_ids], headers)):
+            if thread is None:
                 continue
             parsed = []
-            for m in tr.json().get("messages", []):
+            for m in thread.get("messages", []):
                 mhdrs = {h["name"]: h["value"] for h in m.get("payload", {}).get("headers", [])}
                 # Strip quoted/forwarded history so a thread's Nth message
                 # doesn't re-surface every prior message's dates as if new.

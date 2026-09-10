@@ -29,6 +29,11 @@ services:
       # Extra NAMES this box answers to (Tailscale, hosts alias). IP literals
       # and localhost are always allowed. See SCRUM-115 / .env.example.
       GATEWAY_ALLOWED_HOSTS: ${GATEWAY_ALLOWED_HOSTS:-}
+      # Single-user login for the dashboard (SCRUM-98). EMPTY = NO LOGIN, and
+      # the gateway, verify.sh and frankenstein-status.sh all say so. It is
+      # deliberately not generated here: a password a human has to type must
+      # be one the human chose. See .env.example.
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-}
       POWERBUY_URL: http://powerbuy:8000
       FITNESS_URL: http://fitness:8000
       GMAIL_URL: http://gmail:8000

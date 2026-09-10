@@ -49,6 +49,8 @@ import re
 from collections import Counter
 from datetime import date, timedelta
 
+from .engine import _amount, _as_date
+
 # Cadences recognised, as (name, low, high, nominal) in days. The bands are
 # wide because billing dates slide across weekends and month lengths.
 CADENCES = (
@@ -76,22 +78,6 @@ _NOISE = re.compile(r"""
     | \#\s*\d+                               # #123
     | \s{2,}
 """, re.VERBOSE)
-
-
-def _as_date(v) -> date | None:
-    if isinstance(v, date):
-        return v
-    try:
-        return date.fromisoformat(str(v)[:10])
-    except (TypeError, ValueError):
-        return None
-
-
-def _amount(t: dict) -> float:
-    try:
-        return abs(float(t.get("amount") or 0))
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _norm_name(v) -> str:

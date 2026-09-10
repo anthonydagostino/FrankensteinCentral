@@ -12,10 +12,10 @@ source of truth instead of duplicating it:
 
 Nothing here is secret; no credentials are stored or returned.
 """
+import asyncio
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 import httpx
 from fastapi import FastAPI
@@ -352,9 +352,10 @@ async def _daily_state() -> dict:
         )
         big3 = await cur.fetchall()
 
-    study = await _study()
-    gym = await _gym()
-    open_tasks = await _open_tasks()
+    # One DB read and two HTTP reads that know nothing about each other, each
+    # HTTP one waiting up to 5s. `_exam_pace` genuinely needs the study figure,
+    # so it is the only one that has to come after.
+    study, gym, open_tasks = await asyncio.gather(_study(), _gym(), _open_tasks())
     exam = await _exam_pace(s, study["week_min"])
 
     water_oz = int(log["water_oz"] or 0)

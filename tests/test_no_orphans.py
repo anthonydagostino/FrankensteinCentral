@@ -88,10 +88,21 @@ def test_the_settings_allowlist_has_no_stale_entries():
 
 def endpoints():
     out = []
-    for main in sorted((ROOT / "services").glob("*/app/main.py")):
-        service = main.parts[-3]
+    # The gateway is a service too. It was never in this list, so every route
+    # it grew — including SCRUM-98's /login, /logout and /api/auth/status —
+    # would have shipped with no consumer check at all. Found the hard way: a
+    # regex was widened to see `@router.` routes and nothing changed, because
+    # the file it was meant to see was never opened.
+    mains = sorted((ROOT / "services").glob("*/app/main.py"))
+    mains += sorted(p for p in (ROOT / "gateway" / "app").glob("*.py")
+                    if p.name != "__init__.py")
+    for main in mains:
+        service = "gateway" if "gateway" in main.parts else main.parts[-3]
         for m in re.finditer(
-                r'@app\.(get|post|put|patch|delete|api_route)\(\s*"([^"]+)"',
+                # `router` as well as `app`: gateway/app/auth.py mounts its
+                # routes on an APIRouter, and a guard that only saw `@app.`
+                # would have let every one of them ship unconsumed.
+                r'@(?:app|router)\.(get|post|put|patch|delete|api_route)\(\s*"([^"]+)"',
                 main.read_text()):
             out.append((service, m.group(1).upper(), m.group(2), main))
     return out

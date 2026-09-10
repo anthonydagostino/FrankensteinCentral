@@ -62,16 +62,194 @@ def upcoming_events(events, now, local_tz, limit=6, statuses=None):
     return picked[:limit] if limit else picked
 
 
-def portfolio_state(stocks):
-    """`ok`, `unreachable` or `not_configured` — the same three states
-    `firefly_state` draws, for the same reason.
+# --- data safety (SCRUM-67) --------------------------------------------------
+#
+# "A backup you have never restored is a belief, not a backup."
+#
+# The number this exists to put on screen is DAYS SINCE THE LAST VERIFIED
+# RESTORE, and the states below exist because three different things were
+# previously indistinguishable from safety:
+#
+#   unknown  no record is readable. The assistant runs in a container and the
+#            record is written on the host, so an absent mount lands here. It
+#            must never read as "fine" — "we cannot see the box" and "the box
+#            is safe" are different facts.
+#   never    a record exists and no restore has ever succeeded. This is the
+#            state the ticket asks for by name, in red, and it is the state
+#            every installation starts in.
+#   stale    a restore succeeded, but long enough ago that it is a belief
+#            again. A proof has an expiry date.
+#   ok       verified recently.
+#
+# `stale` is why this is not just a date. A restore proven once, two years
+# ago, against a schema that has changed since, is not evidence about today's
+# backup — but it looks like evidence, which is worse than nothing.
+RESTORE_STALE_DAYS = 35
+BACKUP_STALE_DAYS = 3
 
-    `_get` swallows a timeout and returns `{}`, and `stocks or {"configured":
-    False}` turned that into a confident "No holdings yet. Add your stocks →".
-    So a blip in the stocks container told you to go and set up a portfolio you
-    had already set up. The stocks service answers `{"configured": False}` on
-    its own when it genuinely has no holdings, so an EMPTY payload can only
-    mean it never answered.
+
+def _days_since(stamp, now):
+    """Whole LOCAL CALENDAR days from an ISO stamp to `now`, or None.
+
+    None means unknown and never zero: "we could not read the date" rendered
+    as "0 days ago" is the most reassuring possible version of no information.
+
+    Calendar days in the reader's zone, not elapsed_seconds // 86400. A drill
+    that ran at 23:00 last night is "1 day ago" at breakfast — a person does
+    not say "today" about yesterday evening because only nine hours passed —
+    and the elapsed form was also off by one across every DST change, since a
+    week of 23-hour-or-25-hour days is not 7 * 86400 seconds. Both sides are
+    moved into `now`'s zone before the date is taken, so a UTC stamp written
+    at 23:30 local cannot land on tomorrow's date and read as -1.
+
+    The future guard is kept, and kept in REAL time: a clock skewed forward on
+    the box must read as unknown, not as a restore that happens tomorrow and
+    is permanently green.
+    """
+    if not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=now.tzinfo)
+    if (now.astimezone(timezone.utc) - when.astimezone(timezone.utc)).total_seconds() < 0:
+        # A future stamp is a broken clock somewhere, not freshness.
+        return None
+    tz = now.tzinfo
+    return (now.astimezone(tz).date() - when.astimezone(tz).date()).days
+
+
+DISK_LOW_PCT = 10
+
+
+def disk_state(usage):
+    """Free space on the volume the state directory lives on — SCRUM-67 fact 1.
+
+    This needs no privileged host access: the state directory is a bind mount,
+    and statvfs through a bind mount reports the underlying host filesystem.
+    So `shutil.disk_usage("/var/frankenstein")` inside the container IS the
+    OptiPlex's data disk. It is only meaningful when that mount exists, which
+    is why main.py passes None rather than a number when the directory is
+    absent — the container's own filesystem is not the fact being asked for.
+
+    `usage` is {"total": bytes, "free": bytes} or None. Anything short of two
+    sane numbers is `unknown`, never `ok`.
+    """
+    u = usage if isinstance(usage, dict) else {}
+    total, free = u.get("total"), u.get("free")
+    if not (isinstance(total, (int, float)) and isinstance(free, (int, float))) \
+            or isinstance(total, bool) or isinstance(free, bool) \
+            or total <= 0 or free < 0 or free > total:
+        return {"state": "unknown", "free_pct": None, "free_bytes": None, "total_bytes": None}
+    pct = round(100.0 * free / total, 1)
+    return {"state": "low" if pct < DISK_LOW_PCT else "ok", "free_pct": pct,
+            "free_bytes": int(free), "total_bytes": int(total)}
+
+
+def data_safety(record, now):
+    """What the home screen may claim about whether this data is recoverable.
+
+    `record` is the host's data-safety.json, written by scripts/backup.sh and
+    scripts/restore.sh. `{}` means it could not be read.
+    """
+    if not isinstance(record, dict) or not record:
+        return {"state": "unknown", "restore_days": None, "backup_days": None,
+                "restore_kind": None, "backup_stale": None, "rows": None}
+
+    restore_days = _days_since(record.get("last_restore_at"), now)
+    backup_days = _days_since(record.get("last_backup_at"), now)
+
+    if record.get("last_restore_at") is None:
+        state = "never"
+    elif restore_days is None:
+        # A record that names a restore but carries an unreadable date tells
+        # us nothing about when, which is the only thing being asked.
+        state = "unknown"
+    elif restore_days > RESTORE_STALE_DAYS:
+        state = "stale"
+    else:
+        state = "ok"
+
+    return {
+        "state": state,
+        "restore_days": restore_days,
+        "restore_kind": record.get("restore_kind"),
+        "rows": record.get("restore_rows"),
+        "backup_days": backup_days,
+        # Reported separately: a fresh backup and a proven restore are two
+        # different assurances, and having one says nothing about the other.
+        "backup_stale": None if backup_days is None else backup_days > BACKUP_STALE_DAYS,
+        "last_backup_result": record.get("last_backup_result"),
+        "last_restore_result": record.get("last_restore_result"),
+    }
+
+
+def resale_state(resale):
+    """`ok`, `unreachable` or `not_configured` — the same three states, for the
+    same reason, as firefly_state and portfolio_state.
+
+    The PowerBuy service answers `mode: "disconnected"` when it holds no
+    credentials, and `_get` swallows a timeout into `{}`. Those are different
+    facts: one means "there is nothing to show you", the other means "we could
+    not look". A resale card that renders an outage as $0 expected and 0
+    expiring is telling you the most reassuring possible version of a thing it
+    does not know — and this is the card whose whole job is to say when money
+    is about to be lost.
+    """
+    if not resale:
+        return "unreachable"
+    if resale.get("mode") == "disconnected":
+        return "not_configured"
+    return "ok"
+
+
+def resale_brief(resale):
+    """What the home screen shows about the resale book.
+
+    `expiring` leads when it is non-zero: of the four figures PowerBuy tracks
+    it is the only one carrying a deadline, and a deadline is the only reason
+    a number belongs on a screen you glance at rather than in the sub-app.
+
+    Every figure is None rather than 0 when the service could not be reached,
+    per docs/BUDGETS.md: a suppressed value is null, never zero. Nothing here
+    is invented — the fields come straight from powerbuy.summarize().
+    """
+    state = resale_state(resale)
+    summary = (resale or {}).get("summary") or {}
+    if state != "ok":
+        return {"state": state, "profit": None, "unpaid": None,
+                "expiring": None, "in_flight": None, "total": None,
+                "urgent": False}
+    def _int(key):
+        value = summary.get(key)
+        return None if value is None else int(value)
+    expiring = _int("expiring_soon_count")
+    return {
+        "state": state,
+        "profit": summary.get("expected_profit"),
+        "unpaid": _int("unpaid_count"),
+        "expiring": expiring,
+        "in_flight": _int("not_delivered_count"),
+        "total": _int("total_purchases"),
+        # The one thing on this card that is time-critical, and so the one
+        # thing allowed to shout.
+        "urgent": bool(expiring),
+    }
+
+
+def portfolio_state(stocks):
+    """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13, and the
+    same three states `firefly_state` draws, for the same reason.
+
+    `_get` swallows a timeout and returns `{}`, and the home payload used to
+    collapse that into `{"configured": False}`. So a stocks container that was
+    briefly down told you **"No holdings yet. Add your stocks →"** — an
+    instruction to go and repair configuration that was already correct, and
+    acting on it means hunting a problem that does not exist. The stocks
+    service answers `{"configured": False}` itself when it genuinely has no
+    holdings, so an EMPTY payload can only mean it never answered.
     """
     if not stocks:
         return "unreachable"
@@ -256,25 +434,6 @@ def schedule_state(schedule, calendar_link=None, calendar_evidence=None):
     # function exists to prevent.
     return "unknown"
 
-
-def portfolio_state(stocks):
-    """`ok`, `unreachable` or `not_configured` — PRODUCT_IDEAS #13.
-
-    `_get` swallows a timeout and returns `{}`, and the home payload used to
-    collapse that into `{"configured": False}`. So a stocks container that was
-    briefly down told you **"No holdings yet. Add your stocks →"** — an
-    instruction to go and fix configuration that was already correct. Acting on
-    it means hunting a problem that does not exist.
-
-    Exactly the same three-states-not-two rule as `firefly_state`, which is the
-    pattern this repo already got right, applied to the one card the idea's
-    acceptance signal names.
-    """
-    if not stocks:
-        return "unreachable"
-    if stocks.get("configured") is False:
-        return "not_configured"
-    return "ok"
 
 
 def _event_bounds(event, local_tz):
@@ -603,20 +762,39 @@ def deploy_state(record, now=None):
                than `attempted`, and `running` is what you are looking at.
       current  the last attempt succeeded and it is what is running.
 
+    Orthogonal to all four: `tests` and `untested` say whether the SERVING
+    build was gated by the suite. A `current` deploy can still be untested if
+    it went out under DEPLOY_SKIP_TESTS=1, and that stays true until a tested
+    deploy replaces it — which is the whole point of recording it (SCRUM-108).
+    `tests` of None is unknown, never passed.
+
     `now` is injected rather than read, per `docs/TESTING.md`: the age this
     returns is the one number here that moves on its own.
     """
     if not isinstance(record, dict) or not record:
         return {"state": "unknown", "running": None, "attempted": None,
-                "last_result": None, "age_seconds": None, "attempt_age_seconds": None}
+                "last_result": None, "tests": None, "untested": False,
+                "age_seconds": None, "attempt_age_seconds": None}
 
     running = record.get("running_commit") or None
     attempted = record.get("last_attempt_commit") or None
     result = record.get("last_result") or None
+    # What gated the build that is SERVING — "passed", "skipped", or None.
+    #
+    # None means UNKNOWN, not passed (SCRUM-108). A record written before the
+    # test verdict was recorded has no such key, and so does one written by a
+    # deploy.sh that lost the field again. Reporting "passed" from an absent
+    # key is the exact failure `docs/BUDGETS.md` bans in the money layer, for
+    # the same reason: it invents reassurance out of missing data.
+    running_tests = record.get("running_tests") or None
     out = {
         "running": running,
         "attempted": attempted,
         "last_result": result,
+        "tests": running_tests,
+        # The one flag a card can render without interpreting the rest: the
+        # code now serving went out with the gate switched off.
+        "untested": running_tests == "skipped",
         "age_seconds": _deploy_age(record.get("last_success_at"), now),
         "attempt_age_seconds": _deploy_age(record.get("last_attempt_at"), now),
     }

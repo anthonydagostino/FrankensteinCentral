@@ -88,18 +88,40 @@ if [ "${FRANKENSTEIN_DEPLOY_REEXEC:-0}" != "1" ]; then
   rm -f "$UPGRADE.tmp"
 fi
 
-record() {  # record <result> <sha>
-  local result="$1" sha="$2" prev=""
-  [ -f "$RECORD" ] && prev="$(python3 -c "
+record() {  # record <result> <sha> <tests>
+  # <tests> is "passed", "skipped" or "failed" — what actually gated THIS
+  # attempt.
+  #
+  # SCRUM-108: the record used to look identical whether the suite ran or
+  # was skipped with DEPLOY_SKIP_TESTS=1, so an hour later nothing could
+  # tell a tested deploy from an untested one. An override you can see is a
+  # safety net; one you cannot is a hole.
+  #
+  # `running_tests` is sticky in the same way `running_commit` is: it
+  # describes the build that is SERVING. A failed attempt must not
+  # overwrite it, and a skipped deploy keeps saying "skipped" until a
+  # tested deploy replaces it.
+  local result="$1" sha="$2" tests="$3" prev="" prev_tests=""
+  if [ -f "$RECORD" ]; then
+    prev="$(python3 -c "
 import json,sys
 try: print(json.load(open('$RECORD')).get('running_commit') or '')
 except Exception: print('')
 " 2>/dev/null)"
-  local running="$prev"
-  [ "$result" = "success" ] && running="$sha"
-  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" <<'PY'
+    prev_tests="$(python3 -c "
+import json,sys
+try: print(json.load(open('$RECORD')).get('running_tests') or '')
+except Exception: print('')
+" 2>/dev/null)"
+  fi
+  local running="$prev" running_tests="$prev_tests"
+  if [ "$result" = "success" ]; then
+    running="$sha"
+    running_tests="$tests"
+  fi
+  python3 - "$RECORD" "$result" "$sha" "$running" "$BRANCH" "$tests" "$running_tests" <<'PY'
 import json, sys, datetime
-path, result, sha, running, branch = sys.argv[1:6]
+path, result, sha, running, branch, tests, running_tests = sys.argv[1:8]
 try:
     doc = json.load(open(path))
 except Exception:
@@ -107,9 +129,18 @@ except Exception:
 now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 doc.update({"production_branch": branch, "last_attempt_commit": sha,
             "last_attempt_at": now, "last_result": result,
-            "running_commit": running or None})
+            "running_commit": running or None,
+            # What gated this attempt, and what gated the build now
+            # serving. ABSENT (not "passed") when the record was written
+            # by a deploy.sh predating SCRUM-108: unknown and passed are
+            # different facts and must not be collapsed.
+            "last_attempt_tests": tests or None,
+            "running_tests": running_tests or None})
 if result == "success":
     doc["last_success_at"] = now
+    if tests == "skipped":
+        doc["last_skipped_tests_at"] = now
+        doc["last_skipped_tests_commit"] = sha
 json.dump(doc, open(path, "w"), indent=2)
 PY
 }
@@ -175,6 +206,7 @@ fi
 # the freshly-pulled code passes, so a bad push leaves the box on the last
 # good build instead of taking the dashboard down. Set DEPLOY_SKIP_TESTS=1
 # to force a deploy past this (emergencies only).
+TESTS_STATUS="passed"
 if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
   echo "==> Running tests before touching the running stack"
   if ! bash scripts/test.sh >/tmp/fc-test.log 2>&1; then
@@ -182,10 +214,21 @@ if [ "${DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
     echo "!! Commit under test: $(git rev-parse --short HEAD)"
     tail -30 /tmp/fc-test.log
     echo "!! Full output: /tmp/fc-test.log"
-    record "tests_failed" "$(git rev-parse HEAD)"
+    record "tests_failed" "$(git rev-parse HEAD)" "failed"
     exit 1
   fi
   echo "==> Tests passed ($(grep -oE '[0-9]+ passed' /tmp/fc-test.log | tail -1))"
+else
+  # Loud here, and recorded in deployed.json so it is still visible
+  # tomorrow, when the person reading the dashboard is not the person who
+  # typed the override.
+  TESTS_STATUS="skipped"
+  echo "!! ==============================================================="
+  echo "!! DEPLOY_SKIP_TESTS=1 — THE TEST GATE IS OFF FOR THIS DEPLOY."
+  echo "!! Whatever is about to start has not been checked. This is"
+  echo "!! recorded in deployed.json and shown on the dashboard until a"
+  echo "!! tested deploy replaces it."
+  echo "!! ==============================================================="
 fi
 
 # Build changed images and (re)start everything. --remove-orphans cleans up
@@ -211,11 +254,11 @@ docker image prune -f >/dev/null 2>&1 || true
 # answer for the dashboard and the thing that makes the poller try again.
 SHA="$(git rev-parse HEAD)"
 if bash scripts/stack-health.sh; then
-  record "success" "$SHA"
+  record "success" "$SHA" "$TESTS_STATUS"
   echo "==> Deployed $(git rev-parse --short HEAD) on '$BRANCH'"
   docker compose ps
 else
-  record "started_unhealthy" "$SHA"
+  record "started_unhealthy" "$SHA" "$TESTS_STATUS"
   echo "!! Containers were started but the stack is not serving."
   echo "!! deployed.json still names the last commit that DID serve, so the"
   echo "!! poller will retry this deploy on its next tick."

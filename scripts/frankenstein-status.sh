@@ -55,6 +55,17 @@ try:
           f"   (last SUCCESSFUL deploy)")
     print(f"  Last attempted:        {short(attempt)}   at {rec.get('last_attempt_at','?')}")
     print(f"  Last deploy result:    {result}")
+    # SCRUM-108: an override you can see is a safety net; one you cannot is a
+    # hole. Absent means UNKNOWN — a record written before this was tracked —
+    # and must not be reported as though the suite had passed.
+    running_tests = rec.get("running_tests")
+    label = {"passed": "passed", "skipped": "SKIPPED", None: "unknown (record predates tracking)"}
+    print(f"  Test gate (serving):   {label.get(running_tests, running_tests)}")
+    if running_tests == "skipped":
+        print("  ! THE RUNNING BUILD WAS DEPLOYED WITH THE TEST GATE OFF")
+        print(f"  !   DEPLOY_SKIP_TESTS=1 at {rec.get('last_skipped_tests_at','?')}"
+              f" on {short(rec.get('last_skipped_tests_commit'))}")
+        print("  !   This stays until a tested deploy replaces it.")
     # A null/absent running_commit is PENDING too: no successfully deployed SHA
     # is confirmed in the record. That says nothing about whether containers
     # happen to be up — only that no deployment has been confirmed.
@@ -78,3 +89,14 @@ except (OSError, ValueError):
 print()
 print("  Ship with: bash scripts/test.sh && bash scripts/promote.sh <sha>")
 PY
+
+# SCRUM-98: the dashboard's own login. Read from .env because the setting lives
+# on the box, not in the repo. NOT SET is a state, not a fault — but it is one
+# you should be looking at, so it is printed every time rather than only once.
+echo
+if grep -q "^GATEWAY_PASSWORD=." .env 2>/dev/null; then
+  echo "  Dashboard login:       SET (GATEWAY_PASSWORD in .env)"
+else
+  echo "  Dashboard login:       NOT SET — anyone on the LAN can open the hub"
+  echo "                         (GATEWAY_PASSWORD in .env; see .env.example)"
+fi

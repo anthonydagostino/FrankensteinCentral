@@ -31,7 +31,7 @@ skeleton agents walk to stations; clicking a station opens that app's modal.
 **Security posture (current):** each service holds its own secrets server-side
 (firefly token, gmail OAuth, vault); nothing sensitive is sent to the browser;
 vault returns metadata only. LAN-only via docker. **Gaps:** the dashboard itself
-has no auth (anyone on the LAN can open it — acceptable for home, noted); the
+has single-user login when `GATEWAY_PASSWORD` is set (SCRUM-98); unset, it is open to the LAN and every diagnostic reports that rather than staying quiet; the
 gateway will proxy any `/api/<app>/<path>` (fine internally). No secrets are
 logged. Fake/mock data was just removed so numbers are trustworthy.
 

@@ -58,9 +58,8 @@ test("the calendar, money and portfolio come before everything else", () => {
     "money and the portfolio must sit above the two-column region, not inside it");
 });
 
-test("money and the portfolio share one row", () => {
+test("the money cards share one row that stacks on a phone", () => {
   assert.match(HTML, /cc-money-row/);
-  assert.match(CSS, /\.cc-money-row\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);
   assert.match(CSS, /@media[^{]*max-width:\s*900px[^{]*\{\s*\.cc-money-row[^}]*1fr/,
     "the row must stack on a narrow screen");
 });
@@ -121,4 +120,114 @@ test("a ragged nudge list does not throw", () => {
   /* The feed is built from core's payload and has carried nulls before. */
   assert.strictEqual(
     Attention.isDuplicate({ key: "study" }, [null, undefined, {}, { key: "study" }]), true);
+});
+
+
+/* --- the habit form gave way to the resale book (SCRUM-139) -------------- */
+
+test("resale sits with the other money cards, not below the fold", () => {
+  /* It is money, and it is the only card on the page carrying a deadline. */
+  assert.ok(at('id="cc-resale"') > -1, "no resale card");
+  assert.ok(at('id="cc-resale"') < at('class="cc-cols"'),
+    "resale must sit in the top money row");
+  assert.ok(at('id="cc-money"') < at('id="cc-resale"'));
+});
+
+test("the money row reflows instead of pinning a card count", () => {
+  /* Three cards where there were two, without a breakpoint per arrangement. */
+  assert.match(CSS, /\.cc-money-row\s*\{[^}]*repeat\(auto-fit,\s*minmax\(/);
+});
+
+test("the health card's score ring is gone", () => {
+  /* It drew the same number as the score pill in the page header, a few
+   * hundred pixels apart on one screen. The card heading still names it. */
+  const health = HTML.indexOf('id="cc-health"');
+  assert.ok(health > -1);
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderHealth\([\s\S]*?\n  \}/);
+  assert.ok(fn, "renderHealth not found");
+  assert.ok(!/score-ring/.test(fn[0]),
+    "the health card still draws a score ring, duplicating the header pill");
+});
+
+test("every logging control is behind the disclosure", () => {
+  /* A home screen carries what you monitor; a form belongs on a drill-down.
+   * Nothing was removed — each control must still exist, inside the drawer. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderHealth\([\s\S]*?\n  \}/)[0];
+  const drawer = fn.match(/<details class="hx-log"[\s\S]*?<\/details>/);
+  assert.ok(drawer, "no logging drawer");
+  for (const control of ["focusBtns", "waterBtns", "nutBtns", "sleepBtnsHtml", 'data-gym="1"']) {
+    assert.ok(drawer[0].includes(control),
+      `${control} is not inside the drawer — it was dropped, or left on the card`);
+  }
+  // ...and rendered nowhere else. The check is on the INTERPOLATION, not the
+  // name: `const focusBtns = ...` legitimately sits at the top of the function,
+  // and an earlier version of this test failed on those declarations while the
+  // markup was already correct.
+  const outside = fn.replace(drawer[0], "");
+  for (const control of ["focusBtns", "waterBtns", "nutBtns", "sleepBtnsHtml"]) {
+    assert.ok(!outside.includes("${" + control + "}"),
+      `${control} is still rendered outside the drawer`);
+  }
+});
+
+test("the drawer remembers whether it was left open", () => {
+  /* If he does log from here daily it should simply stay open, and a private
+   * window must not throw on the read. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  assert.match(js, /localStorage\.getItem\(HX_LOG_KEY\)/);
+  assert.match(js, /catch\s*\(e\)\s*\{\s*return false;\s*\}/);
+});
+
+
+/* --- data safety (SCRUM-67) ---------------------------------------------- */
+
+test("the home screen has a data-safety card", () => {
+  /* Acceptance signal: "the home screen states how many days since the last
+   * verified restore, and says 'never' until one happens." */
+  assert.ok(at('id="cc-safety"') > -1, "no data-safety card on the home screen");
+});
+
+test("never and stale are loud; ok is not", () => {
+  /* The asymmetry is the design. An infra card that looks the same whether or
+   * not you are protected is one you stop reading. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/);
+  assert.ok(fn, "renderSafety not found");
+  const body = fn[0];
+  assert.match(body, /never:\s*\{[^}]*cls:\s*"bad"/);
+  assert.match(body, /stale:\s*\{[^}]*cls:\s*"bad"/);
+  assert.match(body, /ok:\s*\{[^}]*cls:\s*"good"/);
+  assert.match(body, /unknown:\s*\{[^}]*cls:\s*"muted"/);
+  assert.match(CSS, /\.ds-lead\.bad\s*\{[^}]*var\(--imp\)/);
+});
+
+test("an unreadable record never renders as safe", () => {
+  /* The assistant runs in a container and the record is written on the host,
+   * so an absent mount is a normal failure. It must not read as protected. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /BODY\[s\.state\]\s*\|\|\s*BODY\.unknown/,
+    "an unrecognised state must fall back to unknown, not to ok");
+  assert.match(fn, /state:\s*"unknown"/, "a missing payload must default to unknown");
+});
+
+test("the card names the command that fixes it", () => {
+  /* "Never" with no way out is a complaint. The drill is the way out. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /restore\.sh --drill/);
+});
+
+test("disk free is shown from the payload and never invented", () => {
+  /* Fact 1 of the ticket, the half a bind mount exposes without host access.
+   * When the mount is absent the assistant sends `unknown`, and the card must
+   * omit the line rather than print a number about the container's own disk. */
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.match(fn, /d\.disk\.state !== "unknown"/, "an unknown disk state must render nothing");
+  assert.match(fn, /d\.disk\.free_pct != null/, "a missing percentage must render nothing");
+  assert.match(fn, /% free/, "the line states the percentage");
+  assert.match(fn, /d\.disk\.state === "low" \? " warn"/, "a low disk is flagged, not just listed");
 });

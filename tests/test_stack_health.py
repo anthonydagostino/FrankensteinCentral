@@ -223,6 +223,20 @@ def test_the_unhealthy_result_is_not_the_word_success():
 def test_only_an_exact_success_advances_the_running_commit(tmp_path):
     """The record writer's rule, which the fix depends on: an unhealthy deploy
     must leave running_commit naming the last commit that DID serve."""
+    # Behavioural, not a string match: SCRUM-108 rewrote this one-liner into an
+    # if-block to carry the test verdict, and a literal assertion broke while
+    # the rule itself held. Drive the real function instead.
     src = DEPLOY.read_text()
-    assert '[ "$result" = "success" ] && running="$sha"' in src, (
-        "record no longer gates running_commit on an exact success")
+    fn = src[src.index("record() {"):src.index('echo "==> Deploying')]
+    rec_json = tmp_path / "deployed.json"
+    h = tmp_path / "h.sh"
+    h.write_text("#!/usr/bin/env bash\n"
+                 f'RECORD="{rec_json}"\nBRANCH="production"\n' + fn +
+                 '\nrecord "success" "' + "a" * 40 + '" "passed"\n'
+                 '\nrecord "started_unhealthy" "' + "b" * 40 + '" "passed"\n')
+    subprocess.run(["bash", str(h)], capture_output=True, timeout=60)
+    doc = json.loads(rec_json.read_text())
+    assert doc["running_commit"] == "a" * 40, (
+        "an unhealthy start advanced running_commit; the poller would then "
+        "believe it had converged and stop retrying")
+    assert doc["last_result"] == "started_unhealthy"

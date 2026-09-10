@@ -206,6 +206,8 @@
     renderPortfolio(d.portfolio);
     renderToday(d);
     renderHealth(d);
+    renderResale(d.resale);
+    renderSafety(d);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
@@ -1339,7 +1341,128 @@
       <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
   }
 
+  // ---- resale (SCRUM-139) ---------------------------------------------------
+  // What replaced the habit-logging form. PowerBuy already computed all of
+  // this; build_home simply never fetched it (SCRUM-71), so none of it could
+  // reach a screen.
+  // ---- data safety (SCRUM-67) ----------------------------------------------
+  // "A backup you have never restored is a belief, not a backup." The one
+  // number: days since the last VERIFIED restore, and "never" until one
+  // happens.
+  //
+  // Loud when there is nothing proving the data is recoverable, quiet when
+  // there is. That asymmetry is the whole design — an infra card that looks
+  // the same whether or not you are protected is one you stop reading.
+  function renderSafety(d) {
+    const el = q("#cc-safety");
+    if (!el) return;
+    const s = (d && d.data_safety) || { state: "unknown" };
+    const days = (n) => (n === 0 ? "today" : n === 1 ? "1 day ago" : n + " days ago");
+
+    const BODY = {
+      never: {
+        cls: "bad", lead: "Never",
+        sub: "No restore has ever been verified. Until one is, these backups are a belief.",
+      },
+      stale: {
+        cls: "bad", lead: s.restore_days == null ? "Stale" : days(s.restore_days),
+        sub: "Long enough ago that the schema has probably moved since. A proof has an expiry date.",
+      },
+      unknown: {
+        cls: "muted", lead: "Unknown",
+        sub: "Can't read the backup record from here — that is not the same as being safe.",
+      },
+      ok: {
+        cls: "good", lead: s.restore_days == null ? "Verified" : days(s.restore_days),
+        sub: s.rows ? `Last drill restored ${esch(String(s.rows))} rows and compared them against the backup's own record.`
+                    : "Last restore drill passed.",
+      },
+    };
+    const b = BODY[s.state] || BODY.unknown;
+
+    // Reported separately on purpose: a fresh backup says nothing about
+    // whether it can be restored, and that gap is this card's whole subject.
+    const backup = s.backup_days == null
+      ? `<span class="ds-x">Last backup <b>unknown</b></span>`
+      : `<span class="ds-x${s.backup_stale ? " warn" : ""}">Last backup <b>${esch(days(s.backup_days))}</b></span>`;
+    // Disk free on the state volume — fact 1 of the ticket, the half that the
+    // bind mount exposes without host access. Omitted rather than invented
+    // when the mount is absent: a number about the container's own disk would
+    // be the wrong fact dressed as the right one.
+    const disk = d && d.disk && d.disk.state !== "unknown" && d.disk.free_pct != null
+      ? `<span class="ds-x${d.disk.state === "low" ? " warn" : ""}">Disk <b>${esch(String(d.disk.free_pct))}% free</b></span>`
+      : "";
+
+    el.innerHTML = `<h3>Data safety</h3>
+      <div class="ds-lead ${b.cls}">${esch(b.lead)}</div>
+      <div class="ds-label">since the last verified restore</div>
+      <p class="ds-sub">${b.sub}</p>
+      <div class="ds-row">${backup}${disk}</div>
+      ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
+        Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
+        the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
+  }
+
+  function renderResale(r) {
+    const el = q("#cc-resale");
+    if (!el) return;
+    r = r || { state: "unreachable" };
+
+    // Three states, not two. An unreachable service is not an empty book, and
+    // this is the card whose entire job is to say when money is about to be
+    // lost — rendering an outage as "$0 expected, 0 expiring" would be the
+    // most reassuring possible version of something it does not know.
+    if (r.state === "unreachable") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">Couldn't reach PowerBuy just now — a connection
+        problem, not an empty book. Figures are hidden rather than guessed at.</p>`;
+      return;
+    }
+    if (r.state === "not_configured") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">PowerBuy isn't connected — set POWERBUY_EMAIL and
+        POWERBUY_PASSWORD to see your purchases here.</p>`;
+      return;
+    }
+
+    // The lead figure is whichever one is actually urgent. Expiring buys have
+    // a deadline and the profit number does not, so on any day something is
+    // expiring that is the headline; otherwise the money you expect to make is.
+    const money = (v) => "$" + Number(v || 0).toLocaleString(undefined,
+      { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    const lead = r.urgent
+      ? `<span class="rs-lead urgent">${r.expiring}</span>
+         <span class="rs-unit">expiring within 7 days</span>`
+      : `<span class="rs-lead">${esch(money(r.profit))}</span>
+         <span class="rs-unit">profit expected</span>`;
+    const sub = [
+      r.urgent && r.profit != null ? `<span>${esch(money(r.profit))} <b>expected</b></span>` : "",
+      r.unpaid ? `<span><b>${r.unpaid}</b> unpaid</span>` : "",
+      r.in_flight ? `<span><b>${r.in_flight}</b> not delivered</span>` : "",
+      r.total != null ? `<span><b>${r.total}</b> tracked</span>` : "",
+    ].filter(Boolean).join("");
+
+    el.innerHTML = `<h3>Resale</h3>
+      <div class="rs-row">${lead}</div>
+      <div class="rs-sub">${sub}</div>
+      ${r.urgent ? `<p class="rs-note">An expiring buy is the only figure here
+        with a deadline on it.</p>` : ""}
+      <div class="hx-btns" style="margin-top:12px">
+        <button class="hx-btn" id="rs-open">Open PowerBuy →</button>
+      </div>`;
+    const b = q("#rs-open");
+    if (b) b.onclick = () => openAppKey("powerbuy");
+  }
+
+  // Whether the logging drawer was left open. localStorage can throw in a
+  // private window, so every read is guarded and the default is closed.
+  const HX_LOG_KEY = "cc.hxlog";
+  const hxLogOpen = () => {
+    try { return localStorage.getItem(HX_LOG_KEY) === "open"; } catch (e) { return false; }
+  };
+
   function renderHealth(d) {
+    const logOpen = hxLogOpen();
     const h = d.health || {};
     const score = d.score || { score: null, parts: {}, tracked: 0, of: 0 };
     const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
@@ -1384,36 +1507,49 @@
       : "";
     q("#cc-health").innerHTML = `
       <h3>Health &amp; discipline · ${scoreHeading}</h3>
-      <div class="hx-score">
-        <div class="score-ring${hasScore ? "" : " untracked"}" style="--p:${hasScore ? score.score : 0}"><div class="hole">${hasScore ? score.score : "–"}</div></div>
-        <div class="score-bars" style="flex:1">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
-      </div>
+      <!-- The ring that used to sit here drew the same number as the score
+           pill in the page header, a few hundred pixels apart on one screen.
+           The heading above already names it. -->
+      <div class="score-bars">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
       <div class="hx">
         <div class="hx-row">
           <div class="hx-head"><span class="l">📚 Study${st.streak ? ` · ${st.streak}d streak` : ""}</span><span class="v">${fmtH(st.today_min)} / ${fmtH(st.goal_min)}</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${studyPct}%"></div></div>
           ${exam && exam.days_left != null ? `<div class="hx-head"><span class="l">${esch(exam.label)} in ${exam.days_left}d</span>${exam.remaining_hours != null ? `<span class="v">${exam.remaining_hours}h left · ${exam.weekly_needed_hours}h/wk</span>` : ""}</div>` : ""}
-          <div class="hx-btns">${focusBtns}</div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">🏋️ Gym${gym.last ? ` · last ${timeAgoShort(gym.last)}` : ""}</span><span class="v">${gym.week || 0} / ${gym.goal || 0} this week</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${gym.goal ? Math.min(100, (gym.week / gym.goal) * 100) : 0}%"></div></div>
-          <div class="hx-btns"><button class="hx-btn" data-gym="1">Log workout</button></div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">💧 Water</span><span class="v">${w.oz || 0} / ${w.goal || 0} oz</span></div>
           <div class="hx-track"><div class="hx-fill" style="width:${waterPct}%;background:var(--accent-2)"></div></div>
-          <div class="hx-btns">${waterBtns}</div>
         </div>
         <div class="hx-row">
-          <div class="hx-head"><span class="l">🍽️ Nutrition today</span></div>
-          <div class="hx-btns">${nutBtns}</div>
+          <div class="hx-head"><span class="l">🍽️ Nutrition today</span><span class="v">${rating ? esch(rating) : "not logged"}</span></div>
         </div>
         <div class="hx-row">
           <div class="hx-head"><span class="l">😴 Sleep</span><span class="v">${sleepHours == null ? "not logged" : sleepHours + "h"}</span></div>
-          <div class="hx-btns">${sleepBtnsHtml}</div>
         </div>
-      </div>`;
+      </div>
+      <!-- Logging is a FORM, and a home screen is for what you monitor at a
+           glance; entry belongs on a drill-down. Nothing is removed — it is one
+           click away, and the disclosure remembers whether you left it open, so
+           if you do log from here every day it simply stays open. -->
+      <details class="hx-log"${logOpen ? " open" : ""}>
+        <summary>Log something</summary>
+        <div class="hx-log-grid">
+          <div><span class="hx-log-l">Study</span><div class="hx-btns">${focusBtns}</div></div>
+          <div><span class="hx-log-l">Gym</span><div class="hx-btns"><button class="hx-btn" data-gym="1">Log workout</button></div></div>
+          <div><span class="hx-log-l">Water</span><div class="hx-btns">${waterBtns}</div></div>
+          <div><span class="hx-log-l">Nutrition</span><div class="hx-btns">${nutBtns}</div></div>
+          <div><span class="hx-log-l">Sleep</span><div class="hx-btns">${sleepBtnsHtml}</div></div>
+        </div>
+      </details>`;
+    const logEl = q("#cc-health").querySelector(".hx-log");
+    if (logEl) logEl.ontoggle = () => {
+      try { localStorage.setItem(HX_LOG_KEY, logEl.open ? "open" : "closed"); } catch (e) {}
+    };
     const focusLabel = () => (q("#hx-focus-label") && q("#hx-focus-label").value.trim()) || "Study";
     q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, focusLabel())));
     q("#cc-health").querySelectorAll("[data-water]").forEach((b) => (b.onclick = async () => { await post("/core/water", { oz: +b.dataset.water }); toast(`+${b.dataset.water} oz`); refresh(true); }));

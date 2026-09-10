@@ -499,13 +499,35 @@ def test_poller_never_reads_local_head_for_convergence():
 DEPLOY = ROOT / "scripts" / "deploy.sh"
 
 
-def test_failed_deploy_never_advances_running_commit():
-    """Invariant: running_commit = last SUCCESSFULLY deployed commit."""
+def test_failed_deploy_never_advances_running_commit(tmp_path):
+    """Invariant: running_commit = last SUCCESSFULLY deployed commit.
+
+    This used to assert the literal line `[ "$result" = "success" ] &&
+    running="$sha"`. SCRUM-108 rewrote that one-liner into an if-block to carry
+    the test verdict alongside the commit, and the assertion broke while the
+    INVARIANT it protects held perfectly. A test that fails on a refactor it
+    should not care about teaches people to edit tests to make them pass.
+
+    So: drive the real record() and assert the behaviour. Immune to how the
+    line is spelled, and strictly stronger — it would have caught the original
+    bug too, which the string match only did by luck of phrasing.
+    """
     src = DEPLOY.read_text()
-    record_fn = src[src.index("record() {"):src.index("echo \"==> Deploying")]
-    assert 'local running="$prev"' in record_fn
-    assert '[ "$result" = "success" ] && running="$sha"' in record_fn, \
-        "running_commit may only advance on success"
+    fn = src[src.index("record() {"):src.index('echo "==> Deploying')]
+    rec_json = tmp_path / "deployed.json"
+    h = tmp_path / "h.sh"
+    for result in ("tests_failed", "started_unhealthy", "anything_else"):
+        rec_json.write_text("{}")
+        h.write_text("#!/usr/bin/env bash\n"
+                     f'RECORD="{rec_json}"\nBRANCH="production"\n' + fn +
+                     '\nrecord "success" "' + "a" * 40 + '" "passed"\n'
+                     f'record "{result}" "' + "b" * 40 + '" "passed"\n')
+        subprocess.run(["bash", str(h)], capture_output=True, timeout=60)
+        doc = json.loads(rec_json.read_text())
+        assert doc["running_commit"] == "a" * 40, (
+            f"result {result!r} advanced running_commit; only an exact "
+            f"'success' may")
+        assert doc["last_attempt_commit"] == "b" * 40
 
 
 def test_failed_deploy_records_the_attempt():

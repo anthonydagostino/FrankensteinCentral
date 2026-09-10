@@ -1,7 +1,8 @@
 import asyncio
 import json
 import os
-from datetime import date, datetime, timedelta
+import shutil
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -10,11 +11,13 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
-from .dashboard import (deadline_rows, deploy_state, firefly_state,
+from .dashboard import (data_safety, deadline_rows, deploy_state, disk_state,
+                        firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
-                        schedule_state, since_changes, since_snapshot,
-                        upcoming_events, week_window, weekly_review)
+                        resale_brief, schedule_state, since_changes,
+                        since_snapshot, upcoming_events, week_window,
+                        weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -39,6 +42,14 @@ STOCKS_URL = os.environ.get("STOCKS_URL", "http://stocks:8000")
 # running after a deploy that failed. Absent mount reads as "unknown".
 DEPLOY_RECORD = os.environ.get("FRANKENSTEIN_DEPLOY_RECORD",
                                "/var/frankenstein/deployed.json")
+# Written by scripts/backup.sh and scripts/restore.sh, in the same host state
+# directory and through the same read-only mount. SCRUM-67.
+DATA_SAFETY_RECORD = os.environ.get("FRANKENSTEIN_DATA_SAFETY_RECORD",
+                                    "/var/frankenstein/data-safety.json")
+# The mount itself. Disk free is read from it: statvfs through a bind mount
+# reports the host filesystem, so this is the OptiPlex's data disk — but only
+# while the directory is actually there (SCRUM-67).
+STATE_DIR = os.path.dirname(DATA_SAFETY_RECORD) or "/var/frankenstein"
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "America/New_York"))
 AUTO_SYNC_SECONDS = int(os.environ.get("AUTO_SYNC_SECONDS", "0"))
 # Text a digest automatically after each sync (only when it changed). Off by default.
@@ -233,14 +244,21 @@ async def build_briefing() -> list[dict]:
     action attached to them (reply, pay, review) make the cut.
     """
     items: list[dict] = []
+    # Concurrent, like build_home: these seven services know nothing about each
+    # other, so awaiting them one at a time only added their latencies together
+    # — and each _get waits up to 8s, so one slow container used to delay every
+    # service queued behind it.
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        vault = await _get(client, f"{VAULT_URL}/summary")
-        availability = await _get(client, f"{GMAIL_URL}/thread-availability")
+        (emails, powerbuy, finance, budget, deals, vault,
+         availability) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+            _get(client, f"{GMAIL_URL}/thread-availability"),
+        )
 
     for e in emails.get("emails", [])[:5]:
         verb = "Interview" if e.get("category") == "interview" else "Reply needed"
@@ -316,16 +334,19 @@ async def briefing():
 async def build_overview() -> dict:
     """A glanceable set of numbers across every app — the command-center row."""
     async with httpx.AsyncClient() as client:
-        emails = await _get(client, f"{GMAIL_URL}/needs-reply")
-        powerbuy = await _get(client, f"{POWERBUY_URL}/summary")
-        cal = await _get(client, f"{SCHEDULE_URL}/events")
-        fitness = await _get(client, f"{FITNESS_URL}/plan")
-        finance = await _get(client, f"{FINANCE_URL}/summary")
-        tasks = await _get(client, f"{TASKS_URL}/summary")
-        budget = await _get(client, f"{BUDGET_URL}/summary")
-        deals = await _get(client, f"{DEALS_URL}/summary")
-        networth = await _get(client, f"{NETWORTH_URL}/summary")
-        vault = await _get(client, f"{VAULT_URL}/summary")
+        (emails, powerbuy, cal, fitness, finance, tasks, budget, deals,
+         networth, vault) = await asyncio.gather(
+            _get(client, f"{GMAIL_URL}/needs-reply"),
+            _get(client, f"{POWERBUY_URL}/summary"),
+            _get(client, f"{SCHEDULE_URL}/events"),
+            _get(client, f"{FITNESS_URL}/plan"),
+            _get(client, f"{FINANCE_URL}/summary"),
+            _get(client, f"{TASKS_URL}/summary"),
+            _get(client, f"{BUDGET_URL}/summary"),
+            _get(client, f"{DEALS_URL}/summary"),
+            _get(client, f"{NETWORTH_URL}/summary"),
+            _get(client, f"{VAULT_URL}/summary"),
+        )
     pb = powerbuy.get("summary", {})
     tp = fitness.get("today_plan") or {}
     # Only a *confirmed* event counts as "next up" — a still-pending proposal
@@ -806,7 +827,6 @@ def _budget_brief(status) -> dict:
                 "recurring": (status or {}).get("recurring")
                              or {"available": False, "events": []}}
     warns = status.get("warnings", [])
-    counts = status.get("state_counts", {})
     freshness = status.get("freshness") or {}
     fresh = freshness.get("current_ok", False)
     return {
@@ -840,6 +860,34 @@ def _read_deploy_record(path=None):
     """
     try:
         with open(path or DEPLOY_RECORD) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return rec if isinstance(rec, dict) else {}
+
+
+def _disk_usage():
+    """{"total", "free"} for the state volume, or None when the mount is not
+    there. None, not the container's own filesystem: that would be a number
+    about the wrong disk, which is worse than no number."""
+    if not os.path.isdir(STATE_DIR):
+        return None
+    try:
+        u = shutil.disk_usage(STATE_DIR)
+    except OSError:
+        return None
+    return {"total": u.total, "free": u.free}
+
+
+def _read_data_safety_record(path=None):
+    """The host's backup/restore record, or {} when we cannot read it.
+
+    Same contract as _read_deploy_record for the same reason: every failure
+    collapses to {}, which `data_safety` reads as `unknown`. It must not be
+    possible for a read that did not happen to produce a safe-looking answer.
+    """
+    try:
+        with open(path or DATA_SAFETY_RECORD) as f:
             rec = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -885,7 +933,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, seen, emails_r, avail, finance, budget, firefly,
          spending, networth, schedule, cal_health, deals, stocks, vault,
-         captures, review, dismissals) = await asyncio.gather(
+         captures, review, dismissals, powerbuy_home) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             # The shared "already shown" baseline. Fetched here so the diff is
@@ -915,6 +963,11 @@ async def build_home(fresh: bool = False) -> dict:
             # yields NO active keys — so a core outage shows you everything
             # rather than silently hiding items it could not check.
             _get(client, f"{CORE_URL}/dismissals"),
+            # SCRUM-71: POWERBUY_URL is configured in docker-compose and used
+            # elsewhere in this service, and was missing from this fan-out — so
+            # the home screen was structurally incapable of showing an expiring
+            # unpaid resale buy, however loudly PowerBuy computed one.
+            _get(client, f"{POWERBUY_URL}/summary"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -1010,6 +1063,9 @@ async def build_home(fresh: bool = False) -> dict:
         # during any core outage.
         "score": (core or {}).get(
             "score", {"score": None, "parts": {}, "tracked": 0, "of": 0}),
+        # The resale book: profit expected, money owed, and — the only figure
+        # here with a deadline — buys whose window closes within 7 days.
+        "resale": resale_brief(powerbuy_home),
         "captures": (captures.get("items", []) if captures else [])[:8],
         # What is hidden right now, so the UI can offer to bring it back
         # rather than leaving you wondering where something went.
@@ -1030,6 +1086,11 @@ async def build_home(fresh: bool = False) -> dict:
         # PREVIOUS build serving and is otherwise completely silent from
         # the UI, so this is the only place a stale build announces itself.
         "deploy": deploy_state(_read_deploy_record(), now_local),
+        # Days since the last VERIFIED restore, and "never" until one happens.
+        # A backup you have never restored is a belief, not a backup.
+        "data_safety": data_safety(_read_data_safety_record(), now_local),
+        # Fact 1 of SCRUM-67, the half that needs no privileged access.
+        "disk": disk_state(_disk_usage()),
         "last_updated": t["now"],
     }
     # Computed against the payload we are ABOUT to return, so the fingerprint
