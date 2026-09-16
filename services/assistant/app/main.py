@@ -28,7 +28,6 @@ GMAIL_URL = os.environ.get("GMAIL_URL", "http://gmail:8000")
 SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
-AMEX_URL = os.environ.get("AMEX_URL", "http://amex:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
@@ -934,8 +933,7 @@ async def build_home(fresh: bool = False) -> dict:
     async with httpx.AsyncClient() as client:
         (settings, core, seen, emails_r, avail, finance, budget, firefly,
          spending, networth, schedule, cal_health, deals, stocks, vault,
-         captures, review, dismissals, powerbuy_home,
-         amex_home) = await asyncio.gather(
+         captures, review, dismissals, powerbuy_home) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             # The shared "already shown" baseline. Fetched here so the diff is
@@ -970,10 +968,6 @@ async def build_home(fresh: bool = False) -> dict:
             # the home screen was structurally incapable of showing an expiring
             # unpaid resale buy, however loudly PowerBuy computed one.
             _get(client, f"{POWERBUY_URL}/summary"),
-            # Statement credits that expire on a calendar boundary and do not
-            # roll over. The service does the period arithmetic; this only
-            # carries the answer.
-            _get(client, f"{AMEX_URL}/summary"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -1072,8 +1066,6 @@ async def build_home(fresh: bool = False) -> dict:
         # The resale book: profit expected, money owed, and — the only figure
         # here with a deadline — buys whose window closes within 7 days.
         "resale": resale_brief(powerbuy_home),
-        # What is unused and nearly gone on the Platinum and the Gold.
-        "amex": amex_brief(amex_home),
         "captures": (captures.get("items", []) if captures else [])[:8],
         # What is hidden right now, so the UI can offer to bring it back
         # rather than leaving you wondering where something went.

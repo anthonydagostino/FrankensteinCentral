@@ -126,19 +126,6 @@ body {
 .tile.warn .n { color: #ffcc66; }
 
 .rows { display: grid; gap: 8px; }
-
-/* Amex credit list. A credit you already used stays on the page, struck
-   through rather than removed: a row that vanishes reads as a mistake, and
-   the point of the list is to see the whole month at once. */
-.row.done b { color: var(--muted); text-decoration: line-through; }
-.ax-tag {
-  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
-  border: 1px solid var(--line); background: var(--panel-2);
-  font-size: 10.5px; letter-spacing: .4px; color: var(--muted); vertical-align: 1px;
-}
-/* "enroll" is a word first; the colour only makes it findable at a glance. */
-.ax-tag.warn { border-color: var(--down); color: var(--down); }
-.btn.sm { padding: 6px 10px; font-size: 12px; }
 .row {
   display: flex; align-items: center; gap: 10px;
   background: rgba(255,255,255,0.03); border: 1px solid var(--line);

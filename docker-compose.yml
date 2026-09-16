@@ -100,23 +100,6 @@ services:
     ports:
       - "127.0.0.1:8087:8000"
 
-  # Amex credit tracker. The credit catalogue is code (services/amex/app/
-  # credits.py); the only thing in Postgres is which credit you marked used in
-  # which period.
-  amex:
-    build: ./services/amex
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-      # Every credit period is a CALENDAR boundary, so "what expires tonight"
-      # is answered in your timezone, not the container's UTC.
-      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8100:8000"
-
   # Time-aware budgets over Firefly (stateless; budget definitions live in
   # core settings, transactions come from the firefly service).
   budget:
@@ -310,7 +293,6 @@ services:
       FIREFLY_URL_SVC: http://firefly:8000
       CORE_URL: http://core:8000
       STOCKS_URL: http://stocks:8000
-      AMEX_URL: http://amex:8000
       LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.
@@ -350,8 +332,6 @@ services:
       finance:
         condition: service_started
       tasks:
-        condition: service_started
-      amex:
         condition: service_started
       budget:
         condition: service_started

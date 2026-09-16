@@ -89,7 +89,6 @@ most important column when judging whether a card can be trusted.
 | `vault` | Vault | 8091 | Vaultwarden via `bw serve` | stateless, read-only |
 | `plex` | Plex | 8092 | plex.tv / Plex server | stateless, read-only |
 | `firefly` | Firefly | 8097 | self-hosted Firefly III | stateless, read-only |
-| `amex` | Amex Credits | 8100 | its own catalogue, user input | Postgres |
 
 Notes on the port map:
 
@@ -98,8 +97,6 @@ Notes on the port map:
 - **`firefly` is on 8097, not 8094**, because the Firefly III *data importer*
   already occupies 8094 on this box. The hub reaches the service internally, so
   the host port only matters for direct debugging.
-- **`amex` is on 8100**, the first port above the 8081-8099 block, which is
-  full. Nothing about the service needs a low number; it only needs a free one.
 - 8093/8094 (Firefly III core + importer), 8096 (Jellyfin), 8282 (Wallos),
   3001 (Uptime Kuma), 8222 (Vaultwarden), 80/443/81 (nginx-proxy-manager) are
   **other containers on the same box**, not part of this compose project.
