@@ -2078,3 +2078,71 @@ def test_an_amex_payload_with_no_state_field_is_still_read_as_ok():
     deploy, and a card that blanks because a key is absent is its own outage."""
     b = dash.amex_brief(_amex([_row("a", "Dunkin'", 7, 2)], at_risk=7))
     assert b["state"] == "ok" and b["at_risk"] == 7
+
+
+# ── the calendar mirrors Google, and shows nothing else ─────────────────────
+# Anthony, 2026-09-16: "i want REPEATS OFF my calendar. it should look exactly
+# like my google calendar." The repeats were holds this app invented — one per
+# proposed interview time — so the rule is about provenance, not de-duplication.
+
+def _event(**kw):
+    base = {"title": "Interview — Acme", "starts_at": "2026-09-20T14:00",
+            "status": "confirmed", "source": "gmail",
+            "external_id": "thread:abc:confirmed", "gcal_event_id": "fc123abc"}
+    return {**base, **kw}
+
+
+def test_an_event_imported_from_google_is_on_the_calendar():
+    assert dash.on_google_calendar(
+        _event(source="google_calendar", external_id="gcal:xyz",
+               gcal_event_id=None)) is True
+
+
+def test_an_event_this_app_pushed_successfully_is_on_the_calendar():
+    """The gcal id is a RECEIPT — it is only written after the API returns one.
+    A confirmed interview Bones booked is source='gmail' and genuinely on the
+    calendar; filtering on source alone would erase real appointments."""
+    assert dash.on_google_calendar(_event()) is True
+
+
+def test_a_proposed_hold_that_never_reached_google_is_not_on_the_calendar():
+    assert dash.on_google_calendar(
+        _event(status="pending", external_id="thread:abc:slot:2026-09-20T14:00",
+               gcal_event_id=None)) is False
+
+
+def test_three_holds_for_one_interview_all_drop_out():
+    """The reported symptom, as data."""
+    holds = [_event(status="pending", gcal_event_id=None,
+                    external_id=f"thread:abc:slot:2026-09-2{i}T14:00")
+             for i in range(3)]
+    assert [dash.on_google_calendar(h) for h in holds] == [False, False, False]
+
+
+def test_a_local_event_created_while_calendar_was_unreachable_is_not_shown():
+    """No receipt means the push failed, which means Google does not have it —
+    and the dashboard claiming otherwise is the disagreement being fixed."""
+    assert dash.on_google_calendar(
+        _event(source="manual", external_id="manual:uuid", gcal_event_id=None)) is False
+
+
+def test_an_empty_gcal_id_is_not_a_receipt():
+    """`''` is what a failed push leaves behind in some paths. It is falsy for
+    a reason and must not read as "pushed"."""
+    assert dash.on_google_calendar(_event(gcal_event_id="")) is False
+
+
+@pytest.mark.parametrize("bad", [None, {}, "not an event", 42, []])
+def test_a_malformed_row_is_not_put_on_the_calendar(bad):
+    assert dash.on_google_calendar(bad) is False
+
+
+def test_nothing_from_google_renders_an_empty_calendar_rather_than_local_rows():
+    """The degenerate case, stated on purpose: with Calendar disconnected, no
+    row qualifies and the week is empty. That is the honest answer to "show me
+    what Google has" when Google cannot be seen — `schedule_state` reports the
+    connection separately so the card says which, rather than quietly showing
+    locally-invented events as though they were real."""
+    local_only = [_event(source="manual", gcal_event_id=None),
+                  _event(source="gmail", status="pending", gcal_event_id=None)]
+    assert [e for e in local_only if dash.on_google_calendar(e)] == []

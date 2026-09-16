@@ -35,32 +35,38 @@ test("the card has somewhere to render and a consumer that calls it", () => {
   assert.match(HOME, /renderWeather\(d\.weather\)/);
 });
 
-test("weather and amex are on the main grid, above the two-column region", () => {
-  /* Anthony, 2026-09-16: "i want the weather and amex on THE MAIN dashboard."
-   * Both already WERE — weather under the calendar, amex as the fourth card in
-   * the money row, where it wrapped to a second line and read as part of the
-   * money block. Being present and being found are different things.
-   *
-   * So this pins placement, not existence: both sit in the top grid, ahead of
-   * `.cc-cols`, which is where a card goes to be scrolled past. */
-  const wx = HTML.indexOf('id="cc-weather"');
+test("weather sits beside the calendar and amex under it", () => {
+  /* Anthony, 2026-09-16: "i want the weather to be a smallish box next to the
+   * calendar, and the amex to be under the calendar." Third arrangement and
+   * the one he asked for by hand, so it is pinned rather than left to drift. */
+  const row = HTML.indexOf('class="cc-cal-row"');
   const cal = HTML.indexOf('id="cc-calendar"');
+  const wx = HTML.indexOf('id="cc-weather"');
   const ax = HTML.indexOf('id="cc-amex"');
   const cols = HTML.indexOf('class="cc-cols"');
-  const money = HTML.indexOf('class="cc-money-row"');
-  for (const [name, i] of [["weather", wx], ["calendar", cal], ["amex", ax],
-                           ["cols", cols], ["money row", money]]) {
+  for (const [name, i] of [["cal row", row], ["calendar", cal], ["weather", wx],
+                           ["amex", ax], ["cols", cols]]) {
     assert.ok(i > -1, `${name} is missing from the page`);
   }
-  assert.ok(wx < cal, "weather is a one-line strip and leads");
-  assert.ok(cal < ax, "the calendar still comes before the credits");
-  assert.ok(ax < cols && wx < cols, "neither may sink into the two-column region");
-  assert.ok(ax < money || ax > money, "amex has its own row");
+  assert.ok(row < cal && row < wx, "calendar and weather share the top row");
+  assert.ok(cal < wx, "the calendar leads its row; weather is the box beside it");
+  assert.ok(wx < ax, "amex sits under the calendar row, not in it");
+  assert.ok(ax < cols, "amex must not sink into the two-column region");
+});
+
+test("the weather column is a fixed width, not a fraction of the row", () => {
+  /* A forecast does not get more useful with more pixels and a calendar does.
+   * A fractional split hands the week grid's space to a temperature. */
+  const rule = CSS.match(/\.cc-cal-row\s*\{[^}]*\}/);
+  assert.ok(rule, ".cc-cal-row has no rule");
+  assert.match(rule[0], /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+\d+px/);
+});
+
+test("the two stack on a phone, with the calendar first", () => {
+  assert.match(CSS, /@media \(max-width: 900px\) \{ \.cc-cal-row \{ grid-template-columns: 1fr; \} \}/);
 });
 
 test("amex is not a fourth card competing inside the money row", () => {
-  /* The money row is `auto-fit minmax(270px, 1fr)`, so a fourth card wraps
-   * onto a line of its own and looks like an afterthought of the money block. */
   const row = HTML.slice(HTML.indexOf('class="cc-money-row"'),
                          HTML.indexOf("</div>", HTML.indexOf('class="cc-money-row"')));
   assert.ok(!row.includes('id="cc-amex"'),

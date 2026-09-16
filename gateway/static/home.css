@@ -1075,6 +1075,17 @@ body.cc[data-mode="evening"] {
 }
 
 
+/* The calendar and the weather, side by side. The weather column is a fixed
+   width because a forecast does not get better with more pixels and a calendar
+   does — a fractional split would hand the week grid's space to a temperature.
+   Below 900px they stack, weather last: on a phone the calendar is the reason
+   the page is open. */
+.cc-cal-row {
+  display: grid; gap: 16px; align-items: start;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+@media (max-width: 900px) { .cc-cal-row { grid-template-columns: 1fr; } }
+
 /* ---- weather (home card) ------------------------------------------------
    A slim strip sitting under the calendar: today's plan and today's
    conditions are one thought. Everything that can be absent is styled to look
@@ -1088,10 +1099,10 @@ body.cc[data-mode="evening"] {
   color: var(--down); border: 1px solid var(--down); border-radius: 999px;
   padding: 1px 7px; font-weight: 600;
 }
-.wx-top { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+.wx-top { display: flex; align-items: center; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
 .wx-glyph { font-size: 34px; line-height: 1; }
 .wx-temp {
-  font-size: 40px; font-weight: 650; letter-spacing: -1.5px; line-height: 1;
+  font-size: 34px; font-weight: 650; letter-spacing: -1.2px; line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 .wx-meta { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
@@ -1104,7 +1115,7 @@ body.cc[data-mode="evening"] {
 }
 .wx-h {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  min-width: 46px; padding: 7px 4px; border-radius: 10px;
+  min-width: 40px; flex: 0 0 auto; padding: 6px 3px; border-radius: 10px;
   background: rgba(255,255,255,0.03); border: 1px solid var(--line);
 }
 .wx-h-t { font-size: 10.5px; color: var(--muted); letter-spacing: .2px; }

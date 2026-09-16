@@ -12,6 +12,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
 from .dashboard import (amex_brief, data_safety, deadline_rows, deploy_state,
+                        on_google_calendar,
                         disk_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
@@ -987,8 +988,14 @@ async def build_home(fresh: bool = False) -> dict:
     # and countered holds Bones writes from your sent mail — an interview slot
     # awaiting a reply is exactly the thing you need to see. Rules that act on
     # a real commitment still take confirmed events only.
+    # The calendar mirrors Google and shows nothing else. It used to include
+    # the pending holds Bones wrote from sent mail — "an interview slot
+    # awaiting a reply is exactly the thing you need to see" — and that is how
+    # one interview became three entries: a hold per proposed time. Those are
+    # reported in the briefing line instead, where a maybe belongs.
     all_events = [e for e in (schedule.get("events", []) if schedule else [])
-                  if e.get("status", "confirmed") != "declined"]
+                  if e.get("status", "confirmed") != "declined"
+                  and on_google_calendar(e)]
     now_local = datetime.now(LOCAL_TZ)
     calendar = _upcoming_events(all_events, now_local, limit=6)
     events = _upcoming_events(all_events, now_local, limit=None,

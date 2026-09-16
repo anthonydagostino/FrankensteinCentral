@@ -236,6 +236,45 @@ def amex_brief(amex):
     }
 
 
+def on_google_calendar(event):
+    """Is this event actually ON the Google Calendar?
+
+    Anthony, 2026-09-16: "i want REPEATS OFF my calendar. it should look
+    exactly like my google calendar." So the dashboard calendar mirrors Google
+    and shows nothing else. Two ways an event qualifies, and they are different
+    facts:
+
+      source == 'google_calendar'   `sync_from_calendar` imported it FROM
+                                    Google. It is on the calendar because that
+                                    is where it came from.
+      gcal_event_id is set          this app created it and the push to Google
+                                    SUCCEEDED, so Google has it too. The id is
+                                    the receipt — it is only written after the
+                                    API call returns one.
+
+    Anything else is a row that exists here and nowhere else: a hold from a
+    proposed interview time, a manual event added while Calendar was
+    unreachable, a leftover from a sync that half-finished. Those are the
+    repeats.
+
+    WHY THE RECEIPT AND NOT THE SOURCE. A confirmed interview this app booked
+    is `source='gmail'`, and it IS on the calendar — `gcal.list_upcoming` skips
+    re-importing it precisely because it carries our own marker. Filtering on
+    source alone would delete real appointments off the dashboard while leaving
+    the duplicates it was written to remove.
+
+    WHEN CALENDAR IS NOT CONNECTED this returns False for everything, and the
+    calendar renders empty. That is the honest reading of "show me what Google
+    has" when the answer is "we cannot see Google" — and `schedule_state`
+    already reports the connection separately, so the card says which.
+    """
+    if not isinstance(event, dict):
+        return False
+    if event.get("source") == "google_calendar":
+        return True
+    return bool(event.get("gcal_event_id"))
+
+
 def weather_brief(weather):
     """Current conditions for the home screen, and nothing invented.
 
