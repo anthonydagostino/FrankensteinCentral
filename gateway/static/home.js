@@ -178,6 +178,29 @@
   }
 
   // ---- render ---------------------------------------------------------------
+  // Paint one card without letting it take the others down.
+  //
+  // A dashboard is a list of independent facts. One of them failing to render
+  // is a small problem; all the ones after it vanishing without a word is the
+  // bug that hid the weather and amex cards through two deploys. The failure
+  // is written INTO the card, not just the console, because the console is not
+  // somewhere anyone looks at a dashboard from a phone.
+  function paint(label, cardId, fn) {
+    try {
+      fn();
+    } catch (err) {
+      console.error("card failed to render:", label, err);
+      const el = cardId && q(cardId);
+      if (!el) return;
+      // `hidden` is how several cards stay out of the way when empty. A card
+      // that just failed has something to say, so the attribute comes off.
+      el.removeAttribute("hidden");
+      el.innerHTML = `<h3>${esch(label)}</h3>
+        <p class="att-empty">This card failed to render — ${esch(String((err && err.message) || err))}.
+        Everything else on the page is unaffected. Details are in the browser console.</p>`;
+    }
+  }
+
   function render(d) {
     paintClock();
     // `|| 0` printed a confident 0 for BOTH a genuinely bad day and a day
@@ -195,25 +218,36 @@
     }
     q("#cc-briefing").innerHTML = (d.briefing || [])
       .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
-    renderSince(d);
-    renderWeeklyReview(d.weekly_review);
-    renderWeek(d);
-    renderDoNext(d.do_next, d);
-    renderAttention(d.nudges);
-    renderDeadlines(d.deadlines);
-    renderInbox(d.inbox);
-    renderMoney(d.money, d.budget);
-    renderPortfolio(d.portfolio);
-    renderToday(d);
-    renderHealth(d);
-    renderResale(d.resale);
-    renderSafety(d);
-    renderAmex(d.amex);
-    renderWeather(d.weather);
-    renderCapture(d.captures);
-    q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    renderSystems();
-    renderDeploy(d);
+    // Each card painted in isolation. Until 2026-09-16 this was a bare
+    // sequence of calls, which means the FIRST one to throw silently erased
+    // every card below it — the page rendered down to that point and simply
+    // stopped, with no error anywhere a person would look. Anthony reported
+    // the weather and amex cards missing twice; they are 14th and 15th in this
+    // list, so anything at all going wrong above them takes both out, along
+    // with the capture box, the "Updated" stamp and the deploy card.
+    //
+    // One bad card is now one bad card, and it SAYS so where it sits.
+    paint("Recent changes", "#cc-since", () => renderSince(d));
+    paint("Weekly review", "#cc-weekly", () => renderWeeklyReview(d.weekly_review));
+    paint("Calendar", "#cc-calendar", () => renderWeek(d));
+    paint("Do next", "#cc-donext", () => renderDoNext(d.do_next, d));
+    paint("Attention", "#cc-attention", () => renderAttention(d.nudges));
+    paint("Deadlines", "#cc-deadlines", () => renderDeadlines(d.deadlines));
+    paint("Inbox", "#cc-inbox", () => renderInbox(d.inbox));
+    paint("Money", "#cc-money", () => renderMoney(d.money, d.budget));
+    paint("Portfolio", "#cc-portfolio", () => renderPortfolio(d.portfolio));
+    paint("Today", "#cc-today", () => renderToday(d));
+    paint("Health", "#cc-health", () => renderHealth(d));
+    paint("Resale", "#cc-resale", () => renderResale(d.resale));
+    paint("Data safety", "#cc-safety", () => renderSafety(d));
+    paint("Amex credits", "#cc-amex", () => renderAmex(d.amex));
+    paint("Weather", "#cc-weather", () => renderWeather(d.weather));
+    paint("Capture", "#cc-capture", () => renderCapture(d.captures));
+    paint("Updated stamp", null, () => {
+      q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    });
+    paint("Systems", "#cc-systems", () => renderSystems());
+    paint("Deploy", "#cc-deploy", () => renderDeploy(d));
   }
 
   // ---- since last check (shared across devices, computed in the assistant) --

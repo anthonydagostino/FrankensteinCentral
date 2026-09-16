@@ -1,0 +1,114 @@
+/* One bad card is one bad card.
+ *
+ * WHY THIS FILE EXISTS. `render(d)` was a bare sequence of eighteen calls, so
+ * the FIRST renderer to throw silently erased every card below it. The page
+ * painted down to that point and stopped — no error banner, nothing missing
+ * that looked missing, just a shorter dashboard.
+ *
+ * Anthony reported the weather and amex cards absent twice. They are 14th and
+ * 15th in that sequence. Both were present in the HTML and both had working
+ * renderers; anything at all going wrong above them took them out, together
+ * with the capture box, the "Updated" stamp and the deploy card. Two rounds
+ * were spent moving cards that were never the problem.
+ *
+ * The console is not somewhere anyone looks at a dashboard from a phone, so
+ * the failure is written into the card that failed. */
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const SRC = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+
+/* Lift `paint` out of the IIFE and run it for real, rather than asserting on
+ * its source text. This is the one behaviour in home.js worth executing: it is
+ * a try/catch, and a try/catch is exactly the kind of thing that reads
+ * correctly and is wired up wrong. */
+function loadPaint(cards) {
+  const start = SRC.indexOf("function paint(label, cardId, fn) {");
+  assert.ok(start > -1, "paint() is gone — the render chain is unguarded again");
+  const end = SRC.indexOf("\n  }", start) + 4;
+  const errors = [];
+  const sandbox = {
+    q: (sel) => cards[sel] || null,
+    esch: (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"),
+    console: { error: (...a) => errors.push(a) },
+  };
+  vm.createContext(sandbox);
+  const paint = vm.runInContext(
+    `(function () { ${SRC.slice(start, end)} return paint; })()`, sandbox);
+  return { paint, errors };
+}
+
+const makeCard = () => ({ innerHTML: "", removeAttribute() { this.hidden = false; }, hidden: true });
+
+test("a card that renders fine is left alone", () => {
+  const card = makeCard();
+  const { paint, errors } = loadPaint({ "#cc-weather": card });
+  paint("Weather", "#cc-weather", () => { card.innerHTML = "<h3>81°</h3>"; });
+  assert.strictEqual(card.innerHTML, "<h3>81°</h3>");
+  assert.strictEqual(errors.length, 0);
+});
+
+test("a throwing card does not stop the ones after it", () => {
+  /* The whole point. Before this, `after` never ran. */
+  const bad = makeCard();
+  const { paint } = loadPaint({ "#cc-money": bad });
+  let after = false;
+  paint("Money", "#cc-money", () => { throw new TypeError("x is undefined"); });
+  paint("Weather", "#cc-weather", () => { after = true; });
+  assert.ok(after, "a failure in one card still blocks the rest");
+});
+
+test("the failure is written into the card, not only the console", () => {
+  const card = makeCard();
+  const { paint, errors } = loadPaint({ "#cc-amex": card });
+  paint("Amex credits", "#cc-amex", () => { throw new TypeError("boom"); });
+  assert.match(card.innerHTML, /failed to render/);
+  assert.match(card.innerHTML, /boom/);
+  assert.match(card.innerHTML, /Amex credits/);
+  assert.strictEqual(errors.length, 1, "and it still reaches the console");
+});
+
+test("a card hidden when empty is un-hidden to show its failure", () => {
+  /* Several cards carry `hidden` until they have something to say. A card that
+   * just failed has something to say. */
+  const card = makeCard();
+  const { paint } = loadPaint({ "#cc-attention": card });
+  paint("Attention", "#cc-attention", () => { throw new Error("nope"); });
+  assert.strictEqual(card.hidden, false);
+});
+
+test("a failure with no card of its own is swallowed, not rethrown", () => {
+  const { paint } = loadPaint({});
+  assert.doesNotThrow(() => paint("Updated stamp", null, () => { throw new Error("x"); }));
+  assert.doesNotThrow(() => paint("Missing", "#cc-nope", () => { throw new Error("x"); }));
+});
+
+test("the error message is escaped on its way into the card", () => {
+  /* It comes from a thrown exception, which can carry anything. */
+  const card = makeCard();
+  const { paint } = loadPaint({ "#cc-today": card });
+  paint("Today", "#cc-today", () => { throw new Error("<img src=x onerror=alert(1)>"); });
+  assert.ok(!card.innerHTML.includes("<img"), "the message went in unescaped");
+});
+
+/* --- and nothing in the chain may go back to being unguarded ------------- */
+
+test("every renderer in the chain is painted, never called bare", () => {
+  const start = SRC.indexOf("function render(d) {");
+  const end = SRC.indexOf("\n  function ", start + 1);
+  const chain = SRC.slice(start, end > -1 ? end : SRC.length);
+  const bare = [];
+  for (const line of chain.split("\n")) {
+    const m = line.match(/^\s{4}(render[A-Za-z]+)\(/);
+    if (m) bare.push(m[1]);
+  }
+  assert.deepStrictEqual(bare, [],
+    `called outside paint(): ${bare}. One of these throwing erases every card ` +
+    "below it, which is the defect this file exists for.");
+  assert.ok(chain.split("paint(").length - 1 >= 15,
+    "the chain lost its paint() wrappers");
+});
