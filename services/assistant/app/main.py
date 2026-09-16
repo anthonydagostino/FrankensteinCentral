@@ -11,8 +11,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
-from .dashboard import (amex_brief, data_safety, deadline_rows, deploy_state,
-                        on_google_calendar,
+from .dashboard import (amex_brief, card_debt, data_safety, deadline_rows,
+                        deploy_state, on_google_calendar,
                         disk_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
@@ -765,6 +765,12 @@ def _money(firefly, spending, finance, budget, networth, settings) -> dict:
         "net_worth": (_m("net_worth").get("display")) or (
             f"${networth['total']:,.0f}" if networth.get("total") is not None else None),
         "left_to_spend": _m("left_to_spend").get("display"),
+        # What is owed across Firefly's liability accounts, read live. Firefly
+        # derives left_to_spend from budgets and spending, so card balances are
+        # not in it — this sits BESIDE that figure rather than altering it,
+        # because silently changing someone else's number is how a dashboard
+        # stops agreeing with the ledger it claims to mirror.
+        "owed": card_debt(firefly),
         "income_month": _m("earned").get("value"),
         "state": state,
         # Everything the Firefly sub-app puts on screen except its recent

@@ -236,6 +236,78 @@ def amex_brief(amex):
     }
 
 
+def _to_float(value):
+    """A number, or None. Firefly sends balances as STRINGS ("-71.17"), and a
+    string that will not parse is unknown — never zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def card_debt(firefly):
+    """What is owed across Firefly's liability accounts.
+
+    Anthony, 2026-09-16, listing balances by hand so the dashboard would be
+    accurate: $71.17 on Discover, $56.58 on the Amex Gold. Those are live
+    figures, so they are read from the ledger rather than written down here —
+    a number typed into this file is right for a day and wrong afterwards,
+    which is the failure docs/BUDGETS.md is about.
+
+    FOUR STATES, because three of them are not "you owe nothing":
+
+      unreachable      Firefly did not answer, or answered without a
+                       liabilities list. Total is null.
+      no_liabilities   Firefly answered and has NO liability accounts. This is
+                       NOT $0 owed. It is the state you are in when cards are
+                       entered as asset accounts — which runway.py records as
+                       the known-bad setup — and reporting it as zero debt is
+                       the most reassuring possible reading of a ledger that
+                       has not been told about the cards.
+      ok               Real liability accounts, with balances.
+      ok + partial     Some balance would not parse. The total is the sum of
+                       the ones that did, and `partial` says so, because a
+                       total that quietly drops a card UNDERSTATES debt.
+
+    A liability you have overpaid has a positive balance and owes nothing; it
+    contributes 0 rather than a negative, so a credit on one card cannot mask
+    what is owed on another.
+    """
+    if not firefly or not firefly.get("connected"):
+        return {"state": "unreachable", "total": None, "cards": [], "partial": False}
+
+    liabilities = firefly.get("liabilities")
+    if liabilities is None or not isinstance(liabilities, list):
+        return {"state": "unreachable", "total": None, "cards": [], "partial": False}
+    if not liabilities:
+        return {"state": "no_liabilities", "total": None, "cards": [], "partial": False}
+
+    cards, total, partial = [], 0.0, False
+    for a in liabilities:
+        if not isinstance(a, dict):
+            partial = True
+            continue
+        name = a.get("name") or "(unnamed)"
+        balance = _to_float(a.get("balance"))
+        if balance is None:
+            partial = True
+            cards.append({"name": name, "owed": None, "balance": None})
+            continue
+        # Firefly carries a debt as a NEGATIVE balance. Overpaid is positive
+        # and owes nothing.
+        owed = round(-balance, 2) if balance < 0 else 0.0
+        total += owed
+        cards.append({"name": name, "owed": owed, "balance": round(balance, 2)})
+
+    # Biggest debt first; the ones we could not read last, where they are
+    # visible rather than buried among the zeroes.
+    cards.sort(key=lambda c: (c["owed"] is None, -(c["owed"] or 0)))
+    return {"state": "ok", "total": round(total, 2), "cards": cards,
+            "partial": partial}
+
+
 def on_google_calendar(event):
     """Is this event actually ON the Google Calendar?
 

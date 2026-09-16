@@ -1335,6 +1335,34 @@
       ? spendingDonut(m.categories, "Spending by category · last 30 days")
       : "";
 
+    // What is owed across Firefly's liability accounts, beside "left to spend"
+    // rather than folded into it: Firefly derives that figure from budgets and
+    // spending, and quietly changing someone else's number is how a dashboard
+    // stops agreeing with the ledger it claims to mirror.
+    //
+    // "No liability accounts" is NOT "$0 owed", and it says so. That is the
+    // state you are in when cards are entered as Firefly ASSETS, which is the
+    // setup runway.py records as the known-bad one — reporting it as no debt
+    // is the most flattering possible reading of a ledger that has never been
+    // told about the cards.
+    const owed = m.owed || { state: "unreachable" };
+    const owedLine = owed.state === "ok"
+      ? `<div class="mny-owed">
+          <span class="mo-lead">${owed.partial ? "at least " : ""}${esch(money(owed.total, 2))}</span>
+          <span class="mo-unit">owed on cards</span>
+          <span class="mo-cards">${(owed.cards || []).map((c) =>
+            `<span class="mo-card"><b>${esch(c.name)}</b> ${
+              c.owed == null ? "—" : esch(money(c.owed, 2))}</span>`).join("")}</span>
+          ${owed.partial ? `<span class="mo-note">One balance could not be read, so this is a
+            floor rather than the total.</span>` : ""}
+        </div>`
+      : owed.state === "no_liabilities"
+        ? `<div class="mny-owed"><span class="mo-note">No liability accounts in Firefly, so
+            card balances are not being counted anywhere. Cards entered as
+            <b>asset</b> accounts do not show here — re-enter them as liabilities, or
+            tick them under Settings so the runway stops treating them as cash.</span></div>`
+        : "";
+
     const accts = (m.accounts || []).map((a) =>
       `<div class="pos"><span>${esch(a.name)}</span><span class="mono">${a.balance != null ? money(a.balance, 2) : "—"}</span></div>`).join("");
     q("#cc-money").innerHTML = `
@@ -1345,6 +1373,7 @@
         <div class="mny-stat"><div class="v mono ${stateCls}">${leftVal}</div><div class="l">Left to spend<br><span style="font-size:10px">${leftSub}</span></div></div>
         <div class="mny-stat"><div class="v mono">${m.today != null ? money(m.today) : "—"}</div><div class="l">Today</div></div>
       </div>
+      ${owedLine}
       ${payLine}${runLine}${budLine}${recLine}${subLine}
       <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
       ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}

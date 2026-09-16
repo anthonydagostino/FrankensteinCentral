@@ -2146,3 +2146,90 @@ def test_nothing_from_google_renders_an_empty_calendar_rather_than_local_rows():
     local_only = [_event(source="manual", gcal_event_id=None),
                   _event(source="gmail", status="pending", gcal_event_id=None)]
     assert [e for e in local_only if dash.on_google_calendar(e)] == []
+
+
+# ── what is owed on cards ───────────────────────────────────────────────────
+# Anthony, 2026-09-16, reading balances off his statements so the dashboard
+# would be accurate: $71.17 on Discover, $56.58 on the Amex Gold. Those live in
+# the ledger, not in this repo — a figure typed into a source file is right for
+# a day. What is tested here is the arithmetic and, mostly, the four states.
+
+def _ff(liabilities, connected=True):
+    return {"connected": connected, "liabilities": liabilities}
+
+
+def test_the_two_cards_add_up():
+    out = dash.card_debt(_ff([{"name": "Discover", "balance": "-71.17"},
+                              {"name": "Amex Gold", "balance": "-56.58"}]))
+    assert out["state"] == "ok"
+    assert out["total"] == 127.75
+    assert [c["name"] for c in out["cards"]] == ["Discover", "Amex Gold"]
+    assert out["partial"] is False
+
+
+def test_firefly_carries_a_debt_as_a_negative_balance():
+    """The sign convention the whole function turns on. Reading it the other
+    way would report money owed as money available."""
+    out = dash.card_debt(_ff([{"name": "Discover", "balance": "-71.17"}]))
+    assert out["cards"][0]["owed"] == 71.17
+    assert out["cards"][0]["balance"] == -71.17
+
+
+def test_an_overpaid_card_owes_nothing_and_cannot_offset_another():
+    """A credit on one card must not cancel out debt on another — that would
+    understate what is actually due."""
+    out = dash.card_debt(_ff([{"name": "Discover", "balance": "25.00"},
+                              {"name": "Amex Gold", "balance": "-56.58"}]))
+    assert out["total"] == 56.58
+    assert dict((c["name"], c["owed"]) for c in out["cards"])["Discover"] == 0.0
+
+
+def test_no_liability_accounts_is_not_zero_owed():
+    """The state Anthony is actually in if his cards are Firefly ASSETS, which
+    runway.py records as the known-bad setup. "$0 owed" is the most flattering
+    possible reading of a ledger that has never been told about the cards."""
+    out = dash.card_debt(_ff([]))
+    assert out["state"] == "no_liabilities"
+    assert out["total"] is None, "an untold ledger must not report zero debt"
+
+
+def test_a_disconnected_firefly_reports_nothing_rather_than_nothing_owed():
+    for ff in ({}, None, {"connected": False, "liabilities": []},
+               {"connected": True}):
+        out = dash.card_debt(ff)
+        assert out["state"] == "unreachable"
+        assert out["total"] is None
+
+
+def test_a_card_with_an_unreadable_balance_makes_the_total_a_floor():
+    """Dropping it silently would UNDERSTATE the debt, which is the direction
+    that matters. docs/BUDGETS.md: never present a partial window as complete."""
+    out = dash.card_debt(_ff([{"name": "Discover", "balance": "-71.17"},
+                              {"name": "Amex Gold", "balance": "n/a"}]))
+    assert out["partial"] is True
+    assert out["total"] == 71.17
+    assert out["cards"][-1]["owed"] is None, "the unreadable card is still listed"
+
+
+def test_a_zero_balance_card_is_reported_as_zero_and_not_dropped():
+    """Paid off is a real and good state, and seeing it confirms the card is
+    being watched at all."""
+    out = dash.card_debt(_ff([{"name": "Discover", "balance": "0"}]))
+    assert out["state"] == "ok" and out["total"] == 0.0
+    assert out["cards"][0]["owed"] == 0.0
+
+
+def test_the_biggest_debt_leads_and_unreadable_cards_sort_last():
+    out = dash.card_debt(_ff([{"name": "Small", "balance": "-10"},
+                              {"name": "Broken", "balance": None},
+                              {"name": "Big", "balance": "-900"}]))
+    assert [c["name"] for c in out["cards"]] == ["Big", "Small", "Broken"]
+
+
+def test_junk_rows_do_not_take_the_total_down_with_them():
+    out = dash.card_debt(_ff(["not a dict", {"name": "Amex Gold", "balance": "-56.58"}]))
+    assert out["total"] == 56.58 and out["partial"] is True
+
+
+def test_a_liabilities_field_that_is_not_a_list_is_unreachable():
+    assert dash.card_debt({"connected": True, "liabilities": "oops"})["state"] == "unreachable"
