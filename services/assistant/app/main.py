@@ -1225,16 +1225,18 @@ async def _sync_availability_threads(conn, client: httpx.AsyncClient) -> tuple[i
         # up below instead of lingering as a stale "pending" hold forever.
         keep_ids: list[str] = []
         if status in ("pending", "countered"):
+            # NO calendar event per proposed slot. This used to mint one and
+            # push each to Google, so offering an interviewer three times put
+            # three tentative entries on the real calendar and three rows on
+            # the dashboard for one interview. A time you OFFERED is not a
+            # commitment; the line below already reports it, and the thread is
+            # what you act on. When the slot is agreed, the `confirmed` branch
+            # creates the single event that belongs there.
+            #
+            # `keep_ids` stays empty on purpose: resolve-thread then declines
+            # and deletes any holds a previous version of this code left
+            # behind, including from Google Calendar.
             slots = countered if status == "countered" else proposed
-            for slot in slots:
-                ext = f"{base_ext}:slot:{slot}"
-                keep_ids.append(ext)
-                await client.post(
-                    f"{SCHEDULE_URL}/events",
-                    json={"title": f"{label} — {who}", "starts_at": slot, "source": "gmail",
-                          "external_id": ext, "status": status, "thread_id": tid},
-                    timeout=8,
-                )
             if status == "pending":
                 lines.append(f"⏳ Sent availability: {_short(subject)} — {len(slots)} time(s) "
                               f"proposed, awaiting {who}'s reply")
@@ -1302,6 +1304,23 @@ async def sync():
             for e in mails:
                 if e.get("category") == "deadline":
                     await _add_deadline(conn, e["subject"], None, "gmail", f"mail:{e['id']}")
+
+            # Retire the speculative interview holds a previous version of
+            # this file pushed to Google Calendar. Idempotent and cheap: once
+            # they are gone it deletes nothing. It runs here rather than as a
+            # migration because the threads that created them may never be
+            # re-processed, so `resolve-thread` would never reach them.
+            # Guarded: cleaning up old holds is housekeeping, and housekeeping
+            # that can abort the whole sync is worse than the mess.
+            try:
+                r = await client.post(f"{SCHEDULE_URL}/events/purge-holds", timeout=15)
+                purged = r.json() if r.status_code == 200 else {}
+            except Exception:                           # noqa: BLE001
+                purged = {}
+            if purged.get("purged"):
+                notable.append(
+                    f"Removed {purged['purged']} proposed-time hold(s) from the calendar "
+                    "— a time you offered is not a commitment.")
 
             # Cal -> Schedule (book interviews Posty surfaced)
             cal_agent = _BY_STATION["schedule"]

@@ -9,6 +9,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from . import gcal
+from .holds import is_speculative_hold
 
 app = FastAPI(title="Schedule Service")
 
@@ -273,6 +274,60 @@ async def resolve_thread(body: ResolveThread):
             if s["external_id"]:
                 await gcal.delete(s["external_id"], known_gcal_id=s.get("gcal_event_id"))
     return {"declined": len(siblings)}
+
+
+@app.post("/events/purge-holds")
+async def purge_holds():
+    """Delete the speculative interview holds this app pushed to Google.
+
+    Anthony, 2026-09-16: "my calendar has 3 entries for the same interview,
+    just remove anything not on my calendar." It did. When a thread was
+    `pending`, the assistant created ONE EVENT PER PROPOSED SLOT and pushed
+    every one of them to Google Calendar, so offering three times put three
+    tentative entries on his phone. A time you offered is not a commitment,
+    and the dashboard says so in the briefing line either way.
+
+    The assistant no longer creates them. This removes the ones already out
+    there, for threads that will never be re-processed and so would never hit
+    `resolve-thread`.
+
+    THE FILTER IS THREE CONDITIONS AND EVERY ONE OF THEM MATTERS:
+
+      source = 'gmail'         Google's own imports are source
+                               'google_calendar'. This is the condition that
+                               keeps a purge from deleting the user's actual
+                               calendar.
+      status IN (pending, countered)
+                               Confirmed interviews are real and stay.
+      external_id LIKE %:slot:%
+                               The exact shape the assistant minted for a
+                               proposed slot (`<thread>:slot:<time>`); a
+                               confirmed one is `<thread>:confirmed`.
+
+    A TENTATIVE GOOGLE EVENT IS THE TRAP. `sync_from_calendar` stores anything
+    Google does not call "confirmed" as status 'pending' — so a tentative
+    invite you accepted on your phone is a pending row that must survive this.
+    Only `source` tells it apart from a hold, which is why the source check is
+    not redundant with the other two.
+
+    Idempotent: once the holds are gone it deletes nothing and returns 0.
+    """
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        # Selected broadly and filtered in Python by `is_speculative_hold`, so
+        # the rule that decides what gets DELETED is one pure function with
+        # tests rather than a WHERE clause nothing can exercise. This is a
+        # personal calendar; the row count makes the choice free.
+        cur = await conn.execute(
+            "SELECT * FROM events WHERE status IN ('pending', 'countered')")
+        holds = [r for r in await cur.fetchall() if is_speculative_hold(r)]
+        removed = []
+        for h in holds:
+            await conn.execute("UPDATE events SET status = 'declined' WHERE id = %s", (h["id"],))
+            if h["external_id"]:
+                await gcal.delete(h["external_id"], known_gcal_id=h.get("gcal_event_id"))
+            removed.append(h["title"])
+    return {"purged": len(removed), "titles": removed[:10]}
 
 
 @app.post("/sync-from-calendar")

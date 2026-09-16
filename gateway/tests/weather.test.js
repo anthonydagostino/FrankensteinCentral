@@ -35,11 +35,36 @@ test("the card has somewhere to render and a consumer that calls it", () => {
   assert.match(HOME, /renderWeather\(d\.weather\)/);
 });
 
-test("the calendar still leads the page", () => {
-  /* Weather sits WITH the calendar, not above it. Anthony named the calendar,
-   * the money and the stocks as the things this dashboard is for. */
-  assert.ok(HTML.indexOf('id="cc-calendar"') < HTML.indexOf('id="cc-weather"'));
-  assert.ok(HTML.indexOf('id="cc-weather"') < HTML.indexOf('id="cc-money"'));
+test("weather and amex are on the main grid, above the two-column region", () => {
+  /* Anthony, 2026-09-16: "i want the weather and amex on THE MAIN dashboard."
+   * Both already WERE — weather under the calendar, amex as the fourth card in
+   * the money row, where it wrapped to a second line and read as part of the
+   * money block. Being present and being found are different things.
+   *
+   * So this pins placement, not existence: both sit in the top grid, ahead of
+   * `.cc-cols`, which is where a card goes to be scrolled past. */
+  const wx = HTML.indexOf('id="cc-weather"');
+  const cal = HTML.indexOf('id="cc-calendar"');
+  const ax = HTML.indexOf('id="cc-amex"');
+  const cols = HTML.indexOf('class="cc-cols"');
+  const money = HTML.indexOf('class="cc-money-row"');
+  for (const [name, i] of [["weather", wx], ["calendar", cal], ["amex", ax],
+                           ["cols", cols], ["money row", money]]) {
+    assert.ok(i > -1, `${name} is missing from the page`);
+  }
+  assert.ok(wx < cal, "weather is a one-line strip and leads");
+  assert.ok(cal < ax, "the calendar still comes before the credits");
+  assert.ok(ax < cols && wx < cols, "neither may sink into the two-column region");
+  assert.ok(ax < money || ax > money, "amex has its own row");
+});
+
+test("amex is not a fourth card competing inside the money row", () => {
+  /* The money row is `auto-fit minmax(270px, 1fr)`, so a fourth card wraps
+   * onto a line of its own and looks like an afterthought of the money block. */
+  const row = HTML.slice(HTML.indexOf('class="cc-money-row"'),
+                         HTML.indexOf("</div>", HTML.indexOf('class="cc-money-row"')));
+  assert.ok(!row.includes('id="cc-amex"'),
+    "amex is back inside the money row, where it wraps out of sight");
 });
 
 test("a missing temperature renders as a dash, never as zero", () => {

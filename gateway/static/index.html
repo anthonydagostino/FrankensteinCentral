@@ -48,16 +48,21 @@
          that drops the weekly review below them for six days of the week and
          lifts it to the top on Sunday evening, which is the one time it leads. -->
     <main class="cc-main" id="cc-grid">
-      <section class="cc-card cc-cal" id="cc-calendar"></section>
-      <!-- Weather sits WITH the calendar rather than above it: today's plan and
-           today's conditions are one thought, and the calendar still leads. It
-           renders as a slim strip so it costs the money row almost no height. -->
+      <!-- Weather leads. Anthony, 2026-09-16: "i want the weather and amex on
+           THE MAIN dashboard" — they were both here already, weather under the
+           calendar and amex as the fourth card in the money row, where it
+           wrapped onto a second line and read as part of the money block. Being
+           present and being FOUND are different things. Weather is a one-line
+           strip, so it costs the calendar almost nothing and is the first thing
+           read; amex gets its own row instead of competing with three money
+           cards for a column. -->
       <section class="cc-card cc-wx" id="cc-weather"></section>
+      <section class="cc-card cc-cal" id="cc-calendar"></section>
+      <section class="cc-card cc-ax" id="cc-amex"></section>
       <div class="cc-money-row">
         <section class="cc-card" id="cc-money"></section>
         <section class="cc-card" id="cc-portfolio"></section>
         <section class="cc-card" id="cc-resale"></section>
-        <section class="cc-card" id="cc-amex"></section>
       </div>
       <section class="cc-card" id="cc-attention" hidden></section>
       <div class="cc-cols">
