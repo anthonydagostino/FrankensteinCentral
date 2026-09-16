@@ -1952,3 +1952,129 @@ def test_a_net_of_exactly_zero_survives_as_zero():
     falsy check on the way to the card."""
     b = dash.amex_brief(_amex([], ytd={"captured": 1220.0, "net": 0.0}))
     assert b["ytd_net"] == 0.0
+
+
+# ── weather ─────────────────────────────────────────────────────────────────
+# The weather service parses Open-Meteo and owns the location's clock. What is
+# left here is which of its three states the card shows, and the rule that the
+# big number is either true or absent.
+
+def _wx(**extra):
+    base = {"state": "ok", "place": {"name": "Hoboken, New Jersey"},
+            "degree": "°F", "unit": "fahrenheit",
+            "current": {"temp": 81, "feels_like": 84, "label": "Partly cloudy",
+                        "glyph": "⛅", "severity": 0, "stale": False},
+            "high": 90, "low": 77, "hourly": [], "daily": []}
+    return {**base, **extra}
+
+
+def test_an_unreachable_weather_service_shows_no_temperature():
+    """The one card read without being read. A temperature invented from a
+    timed-out request is believable in February and wrong in September."""
+    for payload in ({}, None):
+        b = dash.weather_brief(payload)
+        assert b["state"] == "unreachable"
+        assert b["temp"] is None and b["high"] is None and b["low"] is None
+
+
+def test_no_location_chosen_is_its_own_state_and_not_a_failure():
+    """"Nobody has picked a place" is fixable in ten seconds and "the forecast
+    is down" is not. Collapsing them hides the button that fixes it."""
+    b = dash.weather_brief({"state": "not_configured", "place": None})
+    assert b["state"] == "not_configured"
+    assert b["temp"] is None
+
+
+def test_an_unrecognised_state_degrades_to_unreachable_rather_than_ok():
+    """A state the card does not know how to render must not fall through to
+    the branch that prints numbers."""
+    b = dash.weather_brief({"state": "something_new", "current": {"temp": 81}})
+    assert b["state"] == "unreachable"
+    assert b["temp"] is None
+
+
+def test_the_current_conditions_travel_to_the_card():
+    b = dash.weather_brief(_wx())
+    assert b["state"] == "ok"
+    assert (b["temp"], b["high"], b["low"]) == (81, 90, 77)
+    assert b["label"] == "Partly cloudy" and b["degree"] == "°F"
+    assert b["place"] == "Hoboken, New Jersey"
+
+
+def test_a_temperature_of_zero_survives_the_brief():
+    """0°F is a real reading and the one you most need to be told about."""
+    b = dash.weather_brief(_wx(current={"temp": 0, "label": "Clear", "stale": False}))
+    assert b["temp"] == 0
+
+
+def test_the_home_card_takes_six_hours_and_leaves_the_rest_to_the_sub_app():
+    hours = [{"hour": h, "temp": 60 + h} for h in range(12)]
+    b = dash.weather_brief(_wx(hourly=hours))
+    assert len(b["hourly"]) == 6
+    assert [h["hour"] for h in b["hourly"]] == [0, 1, 2, 3, 4, 5]
+
+
+def test_staleness_is_carried_rather_than_recomputed():
+    b = dash.weather_brief(_wx(current={"temp": 81, "stale": True, "label": "Rain"}))
+    assert b["stale"] is True
+
+
+def test_nothing_rough_ahead_is_a_real_answer_and_stays_empty():
+    """Most weeks have no weather worth a headline. Manufacturing one teaches
+    people to ignore the line that matters."""
+    calm = [{"date": "2026-09-16", "weekday": "Wed", "severity": 0, "label": "Clear"}]
+    assert dash.weather_brief(_wx(daily=calm))["next_rough"] is None
+
+
+def test_the_soonest_rough_day_is_the_one_reported():
+    days = [
+        {"date": "2026-09-16", "weekday": "Wed", "severity": 0, "label": "Clear",
+         "is_today": True},
+        {"date": "2026-09-17", "weekday": "Thu", "severity": 2, "label": "Rain",
+         "is_today": False},
+        {"date": "2026-09-18", "weekday": "Fri", "severity": 4, "label": "Thunderstorm",
+         "is_today": False},
+    ]
+    rough = dash.weather_brief(_wx(daily=days))["next_rough"]
+    assert rough["date"] == "2026-09-17" and rough["label"] == "Rain"
+
+
+def test_rain_today_is_reported_as_today():
+    """The thing you want before you leave, not after."""
+    days = [{"date": "2026-09-16", "weekday": "Wed", "severity": 3,
+             "label": "Heavy rain", "is_today": True}]
+    rough = dash.weather_brief(_wx(daily=days))["next_rough"]
+    assert rough["is_today"] is True
+
+
+def test_a_mild_day_is_not_promoted_to_a_warning():
+    """Severity 1 is drizzle. A dashboard that warns about drizzle is one you
+    stop reading."""
+    days = [{"date": "2026-09-16", "weekday": "Wed", "severity": 1,
+             "label": "Light drizzle", "is_today": True}]
+    assert dash.weather_brief(_wx(daily=days))["next_rough"] is None
+
+
+def test_nothing_is_invented_when_the_service_omits_a_figure():
+    b = dash.weather_brief({"state": "ok", "current": {}, "place": None})
+    assert b["temp"] is None and b["high"] is None and b["low"] is None
+    assert b["state"] == "ok"
+
+
+def test_an_amex_service_reporting_its_own_store_is_down_is_not_a_quiet_week():
+    """A swallowed timeout and a service telling us its database is gone are
+    the same card. The dangerous reading is the one where a catalogue with
+    nothing marked used renders as "$340 unused" — that sends you out to spend
+    a credit you already spent."""
+    b = dash.amex_brief({"state": "unreachable", "rows": [], "at_risk": None,
+                         "available": None})
+    assert b["state"] == "unreachable"
+    assert b["at_risk"] is None and b["available"] is None
+    assert b["urgent"] == []
+
+
+def test_an_amex_payload_with_no_state_field_is_still_read_as_ok():
+    """Backwards compatible on purpose: the field was added after the first
+    deploy, and a card that blanks because a key is absent is its own outage."""
+    b = dash.amex_brief(_amex([_row("a", "Dunkin'", 7, 2)], at_risk=7))
+    assert b["state"] == "ok" and b["at_risk"] == 7

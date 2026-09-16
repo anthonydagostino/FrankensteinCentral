@@ -200,7 +200,35 @@ Firefly is not connected.
 
 ---
 
-## amex — `:8100` — statement credits
+## weather — conditions for a place you pick
+
+Open-Meteo, which needs no API key — the same reason `stocks` uses Stooq. A
+feature that stops working when a free tier lapses breaks silently six months
+later on a dashboard nobody is auditing.
+
+**Stateless.** No database, no volume. The chosen location lives in `core`
+settings under `weather` (`place`, `lat`, `lon`, `timezone`, `unit`), beside
+`market.holdings`, so it survives a rebuild of this container.
+
+**Three states.** `not_configured` (no location chosen), `unreachable` (we
+asked and got nothing) and `ok` are different answers and `/current` says
+which. A temperature is `null` unless the upstream sent it: this is the one
+card read without being read, and 0° from a timed-out request is believable in
+February.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/current` | Now, the next 12 hours, and the next 10 days, with per-day bar geometry. Carries `unit` and `degree` so no reader assumes a scale. |
+| `GET` | `/search?q=` | Place lookup for the location picker. Returns `[]` for "no such town" and `state: "unreachable"` for a failed search — Open-Meteo omits its `results` key entirely when nothing matches, so those two arrive looking alike. |
+| `GET` | `/health` | Whether a location is configured, and whether anything is cached. |
+
+Times come back from Open-Meteo as naive local wall clock, so the forecast is
+timed in the **location's** timezone, not the box's. Asking "what time is it in
+Denver" from a machine in New York is why `_now()` takes a zone name.
+
+---
+
+## amex — statement credits
 
 Tracks the Amex Platinum and Gold statement credits, which reset on a CALENDAR
 boundary (monthly, quarterly from 1 Jan, semi-annual from 1 Jan/1 Jul, or

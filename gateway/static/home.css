@@ -1073,3 +1073,44 @@ body.cc[data-mode="evening"] {
   .ax-row { grid-template-columns: auto 1fr auto; }
   .ax-days, .ax-done { grid-column: 2 / -1; justify-self: start; }
 }
+
+
+/* ---- weather (home card) ------------------------------------------------
+   A slim strip sitting under the calendar: today's plan and today's
+   conditions are one thought. Everything that can be absent is styled to look
+   deliberate when it is — "—" in place of a temperature must read as "we were
+   not told", not as a broken card. */
+.cc-wx h3 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.wx-place { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+/* "not current" is a WORD, not a colour. The colour only finds it faster. */
+.wx-stale {
+  font-size: 10.5px; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--down); border: 1px solid var(--down); border-radius: 999px;
+  padding: 1px 7px; font-weight: 600;
+}
+.wx-top { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+.wx-glyph { font-size: 34px; line-height: 1; }
+.wx-temp {
+  font-size: 40px; font-weight: 650; letter-spacing: -1.5px; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.wx-meta { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.wx-meta b { font-weight: 600; }
+.wx-meta span { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.wx-hours {
+  display: flex; gap: 4px; margin-top: 12px; overflow-x: auto;
+  padding-bottom: 2px; scrollbar-width: thin;
+}
+.wx-h {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-width: 46px; padding: 7px 4px; border-radius: 10px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
+}
+.wx-h-t { font-size: 10.5px; color: var(--muted); letter-spacing: .2px; }
+.wx-h-g { font-size: 16px; line-height: 1; }
+.wx-h-d { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Always rendered, even when empty, so the chips keep one height and the row
+   does not jump as rain enters and leaves the forecast. */
+.wx-h-p { font-size: 10px; color: var(--fyi); min-height: 12px; }
+.wx-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); }

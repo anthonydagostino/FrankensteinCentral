@@ -123,6 +123,22 @@ services:
     # up on the box and took the whole site down with it; a port it does not
     # ask for cannot be taken.
 
+  # Weather for a place you pick, from Open-Meteo (keyless, like the Stooq
+  # quotes in `stocks`). Stateless: the location lives in core settings, so
+  # this container stores nothing and has no database to fail against. No host
+  # port and nothing depends on it — see tests/test_front_door_dependencies.py.
+  weather:
+    build: ./services/weather
+    restart: unless-stopped
+    environment:
+      CORE_URL: http://core:8000
+      # Only used when a location has no timezone of its own; the forecast is
+      # timed in the LOCATION's zone, not the box's.
+      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
+    depends_on:
+      core:
+        condition: service_started
+
   # Time-aware budgets over Firefly (stateless; budget definitions live in
   # core settings, transactions come from the firefly service).
   budget:
@@ -317,6 +333,7 @@ services:
       CORE_URL: http://core:8000
       STOCKS_URL: http://stocks:8000
       AMEX_URL: http://amex:8000
+      WEATHER_URL: http://weather:8000
       LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
       # Assistant auto-syncs on this interval (seconds); 0 disables.

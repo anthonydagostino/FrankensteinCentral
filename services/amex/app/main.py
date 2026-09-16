@@ -43,12 +43,38 @@ def _today():
     return datetime.now(LOCAL_TZ).date()
 
 
+# Why the startup below cannot raise, when every sibling service's can.
+#
+# On 2026-09-16 this service was deployed and the dashboard went down. The
+# proximate cause was a missing import in the assistant, but the deploy
+# machinery made it worse in a way worth fixing on its own: a container that
+# dies during startup crash-loops, `stack-health.sh` correctly refuses to call
+# that healthy, `deployed.json` keeps the previous commit, and `autopull.sh`
+# then re-runs the entire deploy — four-minute test suite included — on every
+# tick, forever.
+#
+# So a database this service cannot reach becomes a DEGRADED SERVICE rather
+# than a dead one. That is only honest because of what /summary does with it:
+# the catalogue is static and could be served happily, but which credits you
+# already used lives in the table, and a card that cannot read the table but
+# says "you have $340 unused" is telling you to go spend money you already
+# spent. It reports `unreachable` instead, which is the state the dashboard
+# already renders as "we could not look".
+_DB_ERROR = None
+
+
 @app.on_event("startup")
 async def startup():
-    await pool.open(wait=True, timeout=30)
-    async with pool.connection() as conn:
-        conn.row_factory = tuple_row
-        await conn.execute(SCHEMA)
+    global _DB_ERROR
+    try:
+        await pool.open(wait=True, timeout=30)
+        async with pool.connection() as conn:
+            conn.row_factory = tuple_row
+            await conn.execute(SCHEMA)
+        _DB_ERROR = None
+    except Exception as exc:                            # noqa: BLE001
+        # Deliberately broad: the point is that NOTHING here reaches uvicorn.
+        _DB_ERROR = f"{type(exc).__name__}: {exc}"
 
 
 @app.on_event("shutdown")
@@ -58,11 +84,21 @@ async def shutdown():
 
 @app.get("/health")
 async def health():
-    async with pool.connection() as conn:
-        conn.row_factory = tuple_row
-        cur = await conn.execute("SELECT COUNT(*) FROM amex_redemptions")
-        (count,) = await cur.fetchone()
-    return {"service": "amex", "redemptions": count,
+    """Serves even when the database does not, and says which."""
+    if _DB_ERROR:
+        return {"service": "amex", "db": "unreachable", "reason": _DB_ERROR,
+                "redemptions": None,
+                "catalogue_checked": credits.CATALOGUE_CHECKED}
+    try:
+        async with pool.connection() as conn:
+            conn.row_factory = tuple_row
+            cur = await conn.execute("SELECT COUNT(*) FROM amex_redemptions")
+            (count,) = await cur.fetchone()
+    except Exception as exc:                            # noqa: BLE001
+        return {"service": "amex", "db": "unreachable", "reason": f"{type(exc).__name__}",
+                "redemptions": None,
+                "catalogue_checked": credits.CATALOGUE_CHECKED}
+    return {"service": "amex", "db": "ok", "redemptions": count,
             "catalogue_checked": credits.CATALOGUE_CHECKED}
 
 
@@ -89,10 +125,24 @@ async def summary(card: str | None = None):
     second round trip would only buy a second thing to keep consistent.
     """
     cards = (card,) if card in credits.CARDS else ("platinum", "gold")
-    rows = await _redemptions()
+    try:
+        rows = await _redemptions()
+    except Exception:                                   # noqa: BLE001
+        rows = None
+    if rows is None or _DB_ERROR:
+        # NOT a catalogue with everything marked unused. Which credits you have
+        # already drawn lives in that table, and guessing "none of them" is the
+        # one wrong answer that costs money — it sends you out to spend a
+        # credit you spent last week.
+        return {"state": "unreachable", "rows": [], "at_risk": None,
+                "available": None, "captured_this_period": None,
+                "annual_fees": None, "annual_credit_value": None,
+                "ytd": None, "catalogue_checked": credits.CATALOGUE_CHECKED}
+
     used = {f"{r['credit_key']}:{r['period_id']}" for r in rows}
     today = _today()
     out = credits.summarise(today, used, cards)
+    out["state"] = "ok"
     out["ytd"] = credits.captured_ytd(today.year, rows, cards)
     return out
 
@@ -109,6 +159,9 @@ async def mark(body: Redemption):
     if not credit:
         return {"error": f"unknown credit: {body.credit_key}"}
     pid = credits.period_id(credit["cadence"], _today())
+    if _DB_ERROR:
+        return {"error": "the redemptions store is unreachable", "saved": False,
+                "credit_key": body.credit_key, "period_id": pid}
     async with pool.connection() as conn:
         if body.used:
             await conn.execute(

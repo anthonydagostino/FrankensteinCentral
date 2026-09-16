@@ -121,6 +121,13 @@ DEFAULT_SETTINGS = {
     "evening_start_hour": 18,    # local hour at/after which = evening mode
     "important_senders": [],     # emails/domains the attention feed prioritises
     "market": {"holdings": [], "watchlist": [], "move_threshold_pct": 3.0},
+    # The place the weather card reports on. Coordinates rather than a name,
+    # because a name has to be resolved by somebody and doing it once — when
+    # you pick the place — beats doing it on every request forever. `lat`/`lon`
+    # of None means nothing has been chosen, which the card says out loud
+    # instead of quietly defaulting you to a city you have never lived in.
+    "weather": {"place": None, "lat": None, "lon": None,
+                "timezone": None, "unit": "fahrenheit"},
     # `not_spendable` names the accounts that are NOT part of the cash pot,
     # for cash runway. It exists because Firefly cannot express the fact: its
     # whole account_role vocabulary is defaultAsset/sharedAsset/savingAsset/

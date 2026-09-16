@@ -666,6 +666,84 @@ const RENDERERS = {
     }));
   },
 
+  // The full forecast, and the only place the location is changed. Putting the
+  // picker here rather than in Settings means you change the city while you
+  // are looking at its weather, which is when you actually want to.
+  async weather(app, body) {
+    const wx = await api("/weather/current");
+    setMode(wx.state === "ok" ? "" : wx.state === "not_configured" ? "off" : "error");
+    const deg = wx.degree || "°";
+    const t = (v) => (v == null ? "—" : Math.round(v) + deg);
+
+    const picker = `
+      <h4>Location</h4>
+      <div class="inline-form">
+        <input id="wx-q" placeholder="Search a city or town" autocomplete="off" />
+        <button class="btn" id="wx-go">Search</button>
+      </div>
+      <div class="rows" id="wx-results"></div>`;
+
+    if (wx.state !== "ok") {
+      body.innerHTML = `
+        <p class="empty">${wx.state === "not_configured"
+          ? "No location set yet. Search for one below and the forecast starts."
+          : "Couldn't reach the forecast service. Nothing is shown rather than a stale reading."}</p>
+        ${picker}`;
+      wireWeatherPicker(app, body, wx.unit);
+      return;
+    }
+
+    const hours = (wx.hourly || []).map((h) => `
+      <div class="wx-h">
+        <span class="wx-h-t">${esc(h.hour === 0 ? "12a" : h.hour < 12 ? h.hour + "a"
+          : h.hour === 12 ? "12p" : (h.hour - 12) + "p")}</span>
+        <span class="wx-h-g">${esc(h.glyph || "")}</span>
+        <span class="wx-h-d">${esc(t(h.temp))}</span>
+        <span class="wx-h-p">${h.precip_pct != null && h.precip_pct >= 20
+          ? esc(h.precip_pct) + "%" : ""}</span>
+      </div>`).join("");
+
+    // Each day's bar spans its own high and low against the range of the whole
+    // list, so a cold snap reads as a bar sitting low rather than as ten
+    // numbers you have to compare yourself. A day the service could not give a
+    // bar for gets none — never a bar drawn from a filled-in temperature.
+    const days = (wx.daily || []).map((d) => `
+      <div class="row wx-d">
+        <span class="wx-d-day">${esc(d.is_today ? "Today" : d.weekday)}</span>
+        <span class="wx-d-g" title="${esc(d.label || "")}">${esc(d.glyph || "")}</span>
+        <span class="wx-d-p">${d.precip_pct != null && d.precip_pct >= 20
+          ? esc(d.precip_pct) + "%" : ""}</span>
+        <span class="wx-d-lo">${esc(t(d.low))}</span>
+        <span class="wx-d-bar">${d.bar_start == null ? ""
+          : `<i style="left:${esc(d.bar_start)}%;width:${esc(Math.max(d.bar_width, 2))}%"></i>`}</span>
+        <span class="wx-d-hi">${esc(t(d.high))}</span>
+      </div>`).join("");
+
+    const cur = wx.current || {};
+    body.innerHTML = `
+      <div class="wx-hero">
+        <div class="wx-hero-place">${esc((wx.place || {}).name || "")}</div>
+        <div class="wx-hero-temp">${esc(t(cur.temp))}</div>
+        <div class="wx-hero-label">${esc(cur.label || "")}</div>
+        <div class="wx-hero-hl">H ${esc(t(wx.high))} · L ${esc(t(wx.low))}</div>
+        ${cur.stale ? `<div class="wx-hero-stale">Not current — this is the last
+          reading we could get${cur.age_min != null ? `, ${esc(cur.age_min)} min ago` : ""}.</div>` : ""}
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="n">${esc(cur.feels_like == null ? "—" : Math.round(cur.feels_like) + deg)}</div><div class="l">Feels like</div></div>
+        <div class="tile"><div class="n">${esc(cur.humidity_pct == null ? "—" : cur.humidity_pct + "%")}</div><div class="l">Humidity</div></div>
+        <div class="tile"><div class="n">${esc(cur.wind_mph == null ? "—" : Math.round(cur.wind_mph))}</div><div class="l">Wind</div></div>
+      </div>
+      <h4>Next ${esc((wx.hourly || []).length)} hours</h4>
+      <div class="wx-hours wide">${hours || '<p class="empty">No hourly data.</p>'}</div>
+      <h4>Next ${esc((wx.daily || []).length)} days</h4>
+      <div class="rows">${days || '<p class="empty">No daily forecast.</p>'}</div>
+      ${picker}
+      <p class="sub" style="margin-top:12px">Forecast from Open-Meteo. No API key,
+      so nothing here expires or starts billing.</p>`;
+    wireWeatherPicker(app, body, wx.unit);
+  },
+
   async tasks(app, body) {
     const data = await api("/tasks/tasks");
     setMode();
@@ -1037,6 +1115,59 @@ const RENDERERS = {
       <div class="rows">${recent || '<p class="empty">Nothing recent.</p>'}</div>`;
   },
 };
+
+// Search, then save. The chosen place is written to core settings, which is
+// where `market.holdings` lives too — so it survives a rebuild of the weather
+// container, which stores nothing at all.
+async function wireWeatherPicker(app, body, unit) {
+  const input = body.querySelector("#wx-q");
+  const results = body.querySelector("#wx-results");
+  if (!input || !results) return;
+
+  const run = async () => {
+    const q = input.value.trim();
+    if (q.length < 2) {
+      results.innerHTML = `<p class="empty">Type at least two letters.</p>`;
+      return;
+    }
+    results.innerHTML = `<p class="empty">Searching…</p>`;
+    const found = await api("/weather/search?q=" + encodeURIComponent(q));
+    if (found.state !== "ok") {
+      results.innerHTML = `<p class="empty">Couldn't reach the place search.</p>`;
+      return;
+    }
+    if (!found.results.length) {
+      // "No such place" and "the search broke" are different answers and the
+      // picker says which, rather than showing an empty box for both.
+      results.innerHTML = `<p class="empty">Nothing matched “${esc(q)}”.</p>`;
+      return;
+    }
+    results.innerHTML = found.results.map((r, i) => `
+      <div class="row"><div class="grow"><b>${esc(r.label)}</b>
+        <div class="sub">${esc(r.timezone)}</div></div>
+        <button class="btn sm" data-wx="${i}">Use</button></div>`).join("");
+    results.querySelectorAll("[data-wx]").forEach((b) => (b.onclick = async () => {
+      // Kept by index, never round-tripped through an HTML attribute: a place
+      // name is arbitrary text and `esc` does not escape quotes.
+      const r = found.results[Number(b.dataset.wx)];
+      b.disabled = true;
+      await api("/core/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ weather: {
+          place: r.label, lat: r.lat, lon: r.lon, timezone: r.timezone,
+          // Carried, not defaulted: the PUT shallow-merges at the top
+          // level, so this object REPLACES the saved one and a dropped unit
+          // would silently move a °C dashboard back to °F.
+          unit: unit === "celsius" ? "celsius" : "fahrenheit" } }),
+      });
+      openApp(app);
+    }));
+  };
+
+  body.querySelector("#wx-go").onclick = run;
+  input.onkeydown = (e) => { if (e.key === "Enter") run(); };
+}
 
 async function renderGeneric(app, body) {
   setMode();

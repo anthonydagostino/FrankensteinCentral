@@ -11,13 +11,13 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from . import answers, notify, runway
-from .dashboard import (data_safety, deadline_rows, deploy_state, disk_state,
-                        firefly_state,
+from .dashboard import (amex_brief, data_safety, deadline_rows, deploy_state,
+                        disk_state, firefly_state,
                         first_undismissed, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
                         resale_brief, schedule_state, since_changes,
-                        since_snapshot, upcoming_events, week_window,
-                        weekly_review)
+                        since_snapshot, upcoming_events, weather_brief,
+                        week_window, weekly_review)
 from .orchestrator import extract_datetime
 
 app = FastAPI(title="Assistant Service")
@@ -29,6 +29,7 @@ SCHEDULE_URL = os.environ.get("SCHEDULE_URL", "http://schedule:8000")
 FINANCE_URL = os.environ.get("FINANCE_URL", "http://finance:8000")
 TASKS_URL = os.environ.get("TASKS_URL", "http://tasks:8000")
 AMEX_URL = os.environ.get("AMEX_URL", "http://amex:8000")
+WEATHER_URL = os.environ.get("WEATHER_URL", "http://weather:8000")
 BUDGET_URL = os.environ.get("BUDGET_URL", "http://budget:8000")
 DEALS_URL = os.environ.get("DEALS_URL", "http://deals:8000")
 NETWORTH_URL = os.environ.get("NETWORTH_URL", "http://networth:8000")
@@ -935,7 +936,7 @@ async def build_home(fresh: bool = False) -> dict:
         (settings, core, seen, emails_r, avail, finance, budget, firefly,
          spending, networth, schedule, cal_health, deals, stocks, vault,
          captures, review, dismissals, powerbuy_home,
-         amex_home) = await asyncio.gather(
+         amex_home, weather_home) = await asyncio.gather(
             _get(client, f"{CORE_URL}/settings"),
             _get(client, f"{CORE_URL}/today"),
             # The shared "already shown" baseline. Fetched here so the diff is
@@ -974,6 +975,9 @@ async def build_home(fresh: bool = False) -> dict:
             # roll over. The service does the period arithmetic; this only
             # carries the answer.
             _get(client, f"{AMEX_URL}/summary"),
+            # Actual conditions for the place chosen in settings. The service
+            # owns the parsing and the location's clock; this only carries it.
+            _get(client, f"{WEATHER_URL}/current"),
         )
 
     down = [name for name, payload in (("core", core), ("email", emails_r)) if not payload]
@@ -1074,6 +1078,8 @@ async def build_home(fresh: bool = False) -> dict:
         "resale": resale_brief(powerbuy_home),
         # What is unused and nearly gone on the Platinum and the Gold.
         "amex": amex_brief(amex_home),
+        # Now, and the next few hours, for the place you picked.
+        "weather": weather_brief(weather_home),
         "captures": (captures.get("items", []) if captures else [])[:8],
         # What is hidden right now, so the UI can offer to bring it back
         # rather than leaving you wondering where something went.

@@ -199,7 +199,10 @@ def amex_brief(amex):
     is indistinguishable from a card that has given up, and one of those costs
     real money at midnight.
     """
-    if not amex:
+    # `{}` is a swallowed timeout; `state: "unreachable"` is the service
+    # reaching us to say its own store is down. Same card either way, and both
+    # must beat the branch below that prints totals.
+    if not amex or amex.get("state") not in (None, "ok"):
         return {"state": "unreachable", "at_risk": None, "available": None,
                 "urgent": [], "soonest_days": None, "ytd_net": None,
                 "ytd_captured": None, "annual_fees": None}
@@ -231,6 +234,71 @@ def amex_brief(amex):
         "soonest_name": min(unused, key=lambda r: r["days_left"])["name"] if unused else None,
         "catalogue_checked": amex.get("catalogue_checked"),
     }
+
+
+def weather_brief(weather):
+    """Current conditions for the home screen, and nothing invented.
+
+    The service already parsed Open-Meteo and did the hour arithmetic; this
+    only decides what the card carries and passes its three states through
+    unchanged. `not_configured` (nobody has picked a place) and `unreachable`
+    (we asked and got nothing) are different sentences and the card says which
+    — the first is a thing you can fix in ten seconds and the second is not.
+
+    The one number a person takes from a weather card without reading it is the
+    big one, so a temperature is `null` unless the service sent it. A card
+    showing 0° because a request timed out is believable in February.
+    """
+    if not weather:
+        return {"state": "unreachable", "place": None, "temp": None,
+                "high": None, "low": None, "hourly": [], "degree": None}
+
+    state = weather.get("state")
+    if state != "ok":
+        return {"state": state if state in ("not_configured", "unreachable")
+                else "unreachable",
+                "place": (weather.get("place") or {}).get("name"),
+                "temp": None, "high": None, "low": None, "hourly": [],
+                "degree": weather.get("degree")}
+
+    cur = weather.get("current") or {}
+    return {
+        "state": "ok",
+        "place": (weather.get("place") or {}).get("name"),
+        "temp": cur.get("temp"),
+        "feels_like": cur.get("feels_like"),
+        "label": cur.get("label"),
+        "glyph": cur.get("glyph"),
+        "severity": cur.get("severity"),
+        # Whether the reading is old enough that calling it "now" would be a
+        # stretch. The service decides; this only carries the verdict.
+        "stale": cur.get("stale"),
+        "high": weather.get("high"),
+        "low": weather.get("low"),
+        # Six is what fits the home card. The full twelve, and the ten days,
+        # are one tap away in the sub-app rather than crammed in here.
+        "hourly": (weather.get("hourly") or [])[:6],
+        "degree": weather.get("degree"),
+        # The next day worth warning about: rain, snow, a storm. Nothing to
+        # say is a real and common answer, and the card says nothing then
+        # rather than manufacturing a headline.
+        "next_rough": _next_rough_day(weather.get("daily") or []),
+    }
+
+
+def _next_rough_day(daily):
+    """The soonest upcoming day whose weather should change a plan.
+
+    Severity comes from the WMO table in the weather service, where 0 is
+    benign. Today is included — rain this afternoon is exactly the thing you
+    want to be told before you leave.
+    """
+    rough = [d for d in daily if (d.get("severity") or 0) >= 2]
+    if not rough:
+        return None
+    first = rough[0]
+    return {"date": first.get("date"), "weekday": first.get("weekday"),
+            "label": first.get("label"), "is_today": first.get("is_today")}
 
 
 def resale_state(resale):
