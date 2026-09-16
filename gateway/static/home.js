@@ -208,6 +208,7 @@
     renderHealth(d);
     renderResale(d.resale);
     renderSafety(d);
+    renderAmex(d.amex);
     renderCapture(d.captures);
     q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     renderSystems();
@@ -1401,6 +1402,85 @@
       ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
         Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
         the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
+  }
+
+  // ---- Amex credits --------------------------------------------------------
+  // Statement credits that reset on a calendar boundary and do NOT roll over.
+  // Same shape of fact as the resale card: money with a deadline, which is the
+  // only kind of number that earns a place on a screen you glance at.
+  function renderAmex(a) {
+    const el = q("#cc-amex");
+    if (!el) return;
+    a = a || { state: "unreachable" };
+    // Cents only where there are cents. Walmart+ is $12.95 and rounding it to
+    // $13 on a card about exact amounts is a small lie for no gain; $200 does
+    // not need ".00" to be read.
+    const money = (v) => {
+      const n = Number(v || 0);
+      const dp = Number.isInteger(n) ? 0 : 2;
+      return "$" + n.toLocaleString(undefined,
+        { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    };
+    const days = (n) => (n === 1 ? "1 day left" : n + " days left");
+
+    // An unreachable service is not a week with nothing expiring. These credits
+    // die at midnight, so a quiet card has to mean "nothing due", never "we did
+    // not look".
+    if (a.state !== "ok") {
+      el.innerHTML = `<h3>Amex credits</h3>
+        <p class="att-empty">Couldn't reach the Amex tracker just now — that is
+        not the same as nothing expiring. Figures are hidden rather than
+        guessed at.</p>`;
+      return;
+    }
+
+    const urgent = a.urgent || [];
+    const lead = urgent.length
+      ? `<span class="ax-lead urgent">${esch(money(a.at_risk))}</span>
+         <span class="ax-unit">expiring within 7 days</span>`
+      : `<span class="ax-lead">${esch(money(a.available))}</span>
+         <span class="ax-unit">unused this period</span>`;
+
+    const rows = urgent.slice(0, 5).map((c) => `
+      <li class="ax-row">
+        <span class="ax-card ${esch(c.card)}">${c.card === "platinum" ? "PLAT" : "GOLD"}</span>
+        <span class="ax-name">${esch(c.name)}${c.enroll
+          ? `<em class="ax-enroll" title="Enrollment required — an unenrolled credit pays nothing">enroll</em>` : ""}</span>
+        <span class="ax-amt">${esch(money(c.amount))}</span>
+        <span class="ax-days${c.days_left <= 2 ? " hot" : ""}">${esch(days(c.days_left))}</span>
+        <button class="ax-done" data-amex="${esch(c.key)}" title="Mark used for this period">used</button>
+      </li>`).join("");
+
+    const quiet = !urgent.length && a.soonest_days != null
+      ? `<p class="ax-note">Nothing expiring this week. Next up:
+         <b>${esch(a.soonest_name || "")}</b>, ${esch(days(a.soonest_days))}.</p>` : "";
+
+    // Year to date against the two annual fees — the only figure that answers
+    // "should I keep these cards". Rendered only when the service sent it: a
+    // missing net is not a net of zero, and $0 vs "unknown" is the difference
+    // between breaking even and not having looked.
+    const ytd = a.ytd_net == null ? "" : `
+      <p class="ax-note">Used <b>${esch(money(a.ytd_captured))}</b> of credits
+      this year against ${esch(money(a.annual_fees))} in fees —
+      <b class="${a.ytd_net >= 0 ? "ax-ahead" : "ax-behind"}">${
+        a.ytd_net >= 0 ? "ahead by " : "behind by "}${esch(money(Math.abs(a.ytd_net)))}</b>.</p>`;
+
+    el.innerHTML = `<h3>Amex credits</h3>
+      <div class="ax-top">${lead}</div>
+      ${rows ? `<ul class="ax-list">${rows}</ul>` : quiet}
+      ${ytd}
+      <div class="hx-btns" style="margin-top:12px">
+        <button class="hx-btn" id="ax-open">All credits →</button>
+      </div>`;
+
+    el.querySelectorAll("[data-amex]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      await post("/amex/used", { credit_key: b.dataset.amex, used: true });
+      toast("Marked used");
+      refresh(true);
+    }));
+    const open = q("#ax-open");
+    if (open) open.onclick = () => openAppKey("amex");
   }
 
   function renderResale(r) {

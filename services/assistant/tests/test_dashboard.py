@@ -1835,3 +1835,120 @@ def test_anything_short_of_two_sane_numbers_is_unknown_never_ok(bad):
     d = dash.disk_state(bad)
     assert d["state"] == "unknown", bad
     assert d["free_pct"] is None
+
+
+# --- Amex credits on the home screen -----------------------------------------
+#
+# Statement credits that reset on a calendar boundary and do NOT roll over.
+# The amex service does the period arithmetic; amex_brief only decides what the
+# card leads with, and must refuse to fill in blanks it was not given.
+
+def _amex(rows, **extra):
+    base = {"rows": rows, "at_risk": 0, "available": 0,
+            "captured_this_period": 0, "catalogue_checked": "2026-09-16"}
+    return {**base, **extra}
+
+
+def _row(key, name, amount, days_left, used=False, urgent=None, card="gold"):
+    return {"key": key, "card": card, "name": name, "amount": amount,
+            "days_left": days_left, "used": used, "where": "somewhere",
+            "enroll": False,
+            "urgent": (not used and days_left <= 7) if urgent is None else urgent}
+
+
+def test_an_unreachable_amex_service_is_not_a_quiet_week():
+    """These credits die at midnight and do not roll over, so a card showing
+    nothing has to mean "nothing due" and never "we did not look"."""
+    for payload in ({}, None):
+        b = dash.amex_brief(payload)
+        assert b["state"] == "unreachable"
+        assert b["at_risk"] is None and b["available"] is None
+        assert b["urgent"] == []
+        assert b["soonest_days"] is None
+
+
+def test_the_urgent_credits_are_the_ones_carried_to_the_card():
+    rows = [_row("a", "Dunkin'", 7, 2), _row("b", "Resy", 50, 60),
+            _row("c", "Uber Cash", 10, 2)]
+    b = dash.amex_brief(_amex(rows, at_risk=17, available=67))
+    assert b["state"] == "ok"
+    assert {c["key"] for c in b["urgent"]} == {"a", "c"}
+    assert b["at_risk"] == 17
+
+
+def test_a_used_credit_is_never_urgent_and_never_listed():
+    rows = [_row("a", "Dunkin'", 7, 1, used=True), _row("b", "Uber", 10, 1)]
+    b = dash.amex_brief(_amex(rows, at_risk=10))
+    assert [c["key"] for c in b["urgent"]] == ["b"]
+
+
+def test_a_quiet_week_still_names_the_next_deadline():
+    """So the card says something true on a calm day instead of nothing. A card
+    that goes blank is one you stop checking."""
+    rows = [_row("a", "Resy", 50, 45), _row("b", "Hotel", 300, 12)]
+    b = dash.amex_brief(_amex(rows, available=350))
+    assert b["urgent"] == []
+    assert b["soonest_days"] == 12
+    assert b["soonest_name"] == "Hotel"
+
+
+def test_everything_used_leaves_no_next_deadline_rather_than_a_zero():
+    """All used is a real, good state. `soonest_days` of 0 would render as
+    "expires today", which is the opposite of the truth."""
+    rows = [_row("a", "Dunkin'", 7, 3, used=True)]
+    b = dash.amex_brief(_amex(rows, available=0))
+    assert b["soonest_days"] is None
+    assert b["soonest_name"] is None
+    assert b["urgent"] == []
+
+
+def test_enrolment_travels_to_the_card():
+    """An unenrolled credit pays nothing and looks identical to one you chose
+    not to use — the card has to be able to say so."""
+    row = _row("a", "lululemon", 75, 4, card="platinum")
+    row["enroll"] = True
+    b = dash.amex_brief(_amex([row], at_risk=75))
+    assert b["urgent"][0]["enroll"] is True
+    assert b["urgent"][0]["card"] == "platinum"
+
+
+def test_nothing_is_invented_when_the_service_omits_a_figure():
+    """The service owns the arithmetic. If it did not send a total, the card
+    does not compute one from the rows it happens to have."""
+    b = dash.amex_brief({"rows": [_row("a", "X", 5, 1)]})
+    assert b["at_risk"] is None
+    assert b["available"] is None
+    assert b["state"] == "ok"
+
+
+def test_a_payload_with_no_rows_at_all_does_not_crash():
+    b = dash.amex_brief({"rows": [], "at_risk": 0, "available": 0})
+    assert b["state"] == "ok" and b["urgent"] == [] and b["soonest_days"] is None
+
+
+def test_the_year_to_date_figures_travel_to_the_card():
+    b = dash.amex_brief(_amex([], annual_fees=1220.0,
+                              ytd={"captured": 430.0, "net": -790.0}))
+    assert b["ytd_captured"] == 430.0
+    assert b["ytd_net"] == -790.0
+    assert b["annual_fees"] == 1220.0
+
+
+def test_a_missing_ytd_block_is_null_and_not_break_even():
+    """"Ahead by $0" and "we have no idea" are different sentences. The card
+    renders the line only when there is a figure, so this has to stay None."""
+    b = dash.amex_brief(_amex([]))
+    assert b["ytd_net"] is None
+    assert b["ytd_captured"] is None
+
+
+def test_an_unreachable_service_reports_no_year_to_date_either():
+    b = dash.amex_brief({})
+    assert b["ytd_net"] is None and b["annual_fees"] is None
+
+
+def test_a_net_of_exactly_zero_survives_as_zero():
+    """Break-even is a real answer and the one most likely to be dropped by a
+    falsy check on the way to the card."""
+    b = dash.amex_brief(_amex([], ytd={"captured": 1220.0, "net": 0.0}))
+    assert b["ytd_net"] == 0.0

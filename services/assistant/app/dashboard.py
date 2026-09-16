@@ -186,6 +186,53 @@ def data_safety(record, now):
     }
 
 
+def amex_brief(amex):
+    """The Amex credits worth acting on, for the home screen.
+
+    The amex service already did the period arithmetic — this only decides what
+    the card leads with, and refuses to fill in blanks it was not given.
+
+    Three states, the same rule as firefly_state and the rest: `{}` means `_get`
+    swallowed a timeout, and an unreachable service is NOT a week with nothing
+    expiring. That distinction matters more here than almost anywhere else on
+    the page, because these credits do not roll over — a quiet card on the 31st
+    is indistinguishable from a card that has given up, and one of those costs
+    real money at midnight.
+    """
+    if not amex:
+        return {"state": "unreachable", "at_risk": None, "available": None,
+                "urgent": [], "soonest_days": None, "ytd_net": None,
+                "ytd_captured": None, "annual_fees": None}
+
+    rows = amex.get("rows") or []
+    urgent = [r for r in rows if r.get("urgent")]
+    unused = [r for r in rows if not r.get("used")]
+    return {
+        "state": "ok",
+        # What you lose by doing nothing this week. The headline.
+        "at_risk": amex.get("at_risk"),
+        "available": amex.get("available"),
+        "captured_this_period": amex.get("captured_this_period"),
+        # Year to date, against the two annual fees. `null` rather than 0 when
+        # the service did not send it: an unreported figure is not break-even,
+        # and this is the number that decides whether a card gets renewed.
+        "ytd_captured": (amex.get("ytd") or {}).get("captured"),
+        "ytd_net": (amex.get("ytd") or {}).get("net"),
+        "annual_fees": amex.get("annual_fees"),
+        "urgent": [
+            {"key": r["key"], "card": r["card"], "name": r["name"],
+             "amount": r["amount"], "days_left": r["days_left"],
+             "where": r.get("where", ""), "enroll": r.get("enroll", False)}
+            for r in urgent
+        ],
+        # The next deadline even when nothing is urgent yet, so the card can
+        # say something true on a quiet day instead of nothing at all.
+        "soonest_days": min((r["days_left"] for r in unused), default=None),
+        "soonest_name": min(unused, key=lambda r: r["days_left"])["name"] if unused else None,
+        "catalogue_checked": amex.get("catalogue_checked"),
+    }
+
+
 def resale_state(resale):
     """`ok`, `unreachable` or `not_configured` — the same three states, for the
     same reason, as firefly_state and portfolio_state.

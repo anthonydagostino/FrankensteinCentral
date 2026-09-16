@@ -200,6 +200,32 @@ Firefly is not connected.
 
 ---
 
+## amex — `:8100` — statement credits
+
+Tracks the Amex Platinum and Gold statement credits, which reset on a CALENDAR
+boundary (monthly, quarterly from 1 Jan, semi-annual from 1 Jan/1 Jul, or
+annual) and do NOT roll over. The catalogue lives in
+`services/amex/app/credits.py` as editable data, because these are terms Amex
+changes rather than facts about the world — every response carries
+`catalogue_checked`, the date a human last reconciled it, so a stale list
+announces itself instead of being quietly believed.
+
+Several credits require **enrollment**; an unenrolled credit pays nothing and
+looks identical to one you simply did not use, so rows carry `enroll`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/summary?card=` | Every credit's state today, soonest expiry first, plus `at_risk` (unused and dying within 7 days), `available`, and a year-to-date block against the annual fees. |
+| `POST` | `/used` | Mark a credit used — or not — for the period it is in *right now*. Idempotent on `(credit, period)`. |
+| `GET` | `/health` | Row count and `catalogue_checked`. |
+
+`amount` on `POST /used` is optional and means what you actually drew: a $25
+credit you only spent $9 of returned $9, and `0` means used-but-nothing, which
+is not the same as omitting it. Marking a credit used says something about that
+period alone — September's Dunkin' credit says nothing about October's.
+
+---
+
 ## stocks — `:8099` — portfolio & watchlist
 
 Keyless quotes via Stooq. Holdings and watchlist are configured in `core`

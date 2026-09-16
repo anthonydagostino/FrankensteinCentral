@@ -600,6 +600,72 @@ const RENDERERS = {
     }));
   },
 
+  // The full credit list. The home card shows only what is dying this week;
+  // this is where you plan the month, so it shows everything, grouped by how
+  // often it resets and marked with what still needs enrolling.
+  async amex(app, body) {
+    const sum = await api("/amex/summary");
+    setMode();
+    const rows = sum.rows || [];
+    const ytd = sum.ytd || {};
+    const money = (v) => "$" + Number(v || 0).toFixed(2).replace(/\.00$/, "");
+    const CADENCES = [
+      ["monthly", "Every month"], ["quarterly", "Every quarter"],
+      ["semiannual", "Twice a year"], ["annual", "Once a year"],
+    ];
+
+    const group = (cadence) => {
+      const mine = rows.filter((r) => r.cadence === cadence);
+      if (!mine.length) return "";
+      const items = mine.map((r) => `
+        <div class="row${r.used ? " done" : ""}">
+          <div class="grow">
+            <b>${esc(r.name)}</b>
+            <span class="ax-tag">${r.card === "platinum" ? "PLAT" : "GOLD"}</span>
+            ${r.enroll ? '<span class="ax-tag warn" title="Enrollment required — an unenrolled credit pays nothing">enroll</span>' : ""}
+            <div class="sub">${esc(r.where || "")}${r.note ? " · " + esc(r.note) : ""}</div>
+          </div>
+          <span class="right">${esc(money(r.amount))}</span>
+          <span class="right sub">${r.used ? "used" : esc(r.days_left) + "d left"}</span>
+          <button class="btn sm" data-ax="${esc(r.key)}" data-used="${r.used ? "0" : "1"}">${r.used ? "undo" : "mark used"}</button>
+        </div>`).join("");
+      // The period is identical for every credit in a group, so it is said
+      // once at the top rather than repeated on every row.
+      const when = mine[0];
+      return `<h4>${esc(CADENCES.find((c) => c[0] === cadence)[1])}
+        <span class="sub">— resets ${esc(when.period_end)}</span></h4>
+        <div class="rows">${items}</div>`;
+    };
+
+    // Net is rendered even when it is negative, which most of the year it is:
+    // the fees are charged up front and the credits arrive monthly. Hiding it
+    // until it turns green would make the tile a decoration.
+    const net = ytd.net;
+    body.innerHTML = `
+      <div class="tiles">
+        <div class="tile warn"><div class="n">${esc(money(sum.at_risk))}</div><div class="l">Expiring in 7 days</div></div>
+        <div class="tile"><div class="n">${esc(money(sum.available))}</div><div class="l">Unused this period</div></div>
+        <div class="tile good"><div class="n">${esc(money(sum.captured_this_period))}</div><div class="l">Used this period</div></div>
+        <div class="tile ${net != null && net >= 0 ? "good" : ""}"><div class="n">${net == null ? "—" : esc(money(net))}</div><div class="l">${
+          net == null ? "Net vs fees unknown" : net >= 0 ? "Ahead of fees" : "Behind fees"} ${esc(ytd.year ?? "")}</div></div>
+      </div>
+      ${CADENCES.map(([c]) => group(c)).join("")}
+      <p class="sub" style="margin-top:14px">Amex changes these terms — this
+      catalogue was last checked against their benefit pages on
+      ${esc(sum.catalogue_checked || "an unknown date")}. Verify against your
+      own card before counting on one.</p>`;
+
+    body.querySelectorAll("[data-ax]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      await api("/amex/used", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credit_key: b.dataset.ax, used: b.dataset.used === "1" }),
+      });
+      openApp(app);
+    }));
+  },
+
   async tasks(app, body) {
     const data = await api("/tasks/tasks");
     setMode();

@@ -1017,3 +1017,59 @@ body.cc[data-mode="evening"] {
   border: 1px solid var(--line); border-radius: 8px;
 }
 .ds-how code { color: var(--text); overflow-wrap: anywhere; }
+
+/* ---- Amex credits -------------------------------------------------------
+   Statement credits that reset on a calendar boundary and do not roll over.
+   Same visual grammar as the resale card, because it is the same kind of
+   fact: money with a deadline. Only the expiring ones are listed — the full
+   catalogue lives in the sub-app, since a list of eleven benefits you are not
+   about to lose is a reference, not a dashboard. */
+.ax-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ax-lead { font-size: 26px; font-weight: 800; letter-spacing: -.6px;
+  font-variant-numeric: tabular-nums; color: var(--text); }
+.ax-lead.urgent { color: var(--imp); }
+.ax-unit { font-size: 13px; color: var(--muted); }
+.ax-list { list-style: none; margin: 12px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px; }
+.ax-row {
+  display: grid; align-items: center; gap: 4px 8px;
+  grid-template-columns: auto 1fr auto auto auto;
+  padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.025);
+}
+.ax-card {
+  font-size: 9px; font-weight: 800; letter-spacing: .06em;
+  border-radius: 4px; padding: 2px 5px; color: var(--bg);
+}
+/* The two cards are told apart by a word, never by colour alone. */
+.ax-card.platinum { background: #c7ccd6; }
+.ax-card.gold { background: #e3c37a; }
+.ax-name { font-size: 12.5px; font-weight: 600; color: var(--text);
+  overflow-wrap: anywhere; }
+.ax-enroll {
+  margin-left: 6px; font-style: normal; font-size: 9px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--imp); border: 1px solid currentColor;
+  border-radius: 6px; padding: 0 4px;
+}
+.ax-amt { font-size: 12.5px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; }
+.ax-days { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.ax-days.hot { color: var(--imp); font-weight: 700; }
+.ax-done {
+  font: inherit; font-size: 10px; cursor: pointer; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px;
+}
+.ax-done:hover { color: var(--text); border-color: var(--accent); }
+.ax-done:disabled { opacity: .4; cursor: default; }
+.ax-note { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.ax-note b { color: var(--text); }
+/* Ahead/behind carries a word too ("ahead by" / "behind by"); the colour
+   is the fast read, never the only one. --up/--down are the page palette,
+   already used by every other money figure on this dashboard. */
+.ax-note b.ax-ahead { color: var(--up); }
+.ax-note b.ax-behind { color: var(--down); }
+
+@media (max-width: 560px) {
+  .ax-row { grid-template-columns: auto 1fr auto; }
+  .ax-days, .ax-done { grid-column: 2 / -1; justify-self: start; }
+}
