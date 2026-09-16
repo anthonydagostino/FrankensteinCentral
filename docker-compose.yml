@@ -114,8 +114,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "127.0.0.1:8100:8000"
+    # NO host port, deliberately, unlike its sixteen siblings. The gateway
+    # reaches it over the docker network and `docker compose logs amex` still
+    # works, so a publish buys only debugging convenience — and it is the one
+    # line in this service that can fail against something OUTSIDE this compose
+    # project. 8100 was picked by reading docker-compose.yml, which cannot see
+    # what else the box is running. On 2026-09-16 this service failed to come
+    # up on the box and took the whole site down with it; a port it does not
+    # ask for cannot be taken.
 
   # Time-aware budgets over Firefly (stateless; budget definitions live in
   # core settings, transactions come from the firefly service).
@@ -351,8 +357,11 @@ services:
         condition: service_started
       tasks:
         condition: service_started
-      amex:
-        condition: service_started
+      # `amex` is deliberately NOT here. gateway -> assistant -> amex meant a
+      # service that had never started on this box before gated the front
+      # door, and on 2026-09-16 it did: the site went down for a statement
+      # credits card. `amex_brief` already renders "unreachable" honestly, so
+      # the dashboard degrades by one card instead of not serving at all.
       budget:
         condition: service_started
       deals:
