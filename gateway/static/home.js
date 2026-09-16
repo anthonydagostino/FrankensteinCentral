@@ -178,6 +178,39 @@
   }
 
   // ---- render ---------------------------------------------------------------
+  // A card that renders NOTHING must not look like a card that is not there.
+  //
+  // This is the failure that cost three rounds. An empty `<section
+  // class="cc-card">` collapses to a sliver of border with no content, which
+  // reads exactly like an absent card — so "the weather card is missing" and
+  // "the weather card rendered nothing" were indistinguishable from a
+  // screenshot, and I spent two deploys moving a card that was already in the
+  // right place.
+  //
+  // `hidden` is left alone: several cards hide themselves when they have
+  // genuinely nothing to say, and that is a decision, not a silence.
+  const CARD_NAMES = {
+    "cc-weather": "Weather", "cc-amex": "Amex credits", "cc-calendar": "Calendar",
+    "cc-money": "Money", "cc-portfolio": "Portfolio", "cc-resale": "Resale",
+    "cc-safety": "Data safety", "cc-today": "Today", "cc-health": "Health",
+    "cc-inbox": "Inbox", "cc-deadlines": "Deadlines", "cc-weekly": "Weekly review",
+    "cc-donext": "Do next", "cc-capture": "Capture", "cc-systems": "Systems",
+    "cc-deploy": "Deploy", "cc-attention": "Attention", "cc-since": "Recent changes",
+  };
+
+  function reportBlankCards() {
+    document.querySelectorAll(".cc-card").forEach((el) => {
+      if (el.hasAttribute("hidden")) return;
+      if (el.innerHTML.trim()) return;
+      const name = CARD_NAMES[el.id] || el.id || "This card";
+      el.innerHTML = `<h3>${esch(name)}</h3>
+        <p class="att-empty">Rendered nothing this cycle — either the dashboard
+        payload had no data under this card's key, or its renderer never ran.
+        That is not the same as having nothing to show, and it is why you are
+        reading this instead of an empty space.</p>`;
+    });
+  }
+
   // Paint one card without letting it take the others down.
   //
   // A dashboard is a list of independent facts. One of them failing to render
@@ -248,6 +281,8 @@
     });
     paint("Systems", "#cc-systems", () => renderSystems());
     paint("Deploy", "#cc-deploy", () => renderDeploy(d));
+    // Last, so it sees the finished page.
+    paint("Blank-card check", null, reportBlankCards);
   }
 
   // ---- since last check (shared across devices, computed in the assistant) --

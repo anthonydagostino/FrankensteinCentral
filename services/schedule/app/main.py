@@ -337,9 +337,22 @@ async def sync_from_calendar():
     itself — the other direction of sync from the gmail-driven push. Safe
     to call repeatedly: keyed on Google's own event id, so re-pulling the
     same event just no-ops or updates in place, never duplicates."""
+    # Retire the speculative holds first, so one pass of the loop that really
+    # runs both cleans up and re-imports.
+    #
+    # This was hung off the assistant's POST /sync, which looked like the
+    # obvious home for it and never executed once: AUTO_SYNC_SECONDS ships as
+    # 0 in docker-compose.yml and .env.example, so `_auto_sync_loop` is never
+    # started. This function's own docstring already records that exact trap
+    # for the Google pull — "no Google Calendar event ever reached the database
+    # no matter how healthy the OAuth credential was" — and the purge walked
+    # straight into it a second time.
+    purged = await purge_holds()
+
     events = await gcal.list_upcoming()
     if events is None:
-        return {"synced": False, "reason": "Calendar not connected/reachable"}
+        return {"synced": False, "reason": "Calendar not connected/reachable",
+                "purged": purged["purged"]}
 
     imported, updated = 0, 0
     async with pool.connection() as conn:
@@ -391,7 +404,8 @@ async def sync_from_calendar():
                  datetime.utcnow().isoformat()),
             )
             imported += 1
-    return {"synced": True, "imported": imported, "updated": updated}
+    return {"synced": True, "imported": imported, "updated": updated,
+            "purged": purged["purged"]}
 
 
 @app.get("/calendar-health")

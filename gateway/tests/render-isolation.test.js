@@ -112,3 +112,70 @@ test("every renderer in the chain is painted, never called bare", () => {
   assert.ok(chain.split("paint(").length - 1 >= 15,
     "the chain lost its paint() wrappers");
 });
+
+/* --- a blank card must announce itself ----------------------------------- */
+
+function loadBlank(cards) {
+  const start = SRC.indexOf("const CARD_NAMES = {");
+  assert.ok(start > -1, "CARD_NAMES is gone");
+  const end = SRC.indexOf("\n  }\n", SRC.indexOf("function reportBlankCards()")) + 4;
+  const sandbox = {
+    esch: (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"),
+    document: { querySelectorAll: () => Object.values(cards) },
+  };
+  vm.createContext(sandbox);
+  return vm.runInContext(
+    `(function () { ${SRC.slice(start, end)} return reportBlankCards; })()`, sandbox);
+}
+
+const blankCard = (id) => ({
+  id, innerHTML: "", _hidden: false,
+  hasAttribute() { return this._hidden; },
+});
+
+test("an empty card says so instead of collapsing to a sliver", () => {
+  /* The failure that cost three rounds: an empty `<section class="cc-card">`
+   * is a line of border with no content, which from a screenshot is
+   * indistinguishable from a card that was never added to the page. */
+  const card = blankCard("cc-weather");
+  loadBlank({ a: card })();
+  assert.match(card.innerHTML, /Weather/);
+  assert.match(card.innerHTML, /Rendered nothing this cycle/);
+});
+
+test("a card with content is left exactly as it was", () => {
+  const card = blankCard("cc-money");
+  card.innerHTML = "<h3>Money</h3><p>$4,210</p>";
+  loadBlank({ a: card })();
+  assert.strictEqual(card.innerHTML, "<h3>Money</h3><p>$4,210</p>");
+});
+
+test("whitespace-only counts as blank", () => {
+  const card = blankCard("cc-amex");
+  card.innerHTML = "\n   \n";
+  loadBlank({ a: card })();
+  assert.match(card.innerHTML, /Amex credits/);
+});
+
+test("a deliberately hidden card is left hidden", () => {
+  /* Several cards hide themselves when they genuinely have nothing to say.
+   * That is a decision, not a silence, and filling them would put noise on the
+   * page every single render. */
+  const card = blankCard("cc-attention");
+  card._hidden = true;
+  loadBlank({ a: card })();
+  assert.strictEqual(card.innerHTML, "");
+});
+
+test("an unnamed card still reports, using its id", () => {
+  const card = blankCard("cc-brand-new");
+  loadBlank({ a: card })();
+  assert.match(card.innerHTML, /cc-brand-new/);
+});
+
+test("the blank check runs last, after every card is painted", () => {
+  const start = SRC.indexOf("function render(d) {");
+  const chain = SRC.slice(start, SRC.indexOf("\n  function ", start + 1));
+  assert.ok(chain.indexOf("reportBlankCards") > chain.lastIndexOf("renderDeploy"),
+    "the blank check must see the finished page, so it goes last");
+});
