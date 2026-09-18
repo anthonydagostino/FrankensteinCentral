@@ -199,10 +199,20 @@
   };
 
   function reportBlankCards() {
-    document.querySelectorAll(".cc-card").forEach((el) => {
+    // The weather pill is in the header rather than the grid, so it is named
+    // explicitly — dropping out of this selector is exactly how it would go
+    // back to failing silently, which is what this function exists to stop.
+    document.querySelectorAll(".cc-card, .cc-wx-pill").forEach((el) => {
       if (el.hasAttribute("hidden")) return;
       if (el.innerHTML.trim()) return;
       const name = CARD_NAMES[el.id] || el.id || "This card";
+      // A paragraph of explanation would wreck the header, so the pill says
+      // the short version and the full one goes to the console.
+      if (!el.classList.contains("cc-card")) {
+        console.error("rendered nothing:", name);
+        el.innerHTML = `<span class="wxp-set">${esch(name)} — no data</span>`;
+        return;
+      }
       el.innerHTML = `<h3>${esch(name)}</h3>
         <p class="att-empty">Rendered nothing this cycle — either the dashboard
         payload had no data under this card's key, or its renderer never ran.
@@ -1503,71 +1513,50 @@
         the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
   }
 
-  // ---- Weather -------------------------------------------------------------
-  // The one card on this page read without being read: people take the big
-  // number and move on. So the big number is either true or absent — there is
-  // no third rendering where it is a plausible guess.
+  // ---- Weather (header pill) -----------------------------------------------
+  // One line beside the greeting: sky, degrees, high and low, place. It was a
+  // full card with an hourly strip; Anthony asked for it small and at the top,
+  // and a glance does not need twelve hours — the sub-app has those and the
+  // ten days.
+  //
+  // The rule the card had still holds in a quarter of the space: the big
+  // number is either true or absent. A temperature is the one thing here read
+  // without being read, and 0° from a timed-out request is believable in
+  // February.
   function renderWeather(w) {
     const el = q("#cc-weather");
     if (!el) return;
     w = w || { state: "unreachable" };
     const deg = w.degree || "°";
     const t = (v) => (v == null ? "—" : Math.round(v) + deg);
+    el.onclick = () => openAppKey("weather");
 
     if (w.state === "not_configured") {
-      // A fixable state, said as a fixable thing. This is not an error.
-      el.innerHTML = `<h3>Weather</h3>
-        <p class="att-empty">No location set yet — pick one and this shows the
-        next twelve hours and ten days.</p>
-        <div class="hx-btns"><button class="hx-btn" id="wx-pick">Pick a location →</button></div>`;
-      const pick = q("#wx-pick");
-      if (pick) pick.onclick = () => openAppKey("weather");
+      // Fixable in ten seconds, so it reads as an invitation rather than a
+      // fault. Clicking it opens the place picker.
+      el.className = "cc-wx-pill empty";
+      el.title = "No location set — click to pick one";
+      el.innerHTML = `<span class="wxp-g">🌤️</span><span class="wxp-set">Set location</span>`;
       return;
     }
     if (w.state !== "ok") {
-      el.innerHTML = `<h3>Weather</h3>
-        <p class="att-empty">Couldn't reach the forecast just now. No
-        temperature is shown rather than a stale one — ${esch(w.place || "the saved location")}
-        is still set.</p>`;
+      el.className = "cc-wx-pill empty";
+      el.title = "Couldn't reach the forecast. No temperature is shown rather "
+        + "than a stale one.";
+      el.innerHTML = `<span class="wxp-g">⛅</span><span class="wxp-set">Weather —</span>`;
       return;
     }
 
-    const hours = (w.hourly || []).map((h) => `
-      <div class="wx-h">
-        <span class="wx-h-t">${esch(h.hour === 0 ? "12a" : h.hour < 12 ? h.hour + "a"
-          : h.hour === 12 ? "12p" : (h.hour - 12) + "p")}</span>
-        <span class="wx-h-g">${esch(h.glyph || "")}</span>
-        <span class="wx-h-d">${esch(t(h.temp))}</span>
-        ${h.precip_pct != null && h.precip_pct >= 20
-          ? `<span class="wx-h-p">${esch(h.precip_pct)}%</span>` : `<span class="wx-h-p"></span>`}
-      </div>`).join("");
-
-    // "As of 40 minutes ago" beats a silent stale number. The service decides
-    // what counts as stale; this only repeats the verdict.
-    const stale = w.stale
-      ? `<span class="wx-stale" title="The forecast service was unreachable, so this is the last reading we got">not current</span>`
-      : "";
-    const rough = w.next_rough
-      ? `<p class="wx-note">${esch(w.next_rough.is_today ? "Today" : w.next_rough.weekday)}:
-         ${esch(w.next_rough.label || "")}.</p>` : "";
-
-    el.innerHTML = `<h3>Weather ${w.place ? `<span class="wx-place">${esch(w.place)}</span>` : ""}${stale}</h3>
-      <div class="wx-top">
-        <span class="wx-glyph">${esch(w.glyph || "")}</span>
-        <span class="wx-temp">${esch(t(w.temp))}</span>
-        <span class="wx-meta">
-          <b>${esch(w.label || "")}</b>
-          <span>H ${esch(t(w.high))} · L ${esch(t(w.low))}${
-            w.feels_like != null ? ` · feels ${esch(t(w.feels_like))}` : ""}</span>
-        </span>
-      </div>
-      ${hours ? `<div class="wx-hours">${hours}</div>` : ""}
-      ${rough}
-      <div class="hx-btns" style="margin-top:10px">
-        <button class="hx-btn" id="wx-open">Ten days →</button>
-      </div>`;
-    const open = q("#wx-open");
-    if (open) open.onclick = () => openAppKey("weather");
+    el.className = "cc-wx-pill";
+    el.title = `${w.label || "Weather"}${w.place ? " · " + w.place : ""}`
+      + (w.feels_like != null ? ` · feels ${Math.round(w.feels_like)}${deg}` : "")
+      + (w.stale ? " · not current" : "");
+    el.innerHTML = `
+      <span class="wxp-g">${esch(w.glyph || "")}</span>
+      <span class="wxp-t">${esch(t(w.temp))}</span>
+      <span class="wxp-x">H ${esch(t(w.high))} · L ${esch(t(w.low))}</span>
+      ${w.place ? `<span class="wxp-p">${esch(w.place)}</span>` : ""}
+      ${w.stale ? `<span class="wxp-stale" title="The forecast service was unreachable, so this is the last reading we got">old</span>` : ""}`;
   }
 
   // ---- Amex credits --------------------------------------------------------

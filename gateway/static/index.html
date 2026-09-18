@@ -20,6 +20,13 @@
         <h1 id="cc-greeting">Good day</h1>
         <p class="cc-date" id="cc-date"></p>
       </div>
+      <!-- Anthony, 2026-09-18: "put the weather right next to the Good evening
+           at the top. I want it to not take up so much space either." So it
+           stops being a card and becomes one line in the header: sky, degrees,
+           high and low, place. The hourly strip and the ten days are a tap
+           away in the sub-app, which is where you go when you actually want a
+           forecast rather than a glance. -->
+      <button class="cc-wx-pill" id="cc-weather" title="Weather"></button>
       <div class="cc-top-actions">
         <button class="cc-k" id="cc-open-palette" title="Command palette (Ctrl/⌘ K)">
           <span>⌘K</span> Quick actions
@@ -48,16 +55,9 @@
          that drops the weekly review below them for six days of the week and
          lifts it to the top on Sunday evening, which is the one time it leads. -->
     <main class="cc-main" id="cc-grid">
-      <!-- Anthony, 2026-09-16: "i want the weather to be a smallish box next to
-           the calendar, and the amex to be under the calendar." So: the
-           calendar and a narrow weather box share the top row, and the credits
-           sit directly beneath them. The weather column is fixed-width rather
-           than a fraction — a forecast does not get more useful with more
-           pixels, and the calendar does. -->
-      <div class="cc-cal-row">
-        <section class="cc-card cc-cal" id="cc-calendar"></section>
-        <section class="cc-card cc-wx" id="cc-weather"></section>
-      </div>
+      <!-- The calendar leads and the credits sit under it. Weather used to
+           share this row; it is in the header now, one line, by request. -->
+      <section class="cc-card cc-cal" id="cc-calendar"></section>
       <section class="cc-card cc-ax" id="cc-amex"></section>
       <div class="cc-money-row">
         <section class="cc-card" id="cc-money"></section>

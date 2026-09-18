@@ -35,42 +35,56 @@ test("the card has somewhere to render and a consumer that calls it", () => {
   assert.match(HOME, /renderWeather\(d\.weather\)/);
 });
 
-test("weather sits beside the calendar and amex under it", () => {
-  /* Anthony, 2026-09-16: "i want the weather to be a smallish box next to the
-   * calendar, and the amex to be under the calendar." Third arrangement and
-   * the one he asked for by hand, so it is pinned rather than left to drift. */
-  const row = HTML.indexOf('class="cc-cal-row"');
+test("the weather pill sits in the header, next to the greeting", () => {
+  /* Anthony, 2026-09-18: "put the weather right next to the Good evening at
+   * the top. I want it to not take up so much space either." */
+  const head = HTML.slice(HTML.indexOf("<header"), HTML.indexOf("</header>"));
+  assert.ok(head.includes('id="cc-weather"'), "weather is not in the header");
+  assert.ok(head.indexOf('id="cc-greeting"') < head.indexOf('id="cc-weather"'),
+    "the greeting comes first, the weather beside it");
+  assert.ok(head.indexOf('id="cc-weather"') < head.indexOf("cc-top-actions"),
+    "weather belongs between the greeting and the action buttons");
+});
+
+test("weather is no longer a card in the grid", () => {
+  /* The whole point of the move: it stopped being a card. */
+  const grid = HTML.slice(HTML.indexOf('id="cc-grid"'));
+  assert.ok(!grid.includes('id="cc-weather"'), "a second weather element in the grid");
+  assert.ok(!HTML.includes('class="cc-card cc-wx"'), "still carrying card styling");
+});
+
+test("the calendar leads the grid and amex sits under it", () => {
   const cal = HTML.indexOf('id="cc-calendar"');
-  const wx = HTML.indexOf('id="cc-weather"');
   const ax = HTML.indexOf('id="cc-amex"');
   const cols = HTML.indexOf('class="cc-cols"');
-  for (const [name, i] of [["cal row", row], ["calendar", cal], ["weather", wx],
-                           ["amex", ax], ["cols", cols]]) {
-    assert.ok(i > -1, `${name} is missing from the page`);
-  }
-  assert.ok(row < cal && row < wx, "calendar and weather share the top row");
-  assert.ok(cal < wx, "the calendar leads its row; weather is the box beside it");
-  assert.ok(wx < ax, "amex sits under the calendar row, not in it");
+  assert.ok(cal > -1 && ax > -1 && cols > -1);
+  assert.ok(cal < ax, "amex under the calendar");
   assert.ok(ax < cols, "amex must not sink into the two-column region");
 });
 
-test("the weather column is a fixed width, not a fraction of the row", () => {
-  /* A forecast does not get more useful with more pixels and a calendar does.
-   * A fractional split hands the week grid's space to a temperature. */
-  const rule = CSS.match(/\.cc-cal-row\s*\{[^}]*\}/);
-  assert.ok(rule, ".cc-cal-row has no rule");
-  assert.match(rule[0], /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+\d+px/);
+test("the pill is one line and carries no hourly strip", () => {
+  /* "not take up so much space" — the twelve hours and the ten days are a tap
+   * away in the sub-app, which is where you go when you want a forecast rather
+   * than a glance. */
+  assert.ok(!/wx-hours/.test(renderWeather), "the hourly strip is back in the header");
+  assert.ok(!/<h3>/.test(renderWeather), "a card heading in a header pill");
+  assert.match(CSS, /\.cc-wx-pill\s*\{[^}]*white-space:\s*nowrap/);
 });
 
-test("the two stack on a phone, with the calendar first", () => {
-  assert.match(CSS, /@media \(max-width: 900px\) \{ \.cc-cal-row \{ grid-template-columns: 1fr; \} \}/);
+test("the header can wrap so the pill never squeezes the greeting", () => {
+  const top = CSS.match(/\.cc-top\s*\{[^}]*\}/);
+  assert.ok(top, ".cc-top has no rule");
+  assert.match(top[0], /flex-wrap:\s*wrap/);
 });
 
-test("amex is not a fourth card competing inside the money row", () => {
-  const row = HTML.slice(HTML.indexOf('class="cc-money-row"'),
-                         HTML.indexOf("</div>", HTML.indexOf('class="cc-money-row"')));
-  assert.ok(!row.includes('id="cc-amex"'),
-    "amex is back inside the money row, where it wraps out of sight");
+test("the place name is what gives way on a phone, never the temperature", () => {
+  const narrow = CSS.slice(CSS.indexOf("@media (max-width: 700px)"));
+  assert.match(narrow, /\.wxp-p \{ display: none; \}/);
+  assert.ok(!/\.wxp-t \{ display: none/.test(narrow), "the temperature is being hidden");
+});
+
+test("clicking the pill opens the forecast", () => {
+  assert.match(renderWeather, /openAppKey\("weather"\)/);
 });
 
 test("a missing temperature renders as a dash, never as zero", () => {
@@ -103,19 +117,26 @@ test("no location set is offered as a fix, not reported as an error", () => {
 });
 
 test("a stale reading is labelled with a word, not only a colour", () => {
-  assert.match(renderWeather, /not current/);
-  assert.match(CSS, /\.wx-stale\b/);
+  assert.match(renderWeather, /wxp-stale/);
+  assert.match(renderWeather, />old</, "the badge must carry a word");
+  assert.match(renderWeather, /not current/, "and the title must say what it means");
+  assert.match(CSS, /\.wxp-stale\b/);
 });
 
-test("every value the card interpolates is escaped", () => {
-  /* The place name comes from a geocoder and is arbitrary text. */
-  const interps = [...renderWeather.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]);
+test("every value the pill puts in HTML is escaped", () => {
+  /* The place name comes from a geocoder and is arbitrary text. `title` is set
+   * as a DOM PROPERTY rather than markup, so it needs no escaping — only the
+   * innerHTML template does, and that is what this reads. */
+  // lastIndexOf, not indexOf: the two early-return branches each assign
+  // innerHTML first, and the `el.title = ...` template sits between them and
+  // the one that matters. Starting at the first match swept the title in and
+  // reported it as unescaped markup, which it is not.
+  const html = renderWeather.slice(renderWeather.lastIndexOf("el.innerHTML = `"));
+  const interps = [...html.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]);
   const risky = interps.filter((x) =>
-    /\b(w\.place|w\.label|h\.glyph|w\.glyph)\b/.test(x) && !x.includes("esch("));
+    /\bw\.(place|label|glyph|temp|high|low)\b/.test(x) && !x.includes("esch("));
   assert.deepStrictEqual(risky, [], `unescaped values: ${risky}`);
 });
-
-/* --- the ten-day view ---------------------------------------------------- */
 
 test("a day with no bar draws no bar rather than one from a filled-in temp", () => {
   assert.match(weatherApp, /d\.bar_start == null \? ""/,

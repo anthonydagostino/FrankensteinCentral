@@ -122,15 +122,17 @@ function loadBlank(cards) {
   const sandbox = {
     esch: (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"),
     document: { querySelectorAll: () => Object.values(cards) },
+    console: { error() {} },
   };
   vm.createContext(sandbox);
   return vm.runInContext(
     `(function () { ${SRC.slice(start, end)} return reportBlankCards; })()`, sandbox);
 }
 
-const blankCard = (id) => ({
+const blankCard = (id, cls = "cc-card") => ({
   id, innerHTML: "", _hidden: false,
   hasAttribute() { return this._hidden; },
+  classList: { contains: (c) => c === cls },
 });
 
 test("an empty card says so instead of collapsing to a sliver", () => {
@@ -178,4 +180,26 @@ test("the blank check runs last, after every card is painted", () => {
   const chain = SRC.slice(start, SRC.indexOf("\n  function ", start + 1));
   assert.ok(chain.indexOf("reportBlankCards") > chain.lastIndexOf("renderDeploy"),
     "the blank check must see the finished page, so it goes last");
+});
+
+test("the header weather pill is covered by the blank check too", () => {
+  /* It lives in the header rather than the grid, so it is not a `.cc-card`.
+   * Dropping out of that selector is exactly how it would go back to failing
+   * silently — which is the whole subject of this file. */
+  const pill = blankCard("cc-weather", "cc-wx-pill");
+  loadBlank({ a: pill })();
+  assert.match(pill.innerHTML, /Weather/);
+  assert.match(pill.innerHTML, /no data/);
+});
+
+test("the pill gets the short message, not a paragraph in the header", () => {
+  const pill = blankCard("cc-weather", "cc-wx-pill");
+  loadBlank({ a: pill })();
+  assert.ok(!pill.innerHTML.includes("<h3>"), "a heading in the header bar");
+  assert.ok(pill.innerHTML.length < 120, "too long for a header pill");
+});
+
+test("the blank check still selects both the cards and the pill", () => {
+  const fn = SRC.slice(SRC.indexOf("function reportBlankCards()"));
+  assert.match(fn, /querySelectorAll\("\.cc-card, \.cc-wx-pill"\)/);
 });
