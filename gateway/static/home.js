@@ -569,6 +569,11 @@
     </li>`;
   }
 
+  // How many commitments a day column shows before it starts counting. Three
+  // is what fits the trimmed column without the tallest day dictating the
+  // height of the whole grid.
+  const DAY_EVENTS_SHOWN = 3;
+
   function dayCard(day, index) {
     const season = SEASONS[day.season] || SEASONS.jan;
     const cls = [
@@ -588,8 +593,18 @@
     const count = day.counts.total
       ? `<span class="wk-count" title="${day.counts.total} scheduled">${day.counts.total}</span>`
       : "";
+    // Anthony, 2026-09-18: "make the calendar not as fucking big and long...
+    // not taking up the whole page." A day had no cap, so one busy Tuesday
+    // set the height of all seven columns and the card ran the length of the
+    // screen. Three fit; the rest are counted, never dropped silently —
+    // "+2 more" is a fact, and the tap that shows them is right there.
+    const shownEvs = (day.events || []).slice(0, DAY_EVENTS_SHOWN);
+    const hiddenEvs = (day.events || []).length - shownEvs.length;
     const body = day.counts.total
-      ? `<ul class="wk-evs">${day.events.map(evRow).join("")}</ul>`
+      ? `<ul class="wk-evs">${shownEvs.map(evRow).join("")}</ul>${
+          hiddenEvs > 0
+            ? `<button class="wk-more" data-day="${esch(day.iso)}">+${hiddenEvs} more</button>`
+            : ""}`
       : `<p class="wk-clear">Clear</p>`;
     // The month appears only where the window actually crosses into a new one.
     // `starts_month` is also true on the first card, but the range beside the
@@ -804,6 +819,12 @@
   function wireWeek() {
     const b = q("#cal-open");
     if (b) b.onclick = () => openAppKey("schedule");
+    // "+N more" opens the schedule rather than expanding in place: growing the
+    // column re-creates the height problem the cap exists to solve, and the
+    // sub-app is where a full day belongs anyway.
+    document.querySelectorAll(".wk-more").forEach((m) => {
+      m.onclick = (e) => { e.stopPropagation(); openAppKey("schedule"); };
+    });
     const amb = q("#wk-amb");
     if (amb) amb.onclick = () => {
       localStorage.setItem(AMBIENCE_KEY, ambienceOn() ? "off" : "on");

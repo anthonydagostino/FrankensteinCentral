@@ -89,12 +89,22 @@ test("the stacked phone layout drops the desktop height floor", () => {
 });
 
 test("the desktop card still has a height floor and real padding", () => {
+  /* This asserted `>= 200px` — "day cards should stay roomy" — until
+   * 2026-09-18, when Anthony asked for the opposite: "make the calendar not as
+   * fucking big and long... not taking up the whole page." That is a changed
+   * requirement, not a regression, so the test changed with it rather than
+   * being deleted: what still matters here is that a floor EXISTS at all,
+   * because it is what makes seven columns line up.
+   *
+   * The magnitude lives in gateway/tests/calendar-height.test.js and only
+   * there. Two files asserting the same number is how they end up asserting
+   * two different ones. */
   const base = CSS.slice(0, CSS.indexOf("@media (max-width: 1080px)"));
   const day = base.match(/\n\.wk-day \{([^}]*)\}/);
   assert.ok(day, "no base .wk-day rule");
-  const min = day[1].match(/min-height:\s*(\d+)px/);
-  assert.ok(min && Number(min[1]) >= 200,
-    `day cards should stay roomy, got ${min && min[1]}`);
+  assert.match(day[1], /min-height:\s*\d+px/,
+    "the columns need a floor or they stop lining up");
+  assert.match(day[1], /padding:\s*\d+px/, "and real padding, not zero");
 });
 
 

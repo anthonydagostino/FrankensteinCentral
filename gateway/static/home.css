@@ -402,10 +402,13 @@ body.cc[data-mode="evening"] {
     color-mix(in srgb, var(--panel-2) 86%, transparent);
   border: 1px solid color-mix(in srgb, var(--sn-accent, var(--line)) 26%, var(--line));
   border-radius: 14px;
-  /* Roomier: a two-line title and a wrapped time range filled the old card.
-     A floor, not a fixed height — a heavy day still grows past it. */
-  padding: 14px 12px 15px;
-  min-height: 250px;
+  /* Trimmed on 2026-09-18: at 250px the seven columns ran the length of the
+     screen. The floor is now just enough for the header plus three events —
+     past that the day counts the rest rather than growing (see
+     DAY_EVENTS_SHOWN in home.js), so one busy Tuesday can no longer set the
+     height of the entire grid. */
+  padding: 10px 9px 11px;
+  min-height: 132px;
   overflow: hidden;
 }
 /* A rule of the month's colour across the top of every column. */
@@ -526,10 +529,10 @@ body.cc[data-mode="evening"] {
    colour every week and a busy day reads as several distinct things rather
    than one grey block. Colour is never the only carrier: the status word, the
    overlap flag and the time all remain in text. */
-.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .wk-ev {
   display: flex; flex-direction: column; gap: 1px;
-  padding: 5px 7px; border-radius: 7px;
+  padding: 4px 6px; border-radius: 7px;
   background: color-mix(in srgb, var(--ev, var(--accent-2)) 13%, transparent);
   border-left: 3px solid var(--ev, var(--accent-2));
 }
@@ -1187,3 +1190,15 @@ body.cc[data-mode="evening"] {
    case is a sentence rather than a blank strip. */
 .mo-note { font-size: 12px; color: var(--muted); line-height: 1.5; flex: 1 1 100%; }
 .mo-note b { color: var(--text); }
+
+
+/* "+N more" — the rest of a heavy day, counted rather than dropped. It opens
+   the schedule instead of expanding in place: growing the column would
+   re-create the height problem the cap exists to solve. */
+.wk-more {
+  margin-top: 4px; padding: 2px 6px; width: 100%;
+  background: none; border: 1px dashed var(--line); border-radius: 6px;
+  color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer;
+  text-align: left;
+}
+.wk-more:hover { color: var(--text); border-color: var(--muted); }
