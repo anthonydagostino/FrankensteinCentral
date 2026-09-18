@@ -18,6 +18,11 @@ const HOME = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
 const APP = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
 const HTML = fs.readFileSync(path.join(__dirname, "../static/index.html"), "utf8");
 const CSS = fs.readFileSync(path.join(__dirname, "../static/home.css"), "utf8");
+/* Comments stripped. These tests assert on DECLARATIONS, and a comment that
+   quotes the property it is explaining — `min-width: 0` is what actually lets
+   it shrink — matches the same regex as the rule. A mutation that deleted the
+   declaration and left the prose passed until this existed. */
+const RULES = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
 
 const slice = (src, start, next) => {
   const i = src.indexOf(start);
@@ -68,8 +73,8 @@ test("the pill stays one line tall and carries no card chrome", () => {
    * hours". It is: no heading, no wrapping, chips that stack hour over
    * temperature so the strip grows sideways and never downwards. */
   assert.ok(!/<h3>/.test(renderWeather), "a card heading in a header pill");
-  assert.match(CSS, /\.cc-wx-pill\s*\{[^}]*white-space:\s*nowrap/);
-  assert.match(CSS, /\.wxp-h \{[^}]*flex-direction: column/);
+  assert.match(RULES, /\.cc-wx-pill\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(RULES, /\.wxp-h \{[^}]*flex-direction: column/);
 });
 
 test("the header strip shows the rest of today, bounded by the service", () => {
@@ -93,18 +98,44 @@ test("an hour with no temperature shows a dash, not a zero", () => {
 });
 
 test("the hours give way before the temperature on a narrow screen", () => {
-  /* Order of sacrifice: extra hours, then all hours, then the place name. The
-   * headline temperature is never the thing that goes. */
-  assert.match(CSS, /@media \(max-width: 1100px\) \{ \.wxp-hrs \.wxp-h:nth-child\(n\+6\) \{ display: none; \} \}/);
+  /* Order of sacrifice: the far hours, then all hours, then the place name.
+   * The headline temperature is never the thing that goes. */
+  const steps = [...CSS.matchAll(/@media \(max-width: (\d+)px\) \{ \.wxp-hrs \.wxp-h:nth-child\(n\+(\d+)\)/g)]
+    .map((m) => [Number(m[1]), Number(m[2])]);
+  assert.ok(steps.length >= 2, "the strip sheds nothing as the window narrows");
+  /* Narrower windows must keep FEWER hours, or the steps fight each other. */
+  const byWidth = [...steps].sort((a, b) => b[0] - a[0]);
+  for (let i = 1; i < byWidth.length; i++) {
+    assert.ok(byWidth[i][1] < byWidth[i - 1][1],
+      `a narrower breakpoint keeps more hours: ${JSON.stringify(byWidth)}`);
+  }
   assert.match(CSS, /@media \(max-width: 900px\) \{ \.wxp-hrs \{ display: none; \} \}/);
-  const narrow = CSS.slice(CSS.indexOf("@media (max-width: 1100px)"));
+  const narrow = CSS.slice(CSS.indexOf("@media (max-width: 1500px)"));
   assert.ok(!/\.wxp-t \{ display: none/.test(narrow), "the temperature is being hidden");
 });
 
-test("the header can wrap so the pill never squeezes the greeting", () => {
-  const top = CSS.match(/\.cc-top\s*\{[^}]*\}/);
+test("the pill shares the greeting's line instead of wrapping under it", () => {
+  /* Anthony, 2026-09-18: "put it next to the good evening again, that way it
+   * can be longer too." With `flex-wrap: wrap`, the pill was the thing that
+   * gave way the moment it grew an hourly strip — it dropped to its own line.
+   * It shares the line now and shrinks instead. */
+  const top = RULES.match(/\.cc-top \{[^}]*\}/);
   assert.ok(top, ".cc-top has no rule");
-  assert.match(top[0], /flex-wrap:\s*wrap/);
+  assert.match(top[0], /flex-wrap:\s*nowrap/);
+
+  const pill = RULES.match(/\.cc-wx-pill \{[^}]*\}/);
+  assert.ok(pill, ".cc-wx-pill has no rule");
+  /* `min-width: 0` is what actually lets a flex item shrink below its content.
+   * Without it the pill refuses, pushes the buttons off, and wraps. */
+  assert.match(pill[0], /min-width:\s*0/);
+  assert.match(pill[0], /flex:\s*0 1 auto/);
+  assert.match(CSS, /\.cc-hello \{ flex: 0 0 auto; \}/);
+});
+
+test("a phone is the one place it still gets its own line", () => {
+  const phone = CSS.slice(CSS.indexOf("@media (max-width: 700px)"));
+  assert.match(phone, /\.cc-top \{ flex-wrap: wrap; \}/);
+  assert.match(phone, /\.cc-wx-pill \{ margin-left: 0; margin-top: 8px; \}/);
 });
 
 test("the place name is what gives way on a phone, never the temperature", () => {

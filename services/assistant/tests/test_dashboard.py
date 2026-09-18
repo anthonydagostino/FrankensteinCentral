@@ -2011,10 +2011,10 @@ def test_the_header_strip_is_bounded_and_the_rest_stays_in_the_sub_app():
     """Was six flat; now it is "the rest of today", bounded by rest_of_today.
     The point is unchanged — the header takes a slice and the twelve hours and
     ten days live one tap away — only the size of the slice moved."""
-    hours = [{"hour": h, "temp": 60 + h} for h in range(12)]
+    hours = [{"hour": h, "temp": 60 + h} for h in range(dash.HOURS_MAX + 6)]
     b = dash.weather_brief(_wx(hourly=hours))
     assert len(b["hourly"]) == dash.HOURS_MAX
-    assert [h["hour"] for h in b["hourly"]] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert [h["hour"] for h in b["hourly"]] == list(range(dash.HOURS_MAX))
     assert len(b["hourly"]) < len(hours), "the whole forecast is in the header"
 
 
@@ -2249,10 +2249,14 @@ def _hr(day, hour, temp=60):
 
 
 def test_early_in_the_day_the_strip_is_capped_not_twenty_three_long():
+    """Expressed in HOURS_MAX rather than restating it: the cap is a tunable
+    (8 -> 12 on 2026-09-18 when the pill got the width to use it), and a test
+    that hardcodes the number just has to be edited alongside it, which is how
+    a test stops describing intent and starts describing the last value."""
     rows = [_hr("2026-09-18", h) for h in range(1, 24)]
     out = dash.rest_of_today(rows)
     assert len(out) == dash.HOURS_MAX
-    assert [r["hour"] for r in out] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [r["hour"] for r in out] == list(range(1, 1 + dash.HOURS_MAX))
 
 
 def test_mid_afternoon_shows_exactly_what_is_left_of_today():
@@ -2291,7 +2295,7 @@ def test_the_strip_never_reorders_or_invents_hours():
     rows = [_hr("2026-09-18", h, temp=t) for h, t in zip(range(9, 24), temps)]
     out = dash.rest_of_today(rows)
     assert out == rows[:len(out)]
-    assert [r["hour"] for r in out] == [9, 10, 11, 12, 13, 14, 15, 16]
+    assert [r["hour"] for r in out] == list(range(9, 9 + dash.HOURS_MAX))
 
 
 def test_an_empty_or_junk_hourly_list_is_empty_and_not_an_exception():
@@ -2307,12 +2311,13 @@ def test_rows_with_an_unreadable_time_keep_their_place():
     under the minimum and pulled the full list back anyway. The test passed
     while the behaviour it named was broken.
     """
-    rows = ([_hr("2026-09-18", h) for h in range(10, 14)]
-            + [{"hour": 14, "temp": 61}]
-            + [_hr("2026-09-18", h) for h in range(15, 18)])
+    rows = ([_hr("2026-09-18", h) for h in range(4, 8)]
+            + [{"hour": 8, "temp": 61}]
+            + [_hr("2026-09-18", h) for h in range(9, 24)])
     out = dash.rest_of_today(rows)
     assert len(out) == dash.HOURS_MAX
-    assert [r["hour"] for r in out] == [10, 11, 12, 13, 14, 15, 16, 17]
+    assert [r["hour"] for r in out] == list(range(4, 4 + dash.HOURS_MAX))
+    assert 8 in [r["hour"] for r in out], "the undated hour was dropped"
 
 
 def test_a_first_row_with_no_date_falls_back_to_the_cap():

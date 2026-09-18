@@ -399,7 +399,9 @@ def weather_brief(weather):
 # The header pill shows the hours left in the day. Two bounds, because "the
 # rest of today" is a number that swings from 23 to 0 depending on when you
 # look, and a header cannot.
-HOURS_MAX = 8      # a strip longer than this stops being a glance
+HOURS_MAX = 12     # the whole of what the service sends; CSS sheds the far
+                   # end as the window narrows, so this is a ceiling rather
+                   # than a layout decision
 HOURS_MIN = 4      # and shorter than this stops being worth the space
 
 

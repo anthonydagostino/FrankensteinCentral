@@ -31,10 +31,16 @@ body.cc[data-mode="evening"] {
 /* ---- top bar ---- */
 .cc-top {
   display: flex; align-items: flex-start; justify-content: space-between;
-  /* Wraps so the weather pill can drop to its own line on a phone instead of
-     squeezing the greeting or pushing the buttons off the edge. */
-  gap: 20px; margin-bottom: 14px; flex-wrap: wrap;
+  /* NOWRAP on purpose. With `wrap`, the weather pill was the thing that gave
+     way the moment it grew an hourly strip — it dropped to its own line under
+     the greeting, which is what "put it next to the good evening again" was
+     about. It shares the line now and takes whatever width is left between
+     the greeting and the buttons. Phones wrap instead; see the 700px rule. */
+  gap: 20px; margin-bottom: 14px; flex-wrap: nowrap;
 }
+/* Neither of these may shrink: the greeting is the page's title and the
+   buttons are its controls. The pill absorbs the remainder. */
+.cc-hello { flex: 0 0 auto; }
 .cc-time { color: var(--muted); font-size: 13px; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
 .cc-hello h1 { margin: 2px 0 0; font-size: clamp(24px, 3.4vw, 34px); font-weight: 700; letter-spacing: -0.5px; }
 .cc-date { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
@@ -1085,6 +1091,11 @@ body.cc[data-mode="evening"] {
 .cc-wx-pill {
   display: inline-flex; align-items: center; gap: 9px;
   margin-left: 18px; padding: 6px 14px; border-radius: 16px;
+  /* Takes the space between the greeting and the buttons, and gives it back
+     when there is none. `min-width: 0` is what actually lets it shrink — a
+     flex item defaults to min-width:auto and refuses to go below its content,
+     which is how it pushed the buttons off the edge and then wrapped. */
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
   background: rgba(255,255,255,0.04); border: 1px solid var(--line);
   color: var(--text); font: inherit; cursor: pointer; white-space: nowrap;
   /* Beside a 1-3 word greeting, not under it: the header is a flex row and
@@ -1123,9 +1134,17 @@ body.cc[data-mode="evening"] {
 }
 /* Below 700px the greeting and the pill have no room to share a line, so the
    pill drops to its own and loses the place name rather than the temperature. */
-@media (max-width: 1100px) { .wxp-hrs .wxp-h:nth-child(n+6) { display: none; } }
+/* The strip sheds hours from the right as the window narrows, so the pill
+   always fits the line rather than forcing a scrollbar or a wrap. Order of
+   sacrifice: the far hours, then all of them, then the place name. The
+   headline temperature is never what goes. */
+@media (max-width: 1500px) { .wxp-hrs .wxp-h:nth-child(n+10) { display: none; } }
+@media (max-width: 1300px) { .wxp-hrs .wxp-h:nth-child(n+7) { display: none; } }
+@media (max-width: 1100px) { .wxp-hrs .wxp-h:nth-child(n+5) { display: none; } }
 @media (max-width: 900px) { .wxp-hrs { display: none; } }
 @media (max-width: 700px) {
+  /* Only here does it get its own line — a phone has no room to share one. */
+  .cc-top { flex-wrap: wrap; }
   .cc-wx-pill { margin-left: 0; margin-top: 8px; }
   .wxp-p { display: none; }
 }
