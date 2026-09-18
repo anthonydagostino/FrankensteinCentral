@@ -2007,11 +2007,15 @@ def test_a_temperature_of_zero_survives_the_brief():
     assert b["temp"] == 0
 
 
-def test_the_home_card_takes_six_hours_and_leaves_the_rest_to_the_sub_app():
+def test_the_header_strip_is_bounded_and_the_rest_stays_in_the_sub_app():
+    """Was six flat; now it is "the rest of today", bounded by rest_of_today.
+    The point is unchanged — the header takes a slice and the twelve hours and
+    ten days live one tap away — only the size of the slice moved."""
     hours = [{"hour": h, "temp": 60 + h} for h in range(12)]
     b = dash.weather_brief(_wx(hourly=hours))
-    assert len(b["hourly"]) == 6
-    assert [h["hour"] for h in b["hourly"]] == [0, 1, 2, 3, 4, 5]
+    assert len(b["hourly"]) == dash.HOURS_MAX
+    assert [h["hour"] for h in b["hourly"]] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert len(b["hourly"]) < len(hours), "the whole forecast is in the header"
 
 
 def test_staleness_is_carried_rather_than_recomputed():
@@ -2233,3 +2237,91 @@ def test_junk_rows_do_not_take_the_total_down_with_them():
 
 def test_a_liabilities_field_that_is_not_a_list_is_unreachable():
     assert dash.card_debt({"connected": True, "liabilities": "oops"})["state"] == "unreachable"
+
+
+# ── the rest of today, by the hour ──────────────────────────────────────────
+# Anthony, 2026-09-18: "it can be slightly longer showing the rest of the days
+# weather (like by the hour or whatever)." Taken literally that is 23 chips at
+# 1am and none at 11pm, so it is bounded — and the bounds are the whole test.
+
+def _hr(day, hour, temp=60):
+    return {"time": f"{day}T{hour:02d}:00", "hour": hour, "temp": temp}
+
+
+def test_early_in_the_day_the_strip_is_capped_not_twenty_three_long():
+    rows = [_hr("2026-09-18", h) for h in range(1, 24)]
+    out = dash.rest_of_today(rows)
+    assert len(out) == dash.HOURS_MAX
+    assert [r["hour"] for r in out] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_mid_afternoon_shows_exactly_what_is_left_of_today():
+    rows = [_hr("2026-09-18", h) for h in range(19, 24)]
+    assert [r["hour"] for r in dash.rest_of_today(rows)] == [19, 20, 21, 22, 23]
+
+
+def test_late_evening_rolls_past_midnight_rather_than_showing_a_stub():
+    """11pm is exactly when the next few hours are worth seeing. A strip that
+    empties out as the day ends is worst precisely when it matters."""
+    rows = [_hr("2026-09-18", 23)] + [_hr("2026-09-19", h) for h in range(0, 5)]
+    out = dash.rest_of_today(rows)
+    assert len(out) == dash.HOURS_MIN
+    assert [r["hour"] for r in out] == [23, 0, 1, 2]
+
+
+def test_the_boundary_between_today_only_and_rolling_over():
+    """Exactly HOURS_MIN left today is enough; one fewer rolls over."""
+    enough = [_hr("2026-09-18", h) for h in range(20, 24)] + [_hr("2026-09-19", 0)]
+    assert [r["hour"] for r in dash.rest_of_today(enough)] == [20, 21, 22, 23]
+
+    short = [_hr("2026-09-18", h) for h in range(21, 24)] + [_hr("2026-09-19", 0)]
+    assert [r["hour"] for r in dash.rest_of_today(short)] == [21, 22, 23, 0]
+
+
+def test_the_strip_never_reorders_or_invents_hours():
+    """Whatever the bounds do, the chips stay the service's own rows in the
+    service's own order.
+
+    The temperatures deliberately do NOT rise with the hour. An earlier version
+    of this test used `temp=50 + h`, which sorts identically by hour and by
+    temperature — so a mutation that sorted the strip by temperature passed it.
+    A test whose data cannot tell two orderings apart is not testing order.
+    """
+    temps = [71, 64, 88, 59, 77, 60, 95, 62, 58, 83, 66, 90, 55, 79, 68]
+    rows = [_hr("2026-09-18", h, temp=t) for h, t in zip(range(9, 24), temps)]
+    out = dash.rest_of_today(rows)
+    assert out == rows[:len(out)]
+    assert [r["hour"] for r in out] == [9, 10, 11, 12, 13, 14, 15, 16]
+
+
+def test_an_empty_or_junk_hourly_list_is_empty_and_not_an_exception():
+    assert dash.rest_of_today([]) == []
+    assert dash.rest_of_today(["nope", None]) == []
+
+
+def test_rows_with_an_unreadable_time_keep_their_place():
+    """One bad timestamp must cost that hour's date, not drop the hour.
+
+    Long enough that the HOURS_MIN fallback cannot rescue it: an earlier
+    version used three rows, so dropping the undated one left two, which was
+    under the minimum and pulled the full list back anyway. The test passed
+    while the behaviour it named was broken.
+    """
+    rows = ([_hr("2026-09-18", h) for h in range(10, 14)]
+            + [{"hour": 14, "temp": 61}]
+            + [_hr("2026-09-18", h) for h in range(15, 18)])
+    out = dash.rest_of_today(rows)
+    assert len(out) == dash.HOURS_MAX
+    assert [r["hour"] for r in out] == [10, 11, 12, 13, 14, 15, 16, 17]
+
+
+def test_a_first_row_with_no_date_falls_back_to_the_cap():
+    rows = [{"hour": h, "temp": 60} for h in range(0, 12)]
+    assert len(dash.rest_of_today(rows)) == dash.HOURS_MAX
+
+
+def test_the_brief_carries_the_bounded_strip():
+    rows = [_hr("2026-09-18", h) for h in range(1, 13)]
+    b = dash.weather_brief(_wx(hourly=rows))
+    assert len(b["hourly"]) == dash.HOURS_MAX
+    assert b["hourly"][0]["hour"] == 1

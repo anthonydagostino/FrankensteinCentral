@@ -1551,10 +1551,22 @@
     el.title = `${w.label || "Weather"}${w.place ? " · " + w.place : ""}`
       + (w.feels_like != null ? ` · feels ${Math.round(w.feels_like)}${deg}` : "")
       + (w.stale ? " · not current" : "");
+    // The rest of today by the hour, inline. The service decides how many —
+    // "the rest of today" is 23 chips at 1am and none at 11pm, so dashboard.py
+    // bounds it and rolls past midnight late in the evening rather than
+    // showing a stub exactly when the next few hours matter most.
+    const hours = (w.hourly || []).map((h) => `
+      <span class="wxp-h" title="${esch((h.label || "") + (h.precip_pct != null ? ` · ${h.precip_pct}% rain` : ""))}">
+        <b>${esch(h.hour === 0 ? "12a" : h.hour < 12 ? h.hour + "a"
+          : h.hour === 12 ? "12p" : (h.hour - 12) + "p")}</b>
+        <i>${esch(t(h.temp))}</i>
+      </span>`).join("");
+
     el.innerHTML = `
       <span class="wxp-g">${esch(w.glyph || "")}</span>
       <span class="wxp-t">${esch(t(w.temp))}</span>
       <span class="wxp-x">H ${esch(t(w.high))} · L ${esch(t(w.low))}</span>
+      ${hours ? `<span class="wxp-hrs">${hours}</span>` : ""}
       ${w.place ? `<span class="wxp-p">${esch(w.place)}</span>` : ""}
       ${w.stale ? `<span class="wxp-stale" title="The forecast service was unreachable, so this is the last reading we got">old</span>` : ""}`;
   }

@@ -62,13 +62,43 @@ test("the calendar leads the grid and amex sits under it", () => {
   assert.ok(ax < cols, "amex must not sink into the two-column region");
 });
 
-test("the pill is one line and carries no hourly strip", () => {
-  /* "not take up so much space" — the twelve hours and the ten days are a tap
-   * away in the sub-app, which is where you go when you want a forecast rather
-   * than a glance. */
-  assert.ok(!/wx-hours/.test(renderWeather), "the hourly strip is back in the header");
+test("the pill stays one line tall and carries no card chrome", () => {
+  /* It gained an hourly strip on 2026-09-18 — "it can be slightly longer
+   * showing the rest of the days weather" — so "small" is no longer "no
+   * hours". It is: no heading, no wrapping, chips that stack hour over
+   * temperature so the strip grows sideways and never downwards. */
   assert.ok(!/<h3>/.test(renderWeather), "a card heading in a header pill");
   assert.match(CSS, /\.cc-wx-pill\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(CSS, /\.wxp-h \{[^}]*flex-direction: column/);
+});
+
+test("the header strip shows the rest of today, bounded by the service", () => {
+  /* The count is decided in dashboard.py, where it is swept across the clock.
+   * The pill renders what it is handed and does not slice it again — two
+   * places deciding how many hours is how they drift apart. */
+  assert.match(renderWeather, /\(w\.hourly \|\| \[\]\)\.map/);
+  assert.ok(!/w\.hourly[^\n]*\.slice\(/.test(renderWeather),
+    "the pill is re-slicing a list the service already bounded");
+});
+
+test("each hour chip is labelled in 12-hour time, midnight included", () => {
+  /* `h.hour === 0` must be "12a", not "0a". */
+  assert.match(renderWeather, /h\.hour === 0 \? "12a"/);
+  assert.match(renderWeather, /h\.hour === 12 \? "12p"/);
+});
+
+test("an hour with no temperature shows a dash, not a zero", () => {
+  /* The same rule as the headline figure, one size down. */
+  assert.match(renderWeather, /<i>\$\{esch\(t\(h\.temp\)\)\}<\/i>/);
+});
+
+test("the hours give way before the temperature on a narrow screen", () => {
+  /* Order of sacrifice: extra hours, then all hours, then the place name. The
+   * headline temperature is never the thing that goes. */
+  assert.match(CSS, /@media \(max-width: 1100px\) \{ \.wxp-hrs \.wxp-h:nth-child\(n\+6\) \{ display: none; \} \}/);
+  assert.match(CSS, /@media \(max-width: 900px\) \{ \.wxp-hrs \{ display: none; \} \}/);
+  const narrow = CSS.slice(CSS.indexOf("@media (max-width: 1100px)"));
+  assert.ok(!/\.wxp-t \{ display: none/.test(narrow), "the temperature is being hidden");
 });
 
 test("the header can wrap so the pill never squeezes the greeting", () => {

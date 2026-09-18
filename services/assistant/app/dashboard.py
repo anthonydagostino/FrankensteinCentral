@@ -386,15 +386,59 @@ def weather_brief(weather):
         "stale": cur.get("stale"),
         "high": weather.get("high"),
         "low": weather.get("low"),
-        # Six is what fits the home card. The full twelve, and the ten days,
-        # are one tap away in the sub-app rather than crammed in here.
-        "hourly": (weather.get("hourly") or [])[:6],
+        # The rest of today, by the hour. See `rest_of_today`.
+        "hourly": rest_of_today(weather.get("hourly") or []),
         "degree": weather.get("degree"),
         # The next day worth warning about: rain, snow, a storm. Nothing to
         # say is a real and common answer, and the card says nothing then
         # rather than manufacturing a headline.
         "next_rough": _next_rough_day(weather.get("daily") or []),
     }
+
+
+# The header pill shows the hours left in the day. Two bounds, because "the
+# rest of today" is a number that swings from 23 to 0 depending on when you
+# look, and a header cannot.
+HOURS_MAX = 8      # a strip longer than this stops being a glance
+HOURS_MIN = 4      # and shorter than this stops being worth the space
+
+
+def rest_of_today(hourly):
+    """The remaining hours of today, bounded so the header stays a header.
+
+    Anthony, 2026-09-18: "it can be slightly longer showing the rest of the
+    days weather (like by the hour or whatever)."
+
+    Taken literally that is 23 chips at 1am and none at 11pm, so:
+
+      * hours on the same calendar date as the first entry — "the rest of
+        today", which is what was asked for and what it is nearly all day;
+      * but never fewer than HOURS_MIN, rolling past midnight into tomorrow
+        rather than showing a stub at 10pm. Late evening is exactly when the
+        next few hours are worth seeing, and a strip that empties out as the
+        day ends is worst precisely when it matters;
+      * and never more than HOURS_MAX, because a header is a glance.
+
+    Dates come from each row's `time` ("2026-09-18T01:00"), which the weather
+    service already emits; a row whose time will not parse keeps its place
+    rather than truncating the strip at the first bad entry.
+    """
+    rows = [r for r in hourly if isinstance(r, dict)]
+    if not rows:
+        return []
+
+    def day_of(row):
+        text = row.get("time")
+        return text[:10] if isinstance(text, str) and len(text) >= 10 else None
+
+    first_day = day_of(rows[0])
+    if first_day is None:
+        return rows[:HOURS_MAX]
+
+    today = [r for r in rows if day_of(r) in (first_day, None)]
+    # `rows` is ordered, so extending past today is just taking more of it.
+    chosen = today if len(today) >= HOURS_MIN else rows[:HOURS_MIN]
+    return chosen[:HOURS_MAX]
 
 
 def _next_rough_day(daily):
