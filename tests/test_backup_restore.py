@@ -537,3 +537,45 @@ def test_the_record_never_contains_a_secret(pg, tmp_path):
     raw = (tmp_path / "state" / "data-safety.json").read_text().lower()
     for forbidden in ("password", "token", "secret", pg.env["POSTGRES_PASSWORD"].lower()):
         assert forbidden not in raw, f"{forbidden!r} appears in the record"
+
+
+# ---- the shared writer keeps a reason on every result (SCRUM-142) ------------
+
+def _ds(tmp_path, *args):
+    env = {**os.environ, "FRANKENSTEIN_STATE_DIR": str(tmp_path / "state")}
+    return sh("bash", "-c",
+              f". scripts/data-safety.sh && ds_record {' '.join(args)}",
+              cwd=str(ROOT), env=env)
+
+
+def test_a_reason_is_recorded_on_a_failure_not_only_on_success(tmp_path):
+    """'failed' with no why sends the reader to a log file; the record exists
+    so the dashboard can say why without one."""
+    _ds(tmp_path, "import", "failed", "reason=importer_http_500")
+    rec = _record(tmp_path / "state")
+    assert rec["last_import_result"] == "failed"
+    assert rec["last_import_reason"] == "importer_http_500"
+    assert "last_import_at" not in rec
+
+
+def test_a_stale_reason_does_not_outlive_the_failure_it_described(tmp_path):
+    _ds(tmp_path, "import", "failed", "reason=importer_unreachable")
+    _ds(tmp_path, "import", "ok", "kind=autoimport", "rows=3")
+    rec = _record(tmp_path / "state")
+    assert rec["last_import_result"] == "ok"
+    assert "last_import_reason" not in rec
+    assert rec["import_rows"] == "3"
+    assert rec["last_import_at"]
+
+
+def test_empty_and_unverified_never_advance_the_last_success(tmp_path):
+    """Only `ok` proves data entered. A quiet day and an unanswerable check
+    both leave the last-success date where it was."""
+    _ds(tmp_path, "import", "ok", "rows=5")
+    good = _record(tmp_path / "state")["last_import_at"]
+    _ds(tmp_path, "import", "empty", "reason=nothing_entered")
+    assert _record(tmp_path / "state")["last_import_at"] == good
+    _ds(tmp_path, "import", "unverified", "reason=firefly_unreachable")
+    rec = _record(tmp_path / "state")
+    assert rec["last_import_at"] == good
+    assert rec["last_import_result"] == "unverified"

@@ -14,7 +14,7 @@ from . import answers, notify, runway
 from .dashboard import (amex_brief, card_debt, data_safety, deadline_rows,
                         deploy_state, on_google_calendar,
                         disk_state, firefly_state,
-                        first_undismissed, low_balance_accounts,
+                        first_undismissed, import_state, low_balance_accounts,
                         parse_event_dt, portfolio_alerts, portfolio_state,
                         resale_brief, schedule_state, since_changes,
                         since_snapshot, upcoming_events, weather_brief,
@@ -1116,6 +1116,12 @@ async def build_home(fresh: bool = False) -> dict:
         # Days since the last VERIFIED restore, and "never" until one happens.
         # A backup you have never restored is a belief, not a backup.
         "data_safety": data_safety(_read_data_safety_record(), now_local),
+        # Whether the Firefly import is actually running and landing rows
+        # (SCRUM-142): the script's own record, cross-read with the ledger's
+        # ingest age so "importer runs, nothing enters" is named, not hidden.
+        "import_run": import_state(_read_data_safety_record(),
+                                   (spending or {}).get("ingest_days"),
+                                   now_local),
         # Fact 1 of SCRUM-67, the half that needs no privileged access.
         "disk": disk_state(_disk_usage()),
         "last_updated": t["now"],

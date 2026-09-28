@@ -22,7 +22,7 @@
 ds_state_dir() { echo "${FRANKENSTEIN_STATE_DIR:-$HOME/.frankenstein}"; }
 ds_record_path() { echo "$(ds_state_dir)/data-safety.json"; }
 
-# ds_record <kind: backup|restore> <result: ok|failed> [key=value ...]
+# ds_record <kind: backup|restore|import> <result: ok|failed|empty|unverified> [key=value ...]
 #
 # Merges into the existing record rather than replacing it: a backup must not
 # erase the last restore's date, which is the number this whole feature exists
@@ -51,10 +51,19 @@ except Exception:
 now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 doc[f"last_{kind}_attempt_at"] = now
 doc[f"last_{kind}_result"] = result
+# A reason is kept on EVERY result, not only success: "failed" with no why
+# sends the reader to a log file, and the whole point of the record is that
+# the dashboard can say why without one. Cleared on a result that gives none,
+# so a stale reason never outlives the failure it described.
+if "reason" in extra:
+    doc[f"last_{kind}_reason"] = extra["reason"]
+else:
+    doc.pop(f"last_{kind}_reason", None)
 if result == "ok":
     doc[f"last_{kind}_at"] = now
     for key, value in extra.items():
-        doc[f"{kind}_{key}"] = value
+        if key != "reason":
+            doc[f"{kind}_{key}"] = value
 with open(path, "w") as fh:
     json.dump(doc, fh, indent=2, sort_keys=True)
 PY

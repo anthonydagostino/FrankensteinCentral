@@ -105,7 +105,10 @@ class StubFirefly:
                     # _ledger_latest() relies on that ordering.
                     rows = sorted(rows, key=lambda g: g["attributes"]["transactions"][0]["date"],
                                   reverse=True)
-                    return self._j({"data": rows})
+                    # Real Firefly carries pagination meta; _ingest_probe reads
+                    # `total` as the exact count in the requested window.
+                    return self._j({"data": rows,
+                                    "meta": {"pagination": {"total": len(rows)}}})
                 if u.path == "/api/v1/bills":
                     return self._j({"data": [
                         {"id": str(i), "attributes": b}
@@ -539,3 +542,97 @@ def test_an_account_with_no_role_reports_none_not_a_guess(firefly, client, monke
     firefly.no_role = True
     accts = client.get("/networth").json()["accounts"]
     assert accts and all(a["role"] is None for a in accts), accts
+
+
+# ---- the two probes scripts/firefly-import.sh relies on (SCRUM-142) ---------
+
+def test_freshness_carries_a_full_timestamp_and_an_exact_count(firefly, client, monkeypatch):
+    """Date resolution cannot tell two imports on one day apart, and the
+    newest-dated rows miss an import of old-dated transactions. The full
+    created_at and the exact 90-day count together can."""
+    pin(monkeypatch, date(2026, 9, 2))
+    r = client.get("/freshness").json()
+    assert r["connected"] is True
+    assert r["ingest_latest_at"] == ING
+    assert r["ingest_latest"] == ING[:10]
+    assert r["txn_total_90d"] == 3
+    assert r["ledger_latest"] == "2026-08-28"
+
+
+def test_freshness_moves_when_an_old_dated_transaction_is_imported_today(firefly, client, monkeypatch):
+    """A bank row dated three weeks ago, imported this morning: created_at is
+    today and the count went up by one. Both must say so."""
+    pin(monkeypatch, date(2026, 9, 2))
+    before = client.get("/freshness").json()
+    ff._TTL_CACHE.clear()
+    firefly.groups.append(_group(9, "Old but new", "12.00", "withdrawal", "Misc",
+                                 "2026-08-10", created="2026-09-02T07:15:00-04:00"))
+    after = client.get("/freshness").json()
+    assert after["txn_total_90d"] == before["txn_total_90d"] + 1
+    assert after["ingest_latest_at"] > before["ingest_latest_at"]
+
+
+def test_freshness_is_honest_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(ff, "FIREFLY_TOKEN", "")
+    r = client.get("/freshness").json()
+    assert r["connected"] is False
+    assert r["txn_total_90d"] is None and r["ingest_latest_at"] is None
+
+
+def test_accounts_health_counts_per_account_and_flags_the_discover_shape(firefly, client, monkeypatch):
+    """SCRUM-39's numbers, in miniature: one card with purchases and not a
+    single credit, beside one that has both. The first is flagged."""
+    pin(monkeypatch, date(2026, 9, 2))
+    firefly.groups = []
+    for i in range(12):
+        firefly.groups.append(_group(100 + i, f"Shop {i}", "10.00", "withdrawal", "Misc",
+                                     f"2026-08-{10 + i:02d}", source="Discover"))
+    for i in range(6):
+        firefly.groups.append(_group(200 + i, f"Shop {i}", "20.00", "withdrawal", "Misc",
+                                     f"2026-08-{10 + i:02d}", source="Amex"))
+    firefly.groups.append(_group(300, "Statement credit", "5.00", "deposit", None,
+                                 "2026-08-20", destination="Amex"))
+    r = client.get("/accounts-health").json()
+    by = {a["name"]: a for a in r["accounts"]}
+    assert by["Discover"]["withdrawals"] == 12 and by["Discover"]["deposits"] == 0
+    assert "no_credits" in by["Discover"]["flags"]
+    assert by["Amex"]["deposits"] == 1 and by["Amex"]["flags"] == []
+    assert r["flagged"] == ["Discover"]
+    assert r["accounts"][0]["name"] == "Discover", "flagged accounts sort first"
+
+
+def test_accounts_health_lists_an_account_with_nothing_in_the_window(firefly, client, monkeypatch):
+    """An account that imports nothing is the loudest case, not an absent
+    row. The stub's asset account 'Checking' has no transactions at all."""
+    pin(monkeypatch, date(2026, 9, 2))
+    r = client.get("/accounts-health").json()
+    by = {a["name"]: a for a in r["accounts"]}
+    assert "Checking" in by
+    assert by["Checking"]["withdrawals"] == 0 and by["Checking"]["newest"] is None
+
+
+def test_accounts_health_flags_stale_only_against_a_moving_ledger(firefly, client, monkeypatch):
+    """Nothing anywhere for a month is the import's problem, not one
+    account's; one account current while another is silent is that
+    account's."""
+    pin(monkeypatch, date(2026, 9, 2))
+    firefly.groups = [
+        _group(1, "Fresh", "10.00", "withdrawal", "Misc", "2026-09-01", source="Amex"),
+        _group(2, "Old", "10.00", "withdrawal", "Misc", "2026-07-20", source="Discover"),
+    ]
+    r = client.get("/accounts-health").json()
+    by = {a["name"]: a for a in r["accounts"]}
+    assert "stale" in by["Discover"]["flags"]
+    assert "stale" not in by["Amex"]["flags"]
+    # Now nothing has moved anywhere in weeks: no account is singled out.
+    ff._TTL_CACHE.clear()
+    firefly.groups = [_group(2, "Old", "10.00", "withdrawal", "Misc", "2026-07-20", source="Discover")]
+    r = client.get("/accounts-health").json()
+    by = {a["name"]: a for a in r["accounts"]}
+    assert "stale" not in by["Discover"]["flags"]
+
+
+def test_accounts_health_is_honest_when_disconnected(client, monkeypatch):
+    monkeypatch.setattr(ff, "FIREFLY_TOKEN", "")
+    r = client.get("/accounts-health").json()
+    assert r["connected"] is False and r["accounts"] == []

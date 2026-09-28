@@ -2330,3 +2330,73 @@ def test_the_brief_carries_the_bounded_strip():
     b = dash.weather_brief(_wx(hourly=rows))
     assert len(b["hourly"]) == dash.HOURS_MAX
     assert b["hourly"][0]["hour"] == 1
+
+
+# --- the scheduled import: running, and landing? (SCRUM-142) ------------------
+
+NOW_IMP = datetime(2026, 9, 28, 9, 0, tzinfo=NY)
+
+
+def irec(result="ok", attempt_days_ago=0, landed_days_ago=None, **kw):
+    rec = {"last_import_attempt_at": (NOW_IMP - timedelta(days=attempt_days_ago)).isoformat(),
+           "last_import_result": result}
+    if landed_days_ago is not None:
+        rec["last_import_at"] = (NOW_IMP - timedelta(days=landed_days_ago)).isoformat()
+    rec.update(kw)
+    return rec
+
+
+def test_no_record_is_unknown_and_no_attempt_ever_is_never():
+    assert dash.import_state({}, None, NOW_IMP)["state"] == "unknown"
+    assert dash.import_state(None, None, NOW_IMP)["state"] == "unknown"
+    # A record that only knows about backups: the import has never run.
+    assert dash.import_state({"last_backup_at": "2026-09-28T04:00:00+00:00"}, 0, NOW_IMP)["state"] == "never"
+
+
+def test_a_run_that_landed_rows_is_ok():
+    d = dash.import_state(irec("ok", 0, 0, import_rows="4", import_kind="autoimport"), 0, NOW_IMP)
+    assert d["state"] == "ok" and d["rows"] == "4" and d["kind"] == "autoimport"
+    assert d["attempt_days"] == 0 and d["landed_days"] == 0
+
+
+def test_a_cron_that_stopped_firing_is_stale_whatever_the_last_result_was():
+    for result in ("ok", "empty", "failed"):
+        d = dash.import_state(irec(result, attempt_days_ago=3, landed_days_ago=3), 3, NOW_IMP)
+        assert d["state"] == "stale", result
+    assert dash.import_state(irec("ok", 2, 2), 2, NOW_IMP)["state"] == "ok"   # exactly two is not stale
+
+
+def test_empty_is_quiet_while_the_ledger_is_moving_and_suspect_once_it_is_not():
+    """The sentence neither signal can say alone."""
+    quiet = dash.import_state(irec("empty", 0, 1, last_import_reason="nothing_entered"), 1, NOW_IMP)
+    assert quiet["state"] == "quiet"
+    suspect = dash.import_state(irec("empty", 0, 5, last_import_reason="nothing_entered"), 5, NOW_IMP)
+    assert suspect["state"] == "suspect"
+    assert suspect["reason"] == "nothing_entered"
+
+
+def test_empty_with_no_ledger_signal_is_quiet_not_suspect():
+    """Suspicion needs evidence. With no ingest_days there is none."""
+    for idle in (None, "5", True):
+        assert dash.import_state(irec("empty", 0, 1), idle, NOW_IMP)["state"] == "quiet", idle
+
+
+def test_failed_and_unverified_are_their_own_states_with_reasons():
+    f = dash.import_state(irec("failed", 0, 4, last_import_reason="importer_http_500"), 4, NOW_IMP)
+    assert f["state"] == "failed" and f["reason"] == "importer_http_500"
+    assert f["landed_days"] == 4, "the last good landing is still reported beside the failure"
+    u = dash.import_state(irec("unverified", 0, None, last_import_reason="firefly_unreachable"), None, NOW_IMP)
+    assert u["state"] == "unverified" and u["landed_days"] is None
+
+
+def test_an_unreadable_attempt_stamp_is_unknown_not_never():
+    d = dash.import_state({"last_import_attempt_at": "soon", "last_import_result": "ok"}, 0, NOW_IMP)
+    assert d["state"] == "unknown"
+
+
+def test_import_attempt_days_are_local_calendar_days():
+    """Same rule as the drill: 23:00 last night is 'yesterday' at 09:00."""
+    rec = {"last_import_attempt_at": "2026-09-27T23:00:00-04:00", "last_import_result": "ok",
+           "last_import_at": "2026-09-27T23:00:00-04:00"}
+    d = dash.import_state(rec, 1, NOW_IMP)
+    assert d["attempt_days"] == 1 and d["landed_days"] == 1

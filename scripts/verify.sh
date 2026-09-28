@@ -203,6 +203,69 @@ else:
     add("FAIL", "firefly svc", f"{err}")
 print()
 
+print("-- Firefly import (scheduled — scripts/firefly-import.sh, SCRUM-142) --")
+# The script's own record, next to the backup record. The verdict is the
+# ledger's (rows counted, created_at advanced), never the importer's HTTP
+# code. Values only: the secret and the importer's response body are never
+# read here, let alone printed.
+_ing = globals().get("ing")
+_sd = os.environ.get("FRANKENSTEIN_STATE_DIR") or os.path.expanduser("~/.frankenstein")
+try:
+    with open(os.path.join(_sd, "data-safety.json"), encoding="utf-8") as _f:
+        _rec = json.load(_f)
+except Exception:
+    _rec = None
+if not isinstance(_rec, dict):
+    add("WARN", "import cron", "no record — nothing has ever triggered the import from here "
+        "(docs/SETUP-FIREFLY.md → Automate the import)")
+else:
+    _att = _rec.get("last_import_attempt_at"); _res = _rec.get("last_import_result")
+    _rsn = _rec.get("last_import_reason"); _land = _rec.get("last_import_at")
+    if not _att:
+        add("WARN", "import cron", "NEVER triggered from here — add the cron line "
+            "(docs/SETUP-FIREFLY.md → Automate the import)")
+    else:
+        try:
+            _age = (datetime.now().astimezone().date()
+                    - datetime.fromisoformat(str(_att).replace("Z", "+00:00")).astimezone().date()).days
+        except Exception:
+            _age = None
+        _agetxt = f"{_age}d ago" if _age is not None else "unreadable stamp"
+        add("PASS" if _age is not None and _age <= 2 else "WARN", "import cron",
+            f"last attempt {_att} ({_agetxt}), result={_res}"
+            + (f", reason={_rsn}" if _rsn else "")
+            + ("" if _age is not None and _age <= 2 else " — the cron has stopped"))
+        if _res == "ok":
+            add("PASS", "import lands", f"rows last entered {_land} "
+                f"({_rec.get('import_rows')} rows, {_rec.get('import_kind')})")
+        elif _res == "empty" and isinstance(_ing, int) and _ing >= 3:
+            add("WARN", "import lands", f"importer runs but NOTHING has entered the ledger for {_ing}d "
+                "— the thin-import shape; see docs/FIREFLY-IMPORT-DIAGNOSIS.md")
+        elif _res == "empty":
+            add("PASS", "import lands", "last run entered nothing, and the ledger moved recently anyway "
+                "(a quiet day, not a broken import)")
+        elif _res == "failed":
+            add("WARN", "import lands", f"last run FAILED ({_rsn or '?'}) — nothing entered")
+        elif _res == "unverified":
+            add("WARN", "import lands", "importer answered but the firefly service could not check the ledger")
+st5, ah, err5 = get(8097, "/accounts-health", timeout=60)
+if st5 == 200 and ah and ah.get("connected") and isinstance(ah.get("accounts"), list):
+    _flagged = [a for a in ah["accounts"] if a.get("flags")]
+    for a in _flagged:
+        add("WARN", "import account", f"{trunc(a.get('name'), 24)}: {', '.join(a['flags'])} — "
+            f"{a.get('withdrawals')} withdrawals / {a.get('deposits')} deposits in "
+            f"{ah.get('window_days')}d, newest {a.get('newest') or 'none'}")
+    if not _flagged:
+        add("PASS", "import accounts", f"{len(ah['accounts'])} asset account(s), none thin or stale "
+            f"in the last {ah.get('window_days')}d")
+    if ah.get("window_complete") is False:
+        add("WARN", "import accounts", "window read TRUNCATED — a quiet account may just be unread")
+elif st5 == 200 and ah and not ah.get("connected"):
+    add("WARN", "import accounts", "firefly not connected — per-account import health unavailable")
+else:
+    add("WARN", "import accounts", f"{err5 or 'no data'} — OLD build (no /accounts-health)? redeploy needed")
+print()
+
 print("-- Gmail (email) --")
 st, gh, err = get(8083, "/health")
 if st == 200 and gh:

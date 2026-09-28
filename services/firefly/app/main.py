@@ -349,6 +349,44 @@ async def _ingest_latest(client, txns: list[dict]) -> date | None:
         return None
 
 
+async def _ingest_probe(client) -> tuple[str | None, int | None]:
+    """(newest created_at at FULL resolution, exact count of transactions in
+    the last 90 days) — the two facts scripts/firefly-import.sh compares
+    before and after triggering an import (SCRUM-142).
+
+    A date-resolution stamp cannot tell two imports on the same day apart,
+    and the newest-dated rows miss an import of old-dated transactions. The
+    90-day count is exact — Firefly's list endpoints carry
+    meta.pagination.total — and moves whenever anything at all enters the
+    window, whatever its date. Either advancing is proof of ingestion; both
+    None is "could not tell", never "nothing happened".
+    """
+    stamp, total = None, None
+    try:
+        r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
+                             params={"limit": 10}, headers=_headers(), timeout=15)
+        r.raise_for_status()
+        for g in r.json().get("data", []):
+            c = g.get("attributes", {}).get("created_at") or ""
+            if c and (stamp is None or c > stamp):
+                stamp = c
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        today = _today()
+        r = await client.get(f"{FIREFLY_URL}/api/v1/transactions",
+                             params={"start": (today - timedelta(days=90)).isoformat(),
+                                     "end": today.isoformat(), "limit": 1},
+                             headers=_headers(), timeout=15)
+        r.raise_for_status()
+        meta = (r.json().get("meta") or {}).get("pagination") or {}
+        if isinstance(meta.get("total"), int):
+            total = meta["total"]
+    except Exception:  # noqa: BLE001
+        pass
+    return stamp, total
+
+
 async def _ledger_latest(client) -> date | None:
     """Date of the newest transaction of ANY type — the ledger's true
     freshness. Firefly returns transactions newest-first."""
@@ -776,6 +814,95 @@ async def _history_payload() -> dict:
         "ingest_days": (max(0, (today - ingest_latest).days)
                         if ingest_latest else None),
     }
+
+
+@app.get("/freshness")
+async def freshness():
+    """When data last ENTERED the ledger, at full resolution, plus an exact
+    recent count. Cheap on purpose — two single-page reads — because the
+    import script polls it. Disconnected is a state, not an empty answer."""
+    if not _connected():
+        return {"connected": False, "ingest_latest_at": None, "ingest_latest": None,
+                "txn_total_90d": None, "ledger_latest": None}
+    async with httpx.AsyncClient() as client:
+        stamp, total = await _ingest_probe(client)
+        latest = await _ledger_latest(client)
+    return {
+        "connected": True,
+        "today": _today().isoformat(),
+        "ingest_latest_at": stamp,
+        "ingest_latest": stamp[:10] if stamp else None,
+        "txn_total_90d": total,
+        "ledger_latest": latest.isoformat() if latest else None,
+    }
+
+
+ACCOUNT_HEALTH_DAYS = 60
+THIN_MIN_WITHDRAWALS = 10   # enough purchases that zero credits is strange
+ACCOUNT_STALE_DAYS = 21     # a card with no rows in three weeks, while others move
+
+
+@app.get("/accounts-health")
+async def accounts_health():
+    """Per asset account: what the import has actually landed lately.
+
+    SCRUM-39/40: Discover showed 26 withdrawals and ZERO credits over five
+    months against another card's 129 and 11. A card losing most of its rows on the
+    way in is invisible to every total on this dashboard — the totals are
+    simply smaller — and was found by counting by hand off a raw API dump.
+    This is that count, continuously, with the two shapes that dump exposed
+    named as flags rather than left for a person to notice:
+
+      no_credits  purchases but not one refund or payment in the window
+      stale       nothing landed here in three weeks while another account
+                  has rows this week
+
+    Every account is listed, including ones with nothing in the window: an
+    account that imports nothing is the loudest case, not an absent row.
+    """
+    if not _connected():
+        return {"connected": False, "accounts": [], "window_days": ACCOUNT_HEALTH_DAYS}
+    today = _today()
+    start, end = (today - timedelta(days=ACCOUNT_HEALTH_DAYS)).isoformat(), today.isoformat()
+    async with httpx.AsyncClient() as client:
+        failures: list = []
+        assets = await _read(client, "/api/v1/accounts", {"type": "asset"}, failures) or {}
+        wd = await _fetch_txns(client, "withdrawal", start, end, max_pages=6)
+        dp = await _fetch_txns(client, "deposit", start, end, max_pages=6)
+    rows: dict[str, dict] = {}
+    for a in _accts(assets, "asset"):
+        rows[a["name"]] = {"name": a["name"], "role": a["role"], "withdrawals": 0,
+                           "deposits": 0, "newest": None, "flags": []}
+    def bump(name, kind, d):
+        if not name:
+            return
+        r = rows.setdefault(name, {"name": name, "role": None, "withdrawals": 0,
+                                   "deposits": 0, "newest": None, "flags": []})
+        r[kind] += 1
+        if d and (r["newest"] is None or d > r["newest"]):
+            r["newest"] = d
+    for t in wd:
+        bump(t.get("source"), "withdrawals", t.get("date"))
+    for t in dp:
+        bump(t.get("destination"), "deposits", t.get("date"))
+    newest_any = max((r["newest"] for r in rows.values() if r["newest"]), default=None)
+    out = []
+    for r in rows.values():
+        since = (today - date.fromisoformat(r["newest"])).days if r["newest"] else None
+        if r["withdrawals"] >= THIN_MIN_WITHDRAWALS and r["deposits"] == 0:
+            r["flags"].append("no_credits")
+        # Stale only relative to a ledger that IS moving: if nothing has
+        # landed anywhere, that is the import's problem, not this account's.
+        if newest_any and (today - date.fromisoformat(newest_any)).days <= 7 \
+                and (since is None or since > ACCOUNT_STALE_DAYS):
+            r["flags"].append("stale")
+        out.append({**r, "days_since_newest": since})
+    out.sort(key=lambda r: (-(len(r["flags"])), -(r["withdrawals"] + r["deposits"]), r["name"]))
+    return {"connected": True, "window_days": ACCOUNT_HEALTH_DAYS,
+            "window_start": start, "window_end": end,
+            "window_complete": bool(wd.complete and dp.complete),
+            "accounts": out,
+            "flagged": [r["name"] for r in out if r["flags"]]}
 
 
 @app.get("/history")

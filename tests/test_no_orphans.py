@@ -122,6 +122,10 @@ ENDPOINTS_REACHED_ANOTHER_WAY = {
     ("gmail", "/sample"): "manual diagnostic, documented in docs/SETUP-GMAIL.md",
     ("gmail", "/sync-status"): "manual diagnostic; the home card reads mode/sync instead",
     ("firefly", "/audit"): "manual diagnostic, documented in docs/BUDGETS.md",
+    ("firefly", "/freshness"): (
+        "read by scripts/firefly-import.sh (a host cron script, outside the "
+        "source tree this test scans) before and after each import to judge "
+        "whether rows entered; tests/test_firefly_import.py exercises it"),
     ("stocks", "/quotes"): "manual diagnostic; the dashboard reads /portfolio",
     ("core", "/history"): "manual diagnostic; the dashboard reads /today",
     ("assistant", "/sync"): (

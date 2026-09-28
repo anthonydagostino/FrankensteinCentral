@@ -1381,3 +1381,68 @@ def _delta(before, after):
         return float(after) - float(before)
     except (TypeError, ValueError):
         return None
+
+
+# --- is the import actually running, and landing? (SCRUM-142) ----------------
+
+IMPORT_ATTEMPT_STALE_DAYS = 2   # the cron is daily; two missed days is news
+IMPORT_EMPTY_SUSPECT_DAYS = 3   # importer runs, ledger unmoved this long: look
+
+
+def import_state(record, ledger_ingest_days=None, now=None):
+    """What the home screen may say about the scheduled Firefly import.
+
+    Two signals that only mean something together. The import record says
+    whether scripts/firefly-import.sh ran and what the importer did; the
+    ledger's own `ingest_days` (from transaction created_at, computed by the
+    firefly service) says whether data has been entering. Each alone is
+    ambiguous — and the ambiguous case is precisely the one worth catching:
+
+      never       nothing has ever triggered an import from here. The cron is
+                  not set up. Loud, because until it is, "importing daily"
+                  is a hope.
+      stale       it used to run and has not for two days. The cron stopped.
+      failed      it ran and the importer refused or could not be reached.
+      unverified  it ran, the importer answered, and the firefly service
+                  could not say whether anything entered.
+      quiet       it ran, the importer answered, nothing entered — and the
+                  ledger moved recently anyway. A day with no bank activity.
+      suspect     it ran, nothing entered, and the ledger has been still for
+                  days. The importer is running and delivering nothing:
+                  the SCRUM-40 shape, and the one sentence neither signal
+                  can say alone.
+      ok          it ran and rows entered.
+      unknown     no readable record. Not the same as fine.
+    """
+    base = {"state": "unknown", "attempt_days": None, "landed_days": None,
+            "last_result": None, "reason": None, "rows": None, "kind": None,
+            "ledger_ingest_days": ledger_ingest_days}
+    if not isinstance(record, dict) or not record:
+        return base
+    attempt = record.get("last_import_attempt_at")
+    if attempt is None:
+        return {**base, "state": "never"}
+    attempt_days = _days_since(attempt, now)
+    out = {**base,
+           "attempt_days": attempt_days,
+           "landed_days": _days_since(record.get("last_import_at"), now),
+           "last_result": record.get("last_import_result"),
+           "reason": record.get("last_import_reason"),
+           "rows": record.get("import_rows"),
+           "kind": record.get("import_kind")}
+    if attempt_days is None:
+        return out                                   # unreadable stamp
+    result = out["last_result"]
+    if attempt_days > IMPORT_ATTEMPT_STALE_DAYS:
+        out["state"] = "stale"
+    elif result == "failed":
+        out["state"] = "failed"
+    elif result == "unverified":
+        out["state"] = "unverified"
+    elif result == "empty":
+        idle = ledger_ingest_days
+        out["state"] = ("suspect" if isinstance(idle, int) and not isinstance(idle, bool)
+                        and idle >= IMPORT_EMPTY_SUSPECT_DAYS else "quiet")
+    elif result == "ok":
+        out["state"] = "ok"
+    return out

@@ -72,6 +72,85 @@ paycheck and what comes out of it before the rest is yours to spend.
 Nothing here is written to Firefly; it is stored in the hub's own settings.
 If the card says *no paycheck found*, the match terms are the thing to check.
 
+## 5. Automate the import (SCRUM-142)
+
+Everything above reads the ledger. This step is what keeps the ledger fed —
+without it, "importing daily" is a hope, and the dashboard's money figures
+are only as fresh as the last time someone clicked *Import data*.
+
+`scripts/firefly-import.sh` triggers the official Data Importer and then
+judges the run **by the ledger**, not by the importer's HTTP code: it reads
+the transaction count and the newest `created_at` before, waits, and reads
+them again. That distinction is the whole design. An importer can answer
+`200`, run to completion, and land nothing — that is exactly what happened to
+one card for five months ([FIREFLY-IMPORT-DIAGNOSIS.md](FIREFLY-IMPORT-DIAGNOSIS.md))
+— so the record it writes has four results, not two:
+
+| result | meaning |
+|---|---|
+| `ok` | rows entered (count rose, or the newest `created_at` advanced) |
+| `empty` | the importer ran and nothing entered — a quiet day, or a broken import; the home card tells them apart using the ledger's own age |
+| `failed` | the importer refused, or could not be reached, or nothing is configured |
+| `unverified` | the importer answered but the `firefly` service could not check the ledger |
+
+Only `ok` advances *last import*. A week of `empty` cannot make the card look
+freshly fed.
+
+### On the importer
+
+In the importer's environment (its `.env`, or the compose service):
+
+```env
+CAN_POST_AUTOIMPORT=true          # for a directory of json+csv pairs
+CAN_POST_FILES=true               # for posting one config file instead
+AUTO_IMPORT_SECRET=<16+ random characters>
+IMPORT_DIR_ALLOWLIST=/import      # the directory, as the importer sees it
+```
+
+Restart the importer. `openssl rand -hex 16` makes a fine secret.
+
+### On the hub
+
+In the hub's `.env`:
+
+```env
+FIREFLY_IMPORTER_SECRET=<the same secret>
+FIREFLY_IMPORT_DIR=/import        # → POST /autoimport   (json + csv pairs)
+# — or —
+FIREFLY_IMPORT_CONFIG=/home/you/firefly/discover.json   # → POST /autoupload
+FIREFLY_IMPORTER_INTERNAL_URL=    # only if the importer's URL differs from FIREFLY_IMPORTER_URL
+```
+
+A directory import needs each bank's `name.json` beside its `name.csv`; a
+config-file import posts one importer configuration (a `nordigen`, `spectre`
+or `simplefin` flow needs no csv at all). Run it once by hand and read the
+verdict:
+
+```bash
+bash scripts/firefly-import.sh          # triggers, waits, judges by the ledger
+bash scripts/firefly-import.sh --check  # prints the last record, triggers nothing
+```
+
+Then put it on a timer, next to the backup lines from
+[OPERATIONS.md](OPERATIONS.md#backups):
+
+```cron
+23 6 * * *  cd ~/FrankensteinCentral && bash scripts/firefly-import.sh >> ~/.frankenstein/import.log 2>&1
+```
+
+The secret is never printed: not by the script, not by `verify.sh`, and the
+importer's response body is saved to `~/.frankenstein/import-last-response.txt`
+(mode 0600) rather than echoed.
+
+### Where it shows
+
+- **Data safety card** (home): an *Import* line — *never run* and *runs but
+  nothing enters* are the two loud ones.
+- **Firefly panel**: *Import health*, per asset account — withdrawals,
+  deposits, newest row, and the flags `no credits imported` and `nothing
+  landing`.
+- `bash scripts/verify.sh` — section *Firefly import (scheduled)*.
+
 ## Notes
 
 - Everything is LAN-only — keep Firefly and the hub behind your network / VPN.
