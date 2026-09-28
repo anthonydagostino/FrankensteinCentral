@@ -24,6 +24,8 @@ from app.recurring import (  # noqa: E402
     detect_recurring,
     display_name,
     merchant_key,
+    merchant_via,
+    split_processor,
 )
 
 # A two-year sweep, sampled weekly: enough to cross every month boundary, both
@@ -280,6 +282,7 @@ def test_no_charges_at_all_is_answered_without_inventing_one(today):
     assert out == {"available": True, "window_complete": True,
                    "window_start": (today - timedelta(days=400)).isoformat(),
                    "items": [], "events": [], "monthly_equivalent": 0.0,
+                   "annual_equivalent": 0.0, "tracked": 0,
                    "absence_claims_suppressed": False}
 
 
@@ -335,3 +338,140 @@ def test_only_cadences_that_fit_the_news_window_can_be_new(name, low, high, nomi
     out = run(rows, today, window_days=nominal * 6 + 30)
     expected = nominal <= APPEARED_WINDOW_DAYS
     assert bool(events_of(out, "appeared")) is expected
+
+
+# --- catching the ones that hid (SCRUM-143) ----------------------------------
+#
+# SCRUM-19's own blind-spot list: PayPal-billed subscriptions hide behind a
+# "PAYPAL *" prefix, and the annual ones — where the money is — can never
+# produce three charges inside a thirteen-month window.
+
+def alternating(name_a, name_b, first, count, every, amount):
+    """One subscription whose statement text flips between two spellings —
+    the bank's, and the processor's."""
+    return [charge(first + timedelta(days=every * i), "", amount,
+                   desc=name_a if i % 2 == 0 else name_b)
+            for i in range(count)]
+
+
+@pytest.mark.parametrize("today", SWEEP)
+def test_a_paypal_billed_charge_and_the_direct_one_are_one_merchant(today):
+    """PAYPAL *DIGITALOCEAN one month, DIGITALOCEAN the next. Split into two
+    keys these are two singletons and never a pattern; merged they are the
+    monthly subscription they are."""
+    rows = alternating("PAYPAL *DIGITALOCEAN", "DIGITALOCEAN",
+                       today - timedelta(days=200), 6, 30, 24.0)
+    out = run(rows, today)
+    assert len(out["items"]) == 1
+    assert out["items"][0]["cadence"] == "monthly"
+    assert out["items"][0]["charges"] == 6
+    assert out["items"][0]["via"] == "PayPal"
+
+
+@pytest.mark.parametrize("a,b", [
+    ("PAYPAL *NETFLIX", "NETFLIX.COM"),
+    ("PP*SPOTIFY", "Spotify"),
+    ("SQ *BLUE BOTTLE", "BLUE BOTTLE"),
+    ("GOOGLE *YouTube Premium", "YOUTUBE PREMIUM"),
+    ("NETFLIX.COM", "Netflix"),
+])
+def test_processor_prefixes_and_tlds_do_not_split_a_merchant(a, b):
+    assert merchant_key({"desc": a}) == merchant_key({"desc": b}), (a, b)
+
+
+@pytest.mark.parametrize("a,b", [
+    ("PAYPAL *NETFLIX", "PAYPAL *SPOTIFY"),
+    ("PAYPAL *DIGITALOCEAN", "PAYPAL *DIGITALOCEAN LLC BACKUPS"),
+    ("SQ *BLUE BOTTLE", "SQ *BLUE STATE COFFEE"),
+    ("NETFLIX.COM", "NETFLIX GAMES"),
+])
+def test_two_merchants_behind_the_same_processor_still_do_not_merge(a, b):
+    """The refusal that makes the prefix rule safe. Stripping the processor
+    must never collapse everything bought through it into one 'PayPal'."""
+    assert merchant_key({"desc": a}) != merchant_key({"desc": b}), (a, b)
+
+
+def test_a_bare_processor_name_is_not_stripped_to_nothing():
+    """A 'PAYPAL' line with nothing after it is a balance top-up, and it is
+    still a merchant called PayPal — not an empty key that gets dropped."""
+    assert merchant_key({"desc": "PAYPAL"}) == "paypal"
+    assert merchant_key({"desc": "PAYPAL *"}) == "paypal"
+    assert split_processor("PAYPAL *") == ("PAYPAL *", None)
+
+
+def test_via_is_read_from_the_bank_text_even_when_firefly_named_the_merchant():
+    """Firefly's destination wins for the NAME; the description is what the
+    bank saw, and that is where 'via PayPal' lives."""
+    t = {"desc": "PAYPAL *NETFLIX", "destination": "Netflix"}
+    assert display_name(t) == "Netflix"
+    assert merchant_via(t) == "PayPal"
+    assert merchant_via({"desc": "NETFLIX.COM", "destination": "Netflix"}) is None
+
+
+def test_the_display_name_drops_the_processor_but_keeps_the_banks_casing():
+    assert display_name({"desc": "PAYPAL *DIGITALOCEAN"}) == "DIGITALOCEAN"
+    assert display_name({"desc": "DIGITALOCEAN"}) == "DIGITALOCEAN"
+
+
+@pytest.mark.parametrize("today", SWEEP)
+def test_an_annual_charge_seen_twice_is_confident_and_costed(today):
+    """Thirteen months can never hold three annual charges, so two a year
+    apart is the strongest evidence an annual subscription can produce. It
+    was being listed at low confidence and left out of every total — which
+    is how $1,020/yr of card fees stays invisible."""
+    rows = series("Amex Platinum fee", today - timedelta(days=372), 2, 365, 695.0)
+    out = run(rows, today, window_days=1200)
+    [item] = out["items"]
+    assert item["cadence"] == "annual"
+    assert item["confidence"] == "high"
+    assert item["annual_cost"] == 695.0
+    assert out["annual_equivalent"] == 695.0
+    assert out["tracked"] == 1
+    assert out["monthly_equivalent"] == round(695.0 * 30 / 365, 2)
+
+
+@pytest.mark.parametrize("today", SWEEP)
+def test_a_monthly_charge_seen_twice_is_still_low_confidence(today):
+    """The exception is for annual only. Two charges thirty days apart is
+    coffee twice — the window can hold twelve of them, so ask for three."""
+    rows = series("Maybe Co", today - timedelta(days=35), 2, 30, 40.0)
+    out = run(rows, today)
+    assert out["items"][0]["confidence"] == "low"
+    assert out["annual_equivalent"] == 0.0
+
+
+@pytest.mark.parametrize("today", SWEEP)
+def test_a_quarterly_charge_seen_twice_is_still_low_confidence(today):
+    """Thirteen months holds four quarterly charges, so demanding three is
+    fair, and two ninety days apart can be a merchant you visit twice."""
+    rows = series("Quarterly Co", today - timedelta(days=100), 2, 91, 30.0)
+    out = run(rows, today)
+    assert out["items"][0]["cadence"] == "quarterly"
+    assert out["items"][0]["confidence"] == "low"
+
+
+def test_the_inventory_is_ordered_by_what_it_costs_per_year():
+    """A $5 monthly outranks a $50 annual. Sorting by the charge amount
+    would put the annual first and hide the real ranking."""
+    today = date(2026, 9, 28)
+    rows = (series("Small Monthly", today - timedelta(days=100), 4, 30, 5.0)
+            + series("Bigger Annual", today - timedelta(days=380), 2, 365, 50.0))
+    out = run(rows, today, window_days=1200)
+    assert [i["name"] for i in out["items"]] == ["Small Monthly", "Bigger Annual"]
+    assert [i["annual_cost"] for i in out["items"]] == [round(5.0 * 365 / 30, 2), 50.0]
+
+
+def test_annual_cost_follows_a_price_change_like_amount_does():
+    today = date(2026, 9, 28)
+    rows = series("Streamer", today - timedelta(days=125), 4, 30, 10.0)
+    rows[-1]["amount"] = 12.0
+    out = run(rows, today)
+    [item] = out["items"]
+    assert item["amount"] == 12.0
+    assert item["annual_cost"] == round(12.0 * 365 / 30, 2)
+
+
+def test_via_is_absent_when_the_bank_named_no_processor():
+    today = date(2026, 9, 28)
+    out = run(series("Netflix", today - timedelta(days=100), 4, 30, 15.49), today)
+    assert out["items"][0]["via"] is None

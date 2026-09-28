@@ -63,6 +63,13 @@ CADENCES = (
 
 MIN_CHARGES_FOR_PATTERN = 2      # below this there is nothing to compare
 CONFIDENT_CHARGES = 3            # two intervals before a cadence is asserted
+# The one cadence that can never reach CONFIDENT_CHARGES inside the window it
+# is read from: thirteen months holds at most two annual charges. Two charges
+# 350-380 days apart from a merchant with no other charges is strong evidence
+# by itself, and SCRUM-19 is explicit that the annual ones are where the money
+# is — a rule that lists them but never counts them defeats the inventory.
+# Quarterly is NOT here: a 13-month window holds four, so three is fair.
+CONFIDENT_AT_TWO = ("annual",)
 INTERVAL_TOLERANCE = 0.35        # how far one interval may sit from the median
 MAX_MISSED_CYCLES = 12           # beyond this a "gap" is a different era
 RESUMED_GAP_FACTOR = 2.0         # a gap this many cadences long reads as a stop
@@ -70,6 +77,43 @@ PRICE_CHANGE_PCT = 0.02          # 2% ...
 PRICE_CHANGE_MIN = 0.50          # ...and at least this many dollars
 APPEARED_WINDOW_DAYS = 90        # how long "new" stays news
 RESUMED_WITHIN_CADENCES = 1.5    # a resumption is only news while it is fresh
+
+# Payment processors that prefix their own name onto the merchant's, so the
+# same subscription reads "PAYPAL *NETFLIX" one month and "NETFLIX.COM" the
+# next and splits into two singletons that never make a pattern. SCRUM-19
+# names this exactly: PayPal-billed subscriptions hide from both inbox search
+# and the card's own recurring view. Only prefixes with a delimiter are
+# stripped — a bare "PAYPAL" is a balance top-up, and stays what it is.
+# The processor is kept as `via` so nothing is lost, only merged.
+_PROCESSORS = (
+    (re.compile(r"^\s*paypal\s*\*\s*", re.I), "PayPal"),
+    (re.compile(r"^\s*pp\s*\*\s*", re.I), "PayPal"),
+    (re.compile(r"^\s*sq\s*\*\s*", re.I), "Square"),
+    (re.compile(r"^\s*tst\s*\*\s*", re.I), "Toast"),
+    (re.compile(r"^\s*sp\s*\*\s*", re.I), "Shopify"),
+    (re.compile(r"^\s*google\s*\*\s*", re.I), "Google"),
+    (re.compile(r"^\s*msft\s*\*\s*", re.I), "Microsoft"),
+    (re.compile(r"^\s*dri\s*\*\s*", re.I), "Digital River"),
+    (re.compile(r"^\s*clover\s*\*\s*", re.I), "Clover"),
+)
+# "netflix.com" and "Netflix" are one merchant. Only the TLD token goes; the
+# rest of the descriptor is left alone, because over-merging invents patterns.
+_TLD = re.compile(r"\.(com|net|org|io|co|tv|app)\b", re.I)
+
+
+def split_processor(raw: str) -> tuple[str, str | None]:
+    """(merchant text without the processor prefix, processor name or None)."""
+    text = str(raw or "")
+    for pat, name in _PROCESSORS:
+        if pat.search(text):
+            stripped = pat.sub("", text, count=1).strip()
+            # A prefix with nothing after it is not a merchant behind a
+            # processor; it is the processor. Leave it alone.
+            if stripped:
+                return stripped, name
+            return text, None
+    return text, None
+
 
 _NOISE = re.compile(r"""
       \b\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b   # embedded dates
@@ -96,9 +140,25 @@ def merchant_key(t: dict) -> str:
     """
     dest = str(t.get("destination") or "").strip()
     raw = dest or str(t.get("desc") or "")
-    cleaned = _NOISE.sub(" ", raw.lower())
+    raw, _ = split_processor(raw)
+    cleaned = _TLD.sub(" ", raw.lower())
+    cleaned = _NOISE.sub(" ", cleaned)
     cleaned = re.sub(r"[^a-z0-9&. ]+", " ", cleaned)
     return " ".join(cleaned.split())[:48]
+
+
+def merchant_via(t: dict) -> str | None:
+    """The processor a charge came through, if the statement says so.
+
+    Read from the description even when Firefly has a clean destination
+    name: the destination is what the merchant is called, the description is
+    what the bank saw, and "via PayPal" is the second of those.
+    """
+    for field in ("desc", "destination"):
+        _, via = split_processor(str(t.get(field) or ""))
+        if via:
+            return via
+    return None
 
 
 def display_name(t: dict) -> str:
@@ -111,8 +171,9 @@ def display_name(t: dict) -> str:
     """
     dest = str(t.get("destination") or "").strip()
     if dest:
-        return dest
+        return split_processor(dest)[0]
     raw = str(t.get("desc") or "")
+    raw = split_processor(raw)[0]
     cleaned = " ".join(_NOISE.sub(" ", raw).split())
     return cleaned or raw.strip()
 
@@ -210,6 +271,7 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
             "date": d,
             "amount": _amount(t),
             "name": display_name(t) or key,
+            "via": merchant_via(t),
         })
 
     items, events = [], []
@@ -226,8 +288,11 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
         amounts = [r["amount"] for r in rows]
         established = _established_amount(amounts)
         latest, last_seen, first_seen = amounts[-1], dates[-1], dates[0]
-        confident = len(rows) >= CONFIDENT_CHARGES
+        confident = (len(rows) >= CONFIDENT_CHARGES
+                     or (cadence in CONFIDENT_AT_TWO
+                         and len(rows) >= MIN_CHARGES_FOR_PATTERN))
         name = rows[-1]["name"] or key
+        via = next((r["via"] for r in reversed(rows) if r["via"]), None)
         is_known = _norm_name(name) in known or key in known
 
         # --- appeared -----------------------------------------------------
@@ -255,9 +320,18 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
                    and _price_moved(prior_established, latest)
                    and round(latest, 2) != round(prior_established, 2))
 
+        shown_amount = round(latest if changed else established, 2)
         item = {
             "key": key, "name": name,
+            # Which processor the charge comes through, when the statement
+            # says. "via PayPal" is the difference between a subscription you
+            # can find in the card's own recurring view and one you cannot.
+            "via": via,
             "cadence": cadence, "cadence_days": nominal,
+            # What it costs per year, which is the number SCRUM-19 asks for:
+            # a $5 monthly and a $60 annual are the same commitment, and a
+            # list sorted by the charge amount hides that.
+            "annual_cost": round(shown_amount * (365 / nominal), 2),
             # What it costs now, and what it has settled at. After a price
             # change these differ, and the difference is the whole story.
             "amount": round(latest if changed else established, 2),
@@ -287,13 +361,15 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
             events.append({**item, "event": "resumed",
                            "gap_days": max(gaps)})
 
-    items.sort(key=lambda i: (-i["amount"], i["name"]))
+    items.sort(key=lambda i: (-i["annual_cost"], i["name"]))
     order = {"appeared": 0, "changed": 1, "resumed": 2}
     events.sort(key=lambda e: (order.get(e["event"], 9), -e["amount"], e["name"]))
     # What these commitments cost per month, normalised across cadences.
     # Low-confidence items are excluded rather than estimated.
     monthly = round(sum(i["amount"] * (30 / i["cadence_days"])
                         for i in items if i["confidence"] == "high"), 2)
+    annual = round(sum(i["annual_cost"] for i in items
+                       if i["confidence"] == "high"), 2)
     return {
         "available": True,
         "window_complete": complete,
@@ -301,6 +377,8 @@ def detect_recurring(charges: list, today, window_start, known_bills=None,
         "items": items,
         "events": events,
         "monthly_equivalent": monthly,
+        "annual_equivalent": annual,
+        "tracked": sum(1 for i in items if i["confidence"] == "high"),
         # Absence claims were suppressed, so say so instead of implying none.
         "absence_claims_suppressed": not complete,
     }

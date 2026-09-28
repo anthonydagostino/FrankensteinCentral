@@ -209,8 +209,12 @@ def _recurring_summary(rec: dict) -> dict:
                     if k in e} | ({"from": e["from"], "to": e["to"]}
                                   if e.get("event") == "changed" else {})
                    for e in events[:STATUS_EVENT_LIMIT]],
-        "tracked": len(rec.get("items") or []),
+        # Only high-confidence items are costed, so the count says how many
+        # the money figures actually cover (the detector's own number).
+        "tracked": rec.get("tracked", 0),
         "monthly_equivalent": rec.get("monthly_equivalent"),
+        # The same commitments per year — the number SCRUM-19 asks for.
+        "annual_equivalent": rec.get("annual_equivalent"),
     }
 
 

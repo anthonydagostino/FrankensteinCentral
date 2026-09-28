@@ -514,6 +514,34 @@ Low-confidence items (two charges — a cadence, but only one interval) are
 listed and hedged on screen, and are **excluded** from the monthly-equivalent
 total rather than estimated into it.
 
+### Catching all of them (SCRUM-143)
+
+Three ways a real subscription escaped the inventory, each closed by rule
+rather than by a bigger merchant list:
+
+- **Processor prefixes split one merchant into two.** `PAYPAL *SPOTIFY` on
+  one statement and `SPOTIFY` on the next are one commitment. `merchant_key`
+  strips the processor (`PAYPAL *`, `PP*`, `SQ *`, `TST*`, `SP *`, `GOOGLE *`,
+  `MSFT *`, `DRI*`, `CLOVER *`) and a trailing TLD (`spotify.com` → `spotify`)
+  before matching, and the item carries `via` ("PayPal") so the row says who
+  billed it. A prefix with nothing after it (a bare `PAYPAL`) is left alone —
+  that is the merchant, not a wrapper. Two different merchants behind the same
+  processor never merge: the key is what follows the prefix.
+- **Annual charges could never reach "confident".** Confidence needs three
+  charges, and a 13-month window can only ever hold two annual ones — so
+  every yearly renewal was listed as low confidence and cost nothing in the
+  total, which is backwards: two charges a year apart at the same amount is
+  the strongest evidence in the set. `CONFIDENT_AT_TWO = ("annual",)` makes
+  an annual pattern high-confidence at two charges. Monthly and quarterly at
+  two stay low — one interval is one interval.
+- **A monthly total hides the yearly ones.** $120 once a year is $10/mo in
+  the total and invisible in a monthly list. Every item now carries
+  `annual_cost` (the shown amount × 365 / nominal cadence days, so a price
+  change is reflected), the inventory is sorted by it, and the response
+  carries `annual_equivalent` — the sum over high-confidence items — beside
+  `monthly_equivalent`. `tracked` is the count of items those two figures
+  actually cover, and only that count.
+
 ## Future path (architected, not built)
 
 - **Month templates / irregular months**: budgets are evaluated against the
