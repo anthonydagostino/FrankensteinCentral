@@ -552,15 +552,26 @@ const RENDERERS = {
           <span class="sub"> ${esc(tag)}${e.confidence === "low" ? " · seen twice only" : ""}</span></span>
           <span class="mono">${what}</span></div>`;
       }).join("");
-      const rows = (rec.items || []).map((i) => `
+      // Each row carries the year figure beside the charge, because that is
+      // the number a cancellation decision is made on, and who actually
+      // bills it: "PAYPAL *SPOTIFY" and "Spotify" are one merchant and the
+      // processor is stated, not hidden. An annual charge seen twice is a
+      // year of evidence, not a weak pattern, and is worded that way.
+      const rows = (rec.items || []).map((i) => {
+        const hedge = i.confidence === "low" ? " · low confidence"
+          : (i.cadence === "annual" && i.charges === 2 ? " · seen twice, a year apart" : "");
+        const via = i.via ? ` · via ${esc(i.via)}` : "";
+        const yr = i.annual_cost != null ? ` <span class="sub">≈ ${fmt(i.annual_cost)}/yr</span>` : "";
+        return `
         <div class="btxn"><span class="grow"><b>${esc(i.name)}</b>
-          <span class="sub"> ${esc(i.cadence)} · ${i.charges} charges · last ${esc((i.last_seen || "").slice(5))}${i.known_bill ? " · a Firefly bill" : ""}${i.confidence === "low" ? " · low confidence" : ""}</span></span>
-          <span class="mono">${fmt(i.amount)}</span></div>`).join("");
+          <span class="sub"> ${esc(i.cadence)} · ${i.charges} charges · last ${esc((i.last_seen || "").slice(5))}${i.known_bill ? " · a Firefly bill" : ""}${via}${hedge}</span></span>
+          <span class="mono">${fmt(i.amount)}${yr}</span></div>`;
+      }).join("");
       // A truncated read is stated, never rounded off into a total.
       const note = rec.window_complete === false
         ? `<p class="empty" style="margin:4px 0 8px">Only part of the history could be read, so nothing here is claimed as new or newly resumed, and no monthly total is given — these are the charges that were seen.</p>`
         : (rec.monthly_equivalent
-            ? `<p class="empty" style="margin:4px 0 8px">About <b>${fmt(rec.monthly_equivalent)}/month</b> committed across ${(rec.items || []).filter((i) => i.confidence === "high").length} recurring charges, over the last ${rec.lookback_days || 400} days. Two-charge patterns are listed but not counted.</p>`
+            ? `<p class="empty" style="margin:4px 0 8px">About <b>${fmt(rec.monthly_equivalent)}/month</b>${rec.annual_equivalent ? ` (≈ <b>${fmt(rec.annual_equivalent)}/year</b>)` : ""} committed across ${rec.tracked ?? (rec.items || []).filter((i) => i.confidence === "high").length} recurring charges, over the last ${rec.lookback_days || 400} days. Two-charge patterns are listed but not counted — except annual ones, which a 13-month window can only ever show twice.</p>`
             : "");
       if (rows || evs)
         recSection = `<h4>Recurring charges</h4>${note}${evs}${rows}`;
@@ -1073,7 +1084,10 @@ const RENDERERS = {
   },
 
   async firefly(app, body) {
-    const d = await api("/firefly/dashboard");
+    const [d, ah] = await Promise.all([
+      api("/firefly/dashboard"),
+      api("/firefly/accounts-health").catch(() => null),
+    ]);
     setMode(d.connected === false ? "disconnected" : "");
     const web = d.web_url;
     const imp = d.importer_url;
@@ -1111,10 +1125,34 @@ const RENDERERS = {
       ${spendingDonut(d.categories, "Spending by category — last 30 days")}
       <h4>Accounts</h4>
       <div class="rows">${accts || '<p class="empty">No accounts.</p>'}</div>
+      ${importHealth(ah)}
       <h4>Recent transactions</h4>
       <div class="rows">${recent || '<p class="empty">Nothing recent.</p>'}</div>`;
   },
 };
+
+// What the import has actually landed, per account (SCRUM-40). One card
+// quietly losing most of its rows on the way in makes every total on the
+// dashboard smaller and looks like nothing at all; this is the count that
+// found it, kept on screen. Every account is listed — an account with no
+// rows in the window is the loudest case, not an absent line.
+function importHealth(ah) {
+  if (!ah || ah.connected === false || !Array.isArray(ah.accounts)) return "";
+  const label = { no_credits: "no credits imported", stale: "nothing landing" };
+  const rows = ah.accounts.map((a) => {
+    const flags = (a.flags || []).map((f) => label[f] || f);
+    const newest = a.newest
+      ? `newest ${esc(a.newest)}${a.days_since_newest != null ? ` (${a.days_since_newest}d ago)` : ""}`
+      : "nothing in the window";
+    return `<div class="row"><div class="grow"><b>${esc(a.name)}</b>
+      <div class="sub">${a.withdrawals} withdrawals · ${a.deposits} deposits · ${newest}</div></div>
+      <span class="right" style="color:${flags.length ? "#ffb454" : "#6ee7b7"}">${flags.length ? esc(flags.join(", ")) : "ok"}</span></div>`;
+  }).join("");
+  const partial = ah.window_complete === false
+    ? `<p class="empty">Only part of the window could be read, so a quiet account here may just be unread.</p>` : "";
+  return `<h4>Import health — last ${ah.window_days} days</h4>${partial}
+    <div class="rows">${rows || '<p class="empty">No asset accounts.</p>'}</div>`;
+}
 
 // Search, then save. The chosen place is written to core settings, which is
 // where `market.holdings` lives too — so it survives a rebuild of the weather

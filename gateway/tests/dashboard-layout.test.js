@@ -231,3 +231,46 @@ test("disk free is shown from the payload and never invented", () => {
   assert.match(fn, /% free/, "the line states the percentage");
   assert.match(fn, /d\.disk\.state === "low" \? " warn"/, "a low disk is flagged, not just listed");
 });
+
+/* ---- SCRUM-142 / SCRUM-143: the import that feeds the money, and the
+ * subscriptions it feeds. Source-level pins: each is a line that a later
+ * "tidy" of the card could drop without any test in the repo noticing, and
+ * each one is the point of its ticket. */
+
+test("every recurring row states its yearly cost and who bills it", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
+  const fn = js.match(/async budget\(app, body\) \{[\s\S]*?\n  \},/);
+  assert.ok(fn, "budget panel not found");
+  assert.ok(fn[0].includes("i.annual_cost"), "rows no longer show the per-year figure");
+  assert.ok(fn[0].includes("i.via"), "rows no longer say which processor billed the charge");
+  assert.ok(fn[0].includes("seen twice, a year apart"),
+    "an annual charge seen twice is worded as weak evidence — it is a year of it");
+  assert.ok(fn[0].includes("rec.annual_equivalent"), "the inventory has no yearly total");
+});
+
+test("the money card gives subscriptions per year as well as per month", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  assert.ok(/rec\.annual_equivalent/.test(js), "home.js never reads annual_equivalent");
+});
+
+test("the firefly panel shows what the import landed, per account", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
+  assert.ok(js.includes('"/firefly/accounts-health"'), "the panel no longer reads /accounts-health");
+  const fn = js.match(/function importHealth\([\s\S]*?\n\}/);
+  assert.ok(fn, "importHealth not found");
+  for (const flag of ["no_credits", "stale"])
+    assert.ok(fn[0].includes(flag), `the ${flag} flag is not rendered`);
+  assert.ok(fn[0].includes("nothing in the window"),
+    "an account with no rows must be listed as such, not left out");
+});
+
+test("the data-safety card names every import state, and the suspect one loudest", () => {
+  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
+  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/);
+  assert.ok(fn, "renderSafety not found");
+  assert.ok(fn[0].includes("import_run"), "the card no longer reads import_run");
+  for (const st of ["never", "stale", "failed", "unverified", "quiet", "suspect", "ok", "unknown"])
+    assert.ok(new RegExp(`\\n\\s+${st}: \\[`).test(fn[0]), `import state ${st} has no wording`);
+  assert.ok(/suspect: \["warn"/.test(fn[0]), "'runs but nothing enters' is not marked as a warning");
+  assert.ok(/never: \["warn"/.test(fn[0]), "'never run' is not marked as a warning");
+});

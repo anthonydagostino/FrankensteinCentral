@@ -1328,7 +1328,7 @@
     // the other numbers on the card. Suppressed when the read was truncated:
     // a floor presented as a total is the failure docs/BUDGETS.md forbids.
     if (rec.available && rec.window_complete !== false && rec.monthly_equivalent)
-      subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}`);
+      subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}${rec.annual_equivalent ? ` (≈ ${money(rec.annual_equivalent)}/yr)` : ""}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
     const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
@@ -1524,11 +1524,30 @@
       ? `<span class="ds-x${d.disk.state === "low" ? " warn" : ""}">Disk <b>${esch(String(d.disk.free_pct))}% free</b></span>`
       : "";
 
+    // The scheduled Firefly import (SCRUM-142), on its own line rather than
+    // folded into the backup verdict: a backup protects what is in the
+    // ledger, and this says whether anything has been getting in. "Runs but
+    // nothing enters" is the shape that hid a thin card for five months, so
+    // it is named, not rounded off into "ran fine".
+    const imp = (d && d.import_run) || { state: "unknown" };
+    const IMPORT = {
+      never: ["warn", "Import <b>never run</b> from here"],
+      stale: ["warn", `Import <b>last tried ${imp.attempt_days != null ? esch(days(imp.attempt_days)) : "a while ago"}</b>`],
+      failed: ["warn", `Import <b>failed</b>${imp.reason ? ` (${esch(String(imp.reason))})` : ""}`],
+      unverified: ["warn", "Import <b>unverified</b> — the ledger couldn't be checked afterwards"],
+      quiet: ["", `Import <b>ran ${imp.attempt_days != null ? esch(days(imp.attempt_days)) : ""}</b>, nothing new`],
+      suspect: ["warn", `Import <b>runs but nothing enters</b>${imp.ledger_ingest_days != null ? ` — ledger still for ${esch(String(imp.ledger_ingest_days))}d` : ""}`],
+      ok: ["", `Import <b>${imp.rows != null ? esch(String(imp.rows)) + " rows " : ""}${imp.landed_days != null ? esch(days(imp.landed_days)) : "landed"}</b>`],
+      unknown: ["", "Import <b>unknown</b>"],
+    };
+    const [impCls, impText] = IMPORT[imp.state] || IMPORT.unknown;
+    const importLine = `<span class="ds-x${impCls ? " " + impCls : ""}">${impText}</span>`;
+
     el.innerHTML = `<h3>Data safety</h3>
       <div class="ds-lead ${b.cls}">${esch(b.lead)}</div>
       <div class="ds-label">since the last verified restore</div>
       <p class="ds-sub">${b.sub}</p>
-      <div class="ds-row">${backup}${disk}</div>
+      <div class="ds-row">${backup}${importLine}${disk}</div>
       ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
         Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
         the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
