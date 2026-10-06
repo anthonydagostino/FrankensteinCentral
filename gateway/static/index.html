@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FrankensteinCentral</title>
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#12151c" />
+    <meta name="theme-color" content="#0a0c14" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon.svg" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -48,12 +48,18 @@
 
     <main class="cc-main" id="cc-grid">
       <section class="cc-card cc-cal" id="cc-calendar"></section>
+      <!-- Money on the left, the three shorter cards stacked beside it. The
+           money card is tall (pay cycle, runway, the category donut, the
+           accounts) and the others are not; side by side nothing hangs in
+           empty space. Below ~640px the row stacks. -->
       <div class="cc-money-row">
         <section class="cc-card" id="cc-money"></section>
-        <section class="cc-card" id="cc-portfolio"></section>
-        <section class="cc-card" id="cc-resale"></section>
+        <div class="cc-side">
+          <section class="cc-card" id="cc-portfolio"></section>
+          <section class="cc-card" id="cc-resale"></section>
+          <section class="cc-card cc-ax" id="cc-amex"></section>
+        </div>
       </div>
-      <section class="cc-card cc-ax" id="cc-amex"></section>
     </main>
 
     <!-- Operator facts, one line each, out of the way: when the data was

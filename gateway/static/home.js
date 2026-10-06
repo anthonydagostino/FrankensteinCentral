@@ -823,7 +823,7 @@
       ${payLine}${runLine}${budLine}${recLine}${subLine}
       <div class="mny-hero mny-ff">${ffTiles}</div>
       ${catPie}
-      ${accts ? `<h3 style="margin-top:12px">Accounts</h3>${accts}` : ""}
+      ${accts ? `<h3 style="margin-top:14px">Accounts</h3><div class="acct-grid">${accts}</div>` : ""}
       <div class="hx-btns" style="margin-top:10px">
         <button class="hx-btn" id="money-budget">Budget →</button>
         <button class="hx-btn" id="money-firefly">Transactions →</button>

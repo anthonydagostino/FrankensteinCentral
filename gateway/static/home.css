@@ -1,9 +1,22 @@
-/* The home screen. Reuses tokens from styles.css. */
+/* The home screen. Reuses tokens from styles.css.
+ *
+ * The look: a deep navy page with a few soft coloured glows that drift
+ * slowly behind everything and change hue with the time of day; cards are
+ * frosted glass with a hairline border and one accent colour each; the
+ * headline figures are big and tight; everything else is quiet. Motion is
+ * slow and ambient, and all of it stops under prefers-reduced-motion. */
 :root {
-  --imp: #ff7a7a;
-  --fyi: #7c9cff;
-  --card-r: 16px;
+  --imp: #ff8a8a;
+  --fyi: #8b9cff;
+  --card-r: 22px;
+  --glass: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.025) 60%);
+  --glass-line: rgba(255,255,255,0.09);
+  --glass-shadow: 0 1px 0 rgba(255,255,255,0.05) inset, 0 30px 70px -40px rgba(0,0,0,0.75);
+  /* The three background glows, by time of day (body[data-mode]). */
+  --g1: #5eead4; --g2: #8b9cff; --g3: #f0abfc;
 }
+body.cc[data-mode="morning"] { --g1: #7dd3fc; --g2: #fdba74; --g3: #a7f3d0; }
+body.cc[data-mode="evening"] { --g1: #fb923c; --g2: #f472b6; --g3: #818cf8; }
 
 /* styles.css locks the (retired) lounge to a fixed non-scrolling canvas; the
    home screen is a normal scrolling document. */
@@ -14,18 +27,41 @@ html, body.cc {
 }
 body.cc {
   margin: 0;
-  background:
-    radial-gradient(1200px 600px at 80% -10%, rgba(124,156,255,0.10), transparent 60%),
-    radial-gradient(1000px 500px at -10% 110%, rgba(110,231,183,0.07), transparent 55%),
-    var(--bg);
-  padding: 22px clamp(14px, 4vw, 40px) 60px;
-  max-width: 1320px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+  padding: 24px clamp(14px, 4vw, 44px) 56px;
+  max-width: 1360px;
   margin-inline: auto;
+  position: relative;
 }
-body.cc[data-mode="evening"] {
+/* The glows. Two fixed layers behind the page, each a few big soft blobs,
+   drifting on a slow loop so the page is never quite still. They are
+   decoration and never sit above anything. */
+body.cc::before, body.cc::after {
+  content: ""; position: fixed; inset: -10%; z-index: -1; pointer-events: none;
+}
+body.cc::before {
   background:
-    radial-gradient(1200px 600px at 80% -10%, rgba(255,140,120,0.10), transparent 60%),
-    var(--bg);
+    radial-gradient(38% 34% at 14% 10%, color-mix(in srgb, var(--g1) 34%, transparent), transparent 70%),
+    radial-gradient(34% 36% at 86% 14%, color-mix(in srgb, var(--g2) 30%, transparent), transparent 70%);
+  animation: cc-drift-a 26s ease-in-out infinite alternate;
+}
+body.cc::after {
+  background:
+    radial-gradient(32% 30% at 72% 86%, color-mix(in srgb, var(--g3) 22%, transparent), transparent 70%),
+    radial-gradient(28% 30% at 8% 78%, color-mix(in srgb, var(--g2) 16%, transparent), transparent 70%);
+  animation: cc-drift-b 34s ease-in-out infinite alternate;
+}
+@keyframes cc-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(3%, 4%, 0) scale(1.08); }
+}
+@keyframes cc-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to   { transform: translate3d(-3%, -3%, 0) scale(1); }
 }
 
 /* ---- top bar ---- */
@@ -36,123 +72,198 @@ body.cc[data-mode="evening"] {
      the greeting, which is what "put it next to the good evening again" was
      about. It shares the line now and takes whatever width is left between
      the greeting and the buttons. Phones wrap instead; see the 700px rule. */
-  gap: 20px; margin-bottom: 18px; flex-wrap: nowrap;
+  gap: 20px; margin-bottom: 22px; flex-wrap: nowrap;
 }
 /* Neither of these may shrink: the greeting is the page's title and the
    buttons are its controls. The pill absorbs the remainder. */
 .cc-hello { flex: 0 0 auto; }
-.cc-time { color: var(--muted); font-size: 13px; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
-.cc-hello h1 { margin: 2px 0 0; font-size: clamp(24px, 3.4vw, 34px); font-weight: 700; letter-spacing: -0.5px; }
-.cc-date { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
-.cc-top-actions { display: flex; align-items: center; gap: 10px; }
+.cc-time {
+  display: inline-flex; align-items: center; gap: 7px;
+  color: var(--muted); font-size: 12.5px; letter-spacing: .4px; font-weight: 600;
+  font-variant-numeric: tabular-nums; text-transform: uppercase;
+}
+/* A small live dot: the clock ticks every second and the page refreshes
+   itself, and this is the one hint that it is. */
+.cc-time::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+  animation: cc-pulse 2.4s ease-in-out infinite;
+}
+@keyframes cc-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+.cc-hello h1 {
+  margin: 4px 0 0; font-size: clamp(28px, 3.6vw, 40px); font-weight: 800;
+  letter-spacing: -1.2px; line-height: 1.05;
+  background: linear-gradient(120deg, #fff 30%, color-mix(in srgb, var(--g1) 70%, #fff));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.cc-date { margin: 4px 0 0; color: var(--muted); font-size: 14.5px; }
+.cc-top-actions { display: flex; align-items: center; gap: 8px; }
 /* Pushes the buttons to the right once the weather pill joined the row. */
 .cc-top-actions { margin-left: auto; }
 .cc-icon-btn {
-  display: inline-grid; place-items: center; width: 40px; height: 40px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  display: inline-grid; place-items: center; width: 42px; height: 42px;
+  background: var(--glass); border: 1px solid var(--glass-line); border-radius: 14px;
   color: var(--text); font-size: 17px; cursor: pointer; text-decoration: none;
+  box-shadow: var(--glass-shadow);
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
-.cc-icon-btn:hover { border-color: var(--accent-2); }
+.cc-icon-btn:hover {
+  border-color: color-mix(in srgb, var(--accent-2) 60%, var(--glass-line));
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 12px 30px -14px color-mix(in srgb, var(--accent-2) 70%, transparent);
+}
 /* A launch button whose target is not configured yet: visible (so you know it
    exists) but obviously not live, and its click explains itself. */
 .cc-icon-btn.unconfigured { opacity: .45; }
 
 /* ---- grid ---- */
-.cc-main { display: flex; flex-direction: column; gap: 16px; }
-/* Money, the portfolio and the resale book, side by side, directly under the
-   calendar. They and the week grid are what this page is opened for. */
+.cc-main { display: flex; flex-direction: column; gap: 18px; }
+/* Money on the left, the shorter cards stacked beside it. */
 .cc-money-row {
-  display: grid; gap: 16px; align-items: start;
-  /* auto-fit rather than a fixed count: three money cards go 3-up on a wide
-     screen, 2-up in the middle and stack on a phone, without a breakpoint per
-     arrangement. */
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  display: grid; gap: 18px; align-items: start;
+  /* auto-fit rather than a fixed count: two columns when there is room for
+     two, one when there is not, without a breakpoint per arrangement. */
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
 }
 @media (max-width: 900px) { .cc-money-row { grid-template-columns: 1fr; } }
-
-/* ---- resale (SCRUM-139) -------------------------------------------------
-   `expiring` is the only figure here with a deadline attached, so it is the
-   only one allowed to shout — the rest are reference. */
-.rs-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.rs-lead { font-size: 26px; font-weight: 800; letter-spacing: -.6px;
-  font-variant-numeric: tabular-nums; color: var(--text); }
-.rs-lead.urgent { color: var(--imp); }
-.rs-unit { font-size: 13px; color: var(--muted); }
-.rs-sub { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px;
-  font-size: 12.5px; color: var(--muted); }
-.rs-sub b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.cc-side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 
 .cc-card {
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--panel);
-  border: 1px solid var(--line); border-radius: var(--card-r);
-  padding: 18px;
+  position: relative; isolation: isolate; overflow: hidden;
+  background: var(--glass);
+  border: 1px solid var(--glass-line); border-radius: var(--card-r);
+  padding: 20px 22px;
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  transition: border-color .25s ease, transform .25s ease, box-shadow .25s ease;
+  animation: cc-rise .7s cubic-bezier(.2, .8, .2, 1) both;
+}
+/* Each card wears one colour: a soft glow in its top corner and a dot on
+   its label. The number is still the number; this is how you find a card
+   from across the room. */
+.cc-card::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(520px 220px at 0% 0%,
+    color-mix(in srgb, var(--ca, var(--accent-2)) 17%, transparent), transparent 70%);
+  opacity: .9;
+}
+.cc-card:hover {
+  border-color: color-mix(in srgb, var(--ca, var(--accent-2)) 35%, var(--glass-line));
+  transform: translateY(-2px);
+}
+#cc-calendar { --ca: var(--violet); }
+#cc-money { --ca: var(--accent); }
+#cc-portfolio { --ca: var(--sky); }
+#cc-resale { --ca: var(--amber); }
+#cc-amex { --ca: var(--gold); }
+/* Cards fade up in order as the page paints. */
+#cc-calendar { animation-delay: .02s; }
+#cc-money { animation-delay: .10s; }
+#cc-portfolio { animation-delay: .16s; }
+#cc-resale { animation-delay: .22s; }
+#cc-amex { animation-delay: .28s; }
+@keyframes cc-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .cc-card h3 {
-  margin: 0 0 12px; font-size: 12px; letter-spacing: .8px; text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 14px; font-size: 11.5px; letter-spacing: 1.1px; text-transform: uppercase;
   color: var(--muted); font-weight: 700;
 }
+.cc-card h3::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--ca, var(--accent-2));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--ca, var(--accent-2)) 80%, transparent);
+}
 /* The shared "nothing here" line. */
-.att-empty { color: var(--muted); padding: 8px; }
+.att-empty { color: var(--muted); padding: 8px 0; line-height: 1.5; }
 .cc-input {
-  width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; font-size: 14px; font-family: inherit;
+  width: 100%; background: rgba(0,0,0,0.25); color: var(--text); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px; font-size: 14px; font-family: inherit;
 }
 .cc-input:focus { outline: none; border-color: var(--accent-2); }
 
 /* ---- Money / Portfolio ---- */
-.mny-stale { margin: -4px 0 12px; padding: 7px 11px; border-radius: 9px; font-size: 12.5px;
-  color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); }
-.mny-stale b { color: #ffcc66; }
-.mny-hero { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 12px; }
-.mny-stat .v { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.mny-stat .l { font-size: 12px; color: var(--muted); }
+.mny-stale { margin: -4px 0 14px; padding: 8px 12px; border-radius: 12px; font-size: 12.5px;
+  color: var(--muted); background: rgba(251,191,36,0.07); border: 1px solid rgba(251,191,36,0.25); }
+.mny-stale b { color: var(--amber); }
+.mny-hero { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 14px; align-items: flex-start; }
+.mny-stat .v {
+  font-size: 30px; font-weight: 800; letter-spacing: -1.1px; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+/* The first figure on a card is the one you came for: it gets the card's
+   colour, bleeding into white. A figure carrying a state colour (.up/.down/
+   .warn) keeps it — a red "left to spend" must stay red. */
+.mny-hero .mny-stat:first-child .v:not(.up):not(.down):not(.warn) {
+  background: linear-gradient(120deg, #fff 20%, var(--ca, var(--accent-2)));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.mny-stat .l { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
 /* Pay-cycle line: the arithmetic behind "left to spend", spelled out so the
    headline number can always be retraced. */
-.mny-pay { font-size: 13.5px; line-height: 1.5; margin: 2px 0 0; padding: 8px 11px;
-  border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line);
+.mny-pay { font-size: 13.5px; line-height: 1.55; margin: 2px 0 0; padding: 10px 13px;
+  border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px solid var(--line);
   border-left: 3px solid var(--accent-2); }
 .mny-pay .sub { color: var(--muted); font-size: 12px; }
-.mny-pay .warn, .mny-stat .warn { color: #ffcc66; }
+.mny-pay .warn, .mny-stat .warn { color: var(--amber); }
 /* Secondary context (rolling 30 days, budget room) — deliberately quieter
    than the month and pay-cycle numbers above it. */
-.mny-sub { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+.mny-sub { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; line-height: 1.55; }
 .mny-sub b { color: var(--text); font-variant-numeric: tabular-nums; }
 .mny-trend.up { color: var(--up); } .mny-trend.down { color: var(--down); }
-.pos { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.pos { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
 .pos:last-child { border-bottom: 0; }
 .up { color: var(--up); } .down { color: var(--down); }
 .mono { font-variant-numeric: tabular-nums; }
 /* Firefly's own headline figures, under the hero. */
-.mny-ff { margin-top: 10px; }
+.mny-ff { margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.mny-ff .mny-stat .v { font-size: 22px; }
 /* Subscription changes on the money card. It carries .mny-sub for colour on
    purpose — this is news, not a warning: "Netflix went up $2.50" does not
    deserve the same weight as being over budget. Only the spacing differs. */
-.mny-rec { margin-top: 6px; line-height: 1.55; }
+.mny-rec { margin-top: 8px; }
 /* Cash runway. The only forward-looking figure on the money card, so it reads
    as a statement rather than a stat tile; `warn` only under three months,
    where it stops being context and starts being a decision. */
-.mny-run { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+.mny-run { margin: 10px 0 0; font-size: 13.5px; line-height: 1.55; }
 .mny-run b { font-variant-numeric: tabular-nums; }
 .mny-run.warn b { color: var(--imp, #ff7a7a); }
+.mny-run .sub { color: var(--muted); font-size: 12.5px; }
 /* The portfolio's "past your threshold" line. */
-.pf-alert { font-size: .76rem; margin: .3rem 0 .5rem; opacity: .9; }
-.pf-alert b.up { color: var(--ok, #4caf82); }
-.pf-alert b.down { color: var(--imp, #e0574a); }
+.pf-alert {
+  display: inline-block; font-size: 12px; margin: 2px 0 10px; padding: 4px 10px;
+  border-radius: 999px; background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.3);
+}
+.pf-alert b.up { color: var(--up); }
+.pf-alert b.down { color: var(--down); }
+/* The category donut sits beside its legend when the card is wide enough. */
+#cc-money .dn-wrap { margin-top: 4px; }
+#cc-money .dn-row { font-size: 13px; }
+#cc-money .dn-cap { font-size: 9px; letter-spacing: .2px; }
+#cc-money .dn-wrap + h3, #cc-money h4 {
+  display: flex; align-items: center; gap: 8px;
+  margin: 18px 0 12px; font-size: 11.5px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
+}
+/* The accounts, two to a row where there is room. */
+.acct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 28px; }
 
 /* ---- what is owed on cards (money card) ---------------------------------
    Sits beside "Left to spend", never inside it. The lead is the total; the
    per-card breakdown is what makes it checkable against the statements. */
 .mny-owed {
-  margin: 10px 0 0; padding: 10px 12px; border-radius: 12px;
-  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
+  margin: 12px 0 0; padding: 11px 13px; border-radius: 14px;
+  background: rgba(251,113,133,0.06); border: 1px solid rgba(251,113,133,0.22);
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
 }
 .mo-lead {
-  font-size: 19px; font-weight: 650; color: var(--down);
+  font-size: 20px; font-weight: 700; color: var(--down); letter-spacing: -.4px;
   font-variant-numeric: tabular-nums;
 }
 .mo-unit { font-size: 12.5px; color: var(--muted); }
-.mo-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+.mo-cards { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; }
 .mo-card { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .mo-card b { color: var(--text); font-weight: 600; }
 /* Carries the whole explanation when there is nothing to total, so the empty
@@ -161,140 +272,171 @@ body.cc[data-mode="evening"] {
 .mo-note b { color: var(--text); }
 
 /* ---- small buttons (card footers) ---- */
-.hx-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
-.hx-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 11px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-.hx-btn:hover { border-color: var(--accent); }
+.hx-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.hx-btn {
+  background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.hx-btn:hover {
+  border-color: color-mix(in srgb, var(--ca, var(--accent)) 60%, var(--line));
+  background: color-mix(in srgb, var(--ca, var(--accent)) 12%, rgba(255,255,255,0.05));
+  transform: translateY(-1px);
+}
 
 /* ---- footer ---- */
-.cc-foot { margin-top: 22px; display: flex; justify-content: space-between; gap: 14px;
-  flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+.cc-foot {
+  margin-top: 26px; display: flex; justify-content: space-between; gap: 10px 18px;
+  flex-wrap: wrap; color: var(--muted); font-size: 12px;
+}
+.cc-foot > span { opacity: .85; }
+.cc-foot > span:empty { display: none; }
 
 /* ---- apps & services launcher ---- */
-.launcher-overlay { position: fixed; inset: 0; background: rgba(6,8,12,0.7); backdrop-filter: blur(4px);
+.launcher-overlay { position: fixed; inset: 0; background: rgba(6,8,16,0.6); backdrop-filter: blur(10px);
   display: grid; place-items: start center; padding-top: 10vh; z-index: 82; }
 .launcher-overlay[hidden] { display: none; }
 .launcher { width: min(560px, 94vw); background: var(--panel); border: 1px solid var(--line);
-  border-radius: 16px; padding: 18px 20px; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+  border-radius: 22px; padding: 20px 22px; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
 .launcher-head { display: flex; align-items: center; justify-content: space-between; }
-.launcher-head h2 { margin: 0; font-size: 17px; }
+.launcher-head h2 { margin: 0; font-size: 17px; letter-spacing: -.3px; }
 .launcher-hint { margin: 6px 0 14px; color: var(--muted); font-size: 12.5px; }
 .launcher-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.launch-tile { display: flex; align-items: center; gap: 9px; padding: 11px 12px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px;
-  cursor: pointer; text-decoration: none; color: var(--text); font-size: 13.5px; }
-.launch-tile:hover { border-color: var(--accent-2); }
+.launch-tile { display: flex; align-items: center; gap: 9px; padding: 12px 12px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 14px;
+  cursor: pointer; text-decoration: none; color: var(--text); font-size: 13.5px;
+  transition: border-color .18s ease, transform .18s ease; }
+.launch-tile:hover { border-color: var(--accent-2); transform: translateY(-1px); }
 .launch-tile .ic { font-size: 17px; }
 .launch-tile .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .launch-tile .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); flex: 0 0 auto; }
-.launch-tile .dot.up { background: var(--up); }
-.launch-tile .dot.down { background: var(--down); box-shadow: 0 0 0 3px rgba(255,107,107,.15); }
+.launch-tile .dot.up { background: var(--up); box-shadow: 0 0 8px var(--up); }
+.launch-tile .dot.down { background: var(--down); box-shadow: 0 0 0 3px rgba(251,113,133,.18); }
 .launch-tile .ext { color: var(--accent-2); text-decoration: none; font-weight: 700; padding: 2px 5px; border-radius: 6px; }
-.launch-tile .ext:hover { background: var(--panel); }
+.launch-tile .ext:hover { background: var(--panel-2); }
 
 /* ---- settings ---- */
-.settings-overlay { position: fixed; inset: 0; background: rgba(6,8,12,0.7); backdrop-filter: blur(4px);
+.settings-overlay { position: fixed; inset: 0; background: rgba(6,8,16,0.6); backdrop-filter: blur(10px);
   display: grid; place-items: center; z-index: 86; padding: 20px; }
 .settings-overlay[hidden] { display: none; }
-.settings-box { width: min(680px, 96vw); max-height: 88vh; display: flex; flex-direction: column;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
-.settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line); }
-.settings-head h2 { margin: 0; font-size: 18px; }
-.settings-body { padding: 18px 20px; overflow: auto; display: grid; gap: 18px; }
-.settings-foot { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
-.set-group h4 { margin: 0 0 10px; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+.settings-box { width: min(700px, 96vw); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 22px; overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+.settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; border-bottom: 1px solid var(--line); }
+.settings-head h2 { margin: 0; font-size: 18px; letter-spacing: -.3px; }
+.settings-body { padding: 18px 22px; overflow: auto; display: grid; gap: 20px; }
+.settings-foot { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+.set-group h4 { margin: 0 0 10px; font-size: 11.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
 .set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .set-field { display: grid; gap: 4px; }
 .set-field label { font-size: 12px; color: var(--muted); }
-.set-field input, .set-field textarea, .set-field select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 9px; padding: 8px 10px; font-family: inherit; font-size: 13.5px; }
+.set-field input, .set-field textarea, .set-field select { background: rgba(0,0,0,0.25); color: var(--text); border: 1px solid var(--line);
+  border-radius: 11px; padding: 9px 11px; font-family: inherit; font-size: 13.5px; }
 .set-field textarea { min-height: 64px; resize: vertical; }
 .set-field input:focus, .set-field textarea:focus { outline: none; border-color: var(--accent-2); }
 .close { background: none; border: 0; color: var(--muted); font-size: 24px; cursor: pointer; line-height: 1; }
+.close:hover { color: var(--text); }
 /* Cash-runway account picker in Settings. The list is as long as the ledger,
    so it scrolls rather than pushing Save off the modal. */
 .set-runway {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 6px 14px; margin-top: 6px; max-height: 220px; overflow-y: auto;
-  padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px; border: 1px solid var(--line); border-radius: 12px;
 }
 .set-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .set-check input { cursor: pointer; }
 
-.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
-  padding: 10px 16px; border-radius: 10px; font-size: 13px; z-index: 90; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  padding: 10px 16px; border-radius: 999px; font-size: 13px; z-index: 90; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
 
 /* Offline banner. Not decoration: it is the thing that stops a replayed
    payload reading as today's figures. Deliberately loud. */
 #cc-offline {
-  margin: 0 0 .6rem; padding: .45rem .7rem; border-radius: 8px;
-  font-size: .78rem; font-weight: 500;
+  margin: 0 0 .8rem; padding: .5rem .8rem; border-radius: 12px;
+  font-size: .8rem; font-weight: 500;
   color: var(--imp, #e0574a);
   border: 1px solid currentColor; background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
 /* ---- The week grid ---------------------------------------------------------
    Seven columns: today and the next six. Every status is carried by a word as
-   well as a colour. The seasonal theming that used to live here — twelve
-   palettes, drifting glyphs, a decor toggle — went on 2026-10-06; a calendar
-   is for reading, and the events already carry their own colours. */
+   well as a colour. A calendar is for reading; the events carry their own
+   colours and that is all the colour the grid needs. */
 .cc-cal { grid-column: 1 / -1; }
 
-.wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .wk-top h3 { margin: 0; }
 .wk-top .hx-btn { margin-left: auto; }
-.wk-range { color: var(--text); font-size: 13px; font-weight: 600; }
+.wk-range { color: var(--text); font-size: 13.5px; font-weight: 700; letter-spacing: -.2px; }
 /* Green because it is good news and it is rare: it appears only when the
    Calendar import has actually produced something. */
 .wk-note.synced {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--up);
+  border-color: color-mix(in srgb, var(--up) 35%, var(--line));
+  background: color-mix(in srgb, var(--up) 9%, transparent);
 }
 .wk-note {
-  font-size: 11px; color: var(--muted); border: 1px solid var(--line);
-  border-radius: 999px; padding: 2px 9px;
+  font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 10px; background: rgba(255,255,255,0.03);
 }
-.wk-note.clash { color: var(--imp); border-color: color-mix(in srgb, var(--imp) 45%, var(--line)); }
+.wk-note.clash { color: var(--imp); border-color: color-mix(in srgb, var(--imp) 45%, var(--line)); background: color-mix(in srgb, var(--imp) 8%, transparent); }
 
 .wk-grid {
-  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px;
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px;
 }
 
 .wk-day {
   position: relative;
   display: flex; flex-direction: column; min-width: 0;
-  background: var(--panel-2);
+  background: rgba(255,255,255,0.03);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   /* Trimmed on 2026-09-18: at 250px the seven columns ran the length of the
      screen. The floor is now just enough for the header plus three events —
      past that the day counts the rest rather than growing (see
      DAY_EVENTS_SHOWN in home.js), so one busy Tuesday can no longer set the
      height of the entire grid. */
-  padding: 10px 9px 11px;
-  min-height: 132px;
+  padding: 11px 10px 12px;
+  min-height: 136px;
   overflow: hidden;
+  transition: border-color .2s ease, background .2s ease;
+  animation: cc-rise .6s cubic-bezier(.2, .8, .2, 1) both;
 }
-.wk-day:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
-.wk-day.is-weekend { background: color-mix(in srgb, var(--panel-2) 82%, var(--bg)); }
+.wk-day:nth-child(1) { animation-delay: .08s; }
+.wk-day:nth-child(2) { animation-delay: .12s; }
+.wk-day:nth-child(3) { animation-delay: .16s; }
+.wk-day:nth-child(4) { animation-delay: .20s; }
+.wk-day:nth-child(5) { animation-delay: .24s; }
+.wk-day:nth-child(6) { animation-delay: .28s; }
+.wk-day:nth-child(7) { animation-delay: .32s; }
+.wk-day:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.14); }
+.wk-day:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+.wk-day.is-weekend { background: rgba(255,255,255,0.018); }
 
-/* Today: a ring plus a "Today" word. Never colour alone. */
+/* Today: a gradient ring, a glow, and the word "Today". Never colour alone. */
 .wk-day.is-today {
-  border-color: var(--accent-2);
-  box-shadow: 0 0 0 1px var(--accent-2) inset;
+  border-color: transparent;
+  background:
+    linear-gradient(rgba(21,24,43,0.92), rgba(21,24,43,0.92)) padding-box,
+    linear-gradient(135deg, var(--violet), var(--sky)) border-box;
+  box-shadow: 0 16px 40px -22px color-mix(in srgb, var(--violet) 70%, transparent);
+}
+.wk-day.is-today:hover {
+  background:
+    linear-gradient(rgba(26,30,52,0.94), rgba(26,30,52,0.94)) padding-box,
+    linear-gradient(135deg, var(--violet), var(--sky)) border-box;
 }
 /* A window spanning two months says so instead of silently restarting its
    day numbers. */
-.wk-day.month-start { border-left: 2px solid var(--accent-2); }
-.wk-day.month-start .wk-mo { color: var(--accent-2); font-weight: 700; }
+.wk-day.month-start { border-left: 2px solid var(--violet); }
+.wk-day.month-start .wk-mo { color: var(--violet); font-weight: 700; }
 .wk-day.has-clash { border-color: color-mix(in srgb, var(--imp) 40%, var(--line)); }
 
 /* One line: date, weekday, month-when-it-changes, Today, count. The date
    number leads it because it is the corner marker you scan for, and it is
    small because the events under it are what the card is for. */
-.wk-hd { position: relative; margin-bottom: 7px; }
+.wk-hd { position: relative; margin-bottom: 8px; }
 /* Pinned right so the count can never be what pushes this line onto a second
    row: the date, weekday and TODAY pill are the only things competing for the
    width, and the count sits out of their way entirely. */
@@ -304,16 +446,16 @@ body.cc[data-mode="evening"] {
 }
 .wk-date { display: inline-flex; align-items: baseline; gap: 1px; }
 .wk-num {
-  font-size: 14px; font-weight: 800; line-height: 1; letter-spacing: -.4px;
+  font-size: 15px; font-weight: 800; line-height: 1; letter-spacing: -.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--accent-2);
+  color: var(--text);
 }
+.wk-day.is-today .wk-num { color: #fff; }
 .wk-date sup { font-size: 8px; font-weight: 700; color: var(--muted); }
 .wk-dow {
-  font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  font-size: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
   color: var(--muted); white-space: nowrap;
 }
-.wk-day.is-today .wk-dow { color: var(--accent-2); }
 .wk-mo {
   font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
   color: var(--muted); white-space: nowrap;
@@ -324,19 +466,20 @@ body.cc[data-mode="evening"] {
    and year stay in the card's aria-label, which is what actually gets read
    out. */
 .wk-rel {
-  font-size: 8px; font-weight: 800; letter-spacing: .02em;
-  text-transform: uppercase; color: var(--bg);
-  background: var(--accent-2);
-  border-radius: 4px; padding: 1px 4px; white-space: nowrap;
+  font-size: 8px; font-weight: 800; letter-spacing: .06em;
+  text-transform: uppercase; color: #0a0c14;
+  background: linear-gradient(135deg, var(--violet), var(--sky));
+  border-radius: 5px; padding: 2px 5px; white-space: nowrap;
 }
 .wk-count {
   position: absolute; top: -1px; right: 0;
   font-size: 10px; font-weight: 700;
   color: var(--text);
-  background: color-mix(in srgb, var(--accent-2) 14%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--accent-2) 30%, var(--line));
-  border-radius: 999px; min-width: 17px; text-align: center; padding: 0 5px;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid var(--line);
+  border-radius: 999px; min-width: 18px; text-align: center; padding: 1px 6px;
 }
+.wk-day.is-today .wk-count { background: color-mix(in srgb, var(--violet) 25%, transparent); border-color: color-mix(in srgb, var(--violet) 45%, transparent); }
 
 /* ---- the events themselves: the point of the card -----------------------
    Each row carries its own colour in --ev, set inline from the event's title
@@ -344,18 +487,20 @@ body.cc[data-mode="evening"] {
    colour every week and a busy day reads as several distinct things rather
    than one grey block. Colour is never the only carrier: the status word, the
    overlap flag and the time all remain in text. */
-.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.wk-evs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .wk-ev {
   display: flex; flex-direction: column; gap: 1px;
-  padding: 4px 6px; border-radius: 7px;
-  background: color-mix(in srgb, var(--ev, var(--accent-2)) 13%, transparent);
+  padding: 5px 7px; border-radius: 9px;
+  background: color-mix(in srgb, var(--ev, var(--accent-2)) 14%, transparent);
   border-left: 3px solid var(--ev, var(--accent-2));
+  transition: background .15s ease;
 }
+.wk-ev:hover { background: color-mix(in srgb, var(--ev, var(--accent-2)) 22%, transparent); }
 /* Wraps rather than truncating. An ellipsised "10:30 AM – 11:3…" has thrown
    away the one fact the line exists to carry; two short lines have not. */
 .wk-ev-when {
-  color: color-mix(in srgb, var(--ev, var(--accent-2)) 55%, var(--text));
-  font-size: 10px; font-weight: 600; letter-spacing: .2px; white-space: normal;
+  color: color-mix(in srgb, var(--ev, var(--accent-2)) 60%, var(--text));
+  font-size: 10px; font-weight: 700; letter-spacing: .2px; white-space: normal;
 }
 .wk-dash { padding: 0 2px; }
 .wk-ev-title {
@@ -373,44 +518,44 @@ body.cc[data-mode="evening"] {
 .wk-ev.clash { --ev: var(--imp); }
 .wk-ev.live { --ev: var(--accent); }
 .wk-flag {
-  align-self: flex-start; margin-top: 2px; font-size: 9px; font-weight: 800;
-  text-transform: uppercase; letter-spacing: .05em; border-radius: 3px; padding: 0 4px;
+  align-self: flex-start; margin-top: 3px; font-size: 9px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .05em; border-radius: 4px; padding: 1px 5px;
 }
 .wk-flag.live { color: var(--bg); background: var(--accent); }
 .wk-flag.clash { color: var(--imp); border: 1px solid currentColor; }
 .wk-tag {
-  align-self: flex-start; margin-top: 2px; font-size: 9px; text-transform: uppercase;
+  align-self: flex-start; margin-top: 3px; font-size: 9px; text-transform: uppercase;
   letter-spacing: .04em; line-height: 1.5; color: var(--muted);
   border: 1px solid currentColor; border-radius: 7px; padding: 1px 6px;
   max-width: 100%; text-wrap: balance;
 }
 .wk-ev.needs-you .wk-tag { color: var(--imp); }
-.wk-clear { margin: 2px 0 0; color: var(--muted); font-size: 11px; opacity: .55; }
+.wk-clear { margin: 4px 0 0; color: var(--muted); font-size: 11px; opacity: .55; }
 
 /* "+N more" — the rest of a heavy day, counted rather than dropped. It opens
    the schedule instead of expanding in place: growing the column would
    re-create the height problem the cap exists to solve. */
 .wk-more {
-  margin-top: 4px; padding: 2px 6px; width: 100%;
-  background: none; border: 1px dashed var(--line); border-radius: 6px;
-  color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer;
+  margin-top: 5px; padding: 3px 7px; width: 100%;
+  background: none; border: 1px dashed var(--line); border-radius: 8px;
+  color: var(--muted); font: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer;
   text-align: left;
 }
 .wk-more:hover { color: var(--text); border-color: var(--muted); }
 
 /* An outage is not a clear week — it never renders as one. */
 .wk-down {
-  margin: 0; padding: 10px 12px; font-size: 13px; color: var(--text);
+  margin: 0; padding: 11px 13px; font-size: 13px; color: var(--text);
   background: rgba(255,122,122,0.08);
   border: 1px solid color-mix(in srgb, var(--imp) 40%, var(--line));
-  border-left: 3px solid var(--imp); border-radius: 10px;
+  border-left: 3px solid var(--imp); border-radius: 12px;
 }
 /* Why the week grid may be incomplete. Distinct from .wk-down, which is a
    total outage: these render ABOVE a real grid, because local commitments
    are still real when an external integration is disconnected. */
 .wk-caveat {
-  margin: 0 0 10px; padding: 8px 11px; border-radius: 9px;
-  font-size: 12px; line-height: 1.45;
+  margin: 0 0 12px; padding: 9px 12px; border-radius: 12px;
+  font-size: 12px; line-height: 1.5;
 }
 .wk-caveat.warn {
   color: var(--text); background: rgba(255,122,122,0.07);
@@ -425,7 +570,7 @@ body.cc[data-mode="evening"] {
 .wk-fix {
   display: inline-block; margin-left: 4px; white-space: nowrap;
   font-weight: 700; color: var(--bg); background: var(--accent-2);
-  border-radius: 6px; padding: 2px 9px; text-decoration: none;
+  border-radius: 999px; padding: 2px 10px; text-decoration: none;
 }
 .wk-fix:hover { background: var(--accent); }
 .wk-fix:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
@@ -448,10 +593,10 @@ body.cc[data-mode="evening"] {
   .wk-grid {
     grid-auto-flow: row; grid-auto-columns: auto;
     grid-template-columns: minmax(0, 1fr);
-    overflow-x: visible; gap: 6px;
+    overflow-x: visible; gap: 8px;
   }
   .wk-day {
-    flex-direction: column; gap: 6px; padding: 11px 12px;
+    flex-direction: column; gap: 6px; padding: 12px 13px;
     /* The floor exists to line seven columns up. A stacked list has no
        columns, and inheriting it turns every quiet day into a screenful of
        empty panel. Height here comes from the events. */
@@ -460,7 +605,24 @@ body.cc[data-mode="evening"] {
   .wk-hd { margin-bottom: 0; }
   .wk-evs { min-width: 0; }
   .wk-clear { margin-top: 0; }
+  .cc-card { padding: 18px; border-radius: 20px; }
 }
+
+/* ---- resale (SCRUM-139) -------------------------------------------------
+   `expiring` is the only figure here with a deadline attached, so it is the
+   only one allowed to shout — the rest are reference. */
+.rs-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rs-lead {
+  font-size: 30px; font-weight: 800; letter-spacing: -1.1px; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(120deg, #fff 20%, var(--amber));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.rs-lead.urgent { background: none; color: var(--imp); }
+.rs-unit { font-size: 13px; color: var(--muted); }
+.rs-sub { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px;
+  font-size: 12.5px; color: var(--muted); }
+.rs-sub b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* ---- Amex credits -------------------------------------------------------
    Statement credits that reset on a calendar boundary and do not roll over.
@@ -468,44 +630,50 @@ body.cc[data-mode="evening"] {
    fact: money with a deadline. Only the expiring ones are listed — the full
    catalogue lives in the sub-app, since a list of eleven benefits you are not
    about to lose is a reference, not a dashboard. */
-.ax-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.ax-lead { font-size: 26px; font-weight: 800; letter-spacing: -.6px;
-  font-variant-numeric: tabular-nums; color: var(--text); }
-.ax-lead.urgent { color: var(--imp); }
-.ax-unit { font-size: 13px; color: var(--muted); }
-.ax-list { list-style: none; margin: 12px 0 0; padding: 0;
-  display: flex; flex-direction: column; gap: 4px; }
-.ax-row {
-  display: grid; align-items: center; gap: 4px 8px;
-  grid-template-columns: auto 1fr auto auto auto;
-  padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.025);
+.ax-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ax-lead {
+  font-size: 30px; font-weight: 800; letter-spacing: -1.1px; line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(120deg, #fff 20%, var(--gold));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
 }
+.ax-lead.urgent { background: none; color: var(--imp); }
+.ax-unit { font-size: 13px; color: var(--muted); }
+.ax-list { list-style: none; margin: 14px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 5px; }
+.ax-row {
+  display: grid; align-items: center; gap: 4px 10px;
+  grid-template-columns: auto 1fr auto auto auto;
+  padding: 8px 10px; border-radius: 12px; background: rgba(255,255,255,.035);
+  border: 1px solid transparent; transition: border-color .15s ease;
+}
+.ax-row:hover { border-color: var(--line); }
 .ax-card {
-  font-size: 9px; font-weight: 800; letter-spacing: .06em;
-  border-radius: 4px; padding: 2px 5px; color: var(--bg);
+  font-size: 9px; font-weight: 800; letter-spacing: .08em;
+  border-radius: 5px; padding: 2px 6px; color: #0a0c14;
 }
 /* The two cards are told apart by a word, never by colour alone. */
-.ax-card.platinum { background: #c7ccd6; }
-.ax-card.gold { background: #e3c37a; }
+.ax-card.platinum { background: linear-gradient(135deg, #e5e9f0, #b7bfcc); }
+.ax-card.gold { background: linear-gradient(135deg, #f6d98c, #d8b25a); }
 .ax-name { font-size: 12.5px; font-weight: 600; color: var(--text);
   overflow-wrap: anywhere; }
 .ax-enroll {
   margin-left: 6px; font-style: normal; font-size: 9px; text-transform: uppercase;
   letter-spacing: .05em; color: var(--imp); border: 1px solid currentColor;
-  border-radius: 6px; padding: 0 4px;
+  border-radius: 6px; padding: 0 5px;
 }
-.ax-amt { font-size: 12.5px; font-weight: 700; color: var(--text);
+.ax-amt { font-size: 13px; font-weight: 700; color: var(--text);
   font-variant-numeric: tabular-nums; }
 .ax-days { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
 .ax-days.hot { color: var(--imp); font-weight: 700; }
 .ax-done {
-  font: inherit; font-size: 10px; cursor: pointer; color: var(--muted);
-  background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 999px; padding: 2px 9px;
+  font: inherit; font-size: 10px; font-weight: 600; cursor: pointer; color: var(--muted);
+  background: rgba(255,255,255,0.05); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 10px;
 }
-.ax-done:hover { color: var(--text); border-color: var(--accent); }
+.ax-done:hover { color: var(--text); border-color: var(--gold); }
 .ax-done:disabled { opacity: .4; cursor: default; }
-.ax-note { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.ax-note { margin: 14px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
 .ax-note b { color: var(--text); }
 /* Ahead/behind carries a word too ("ahead by" / "behind by"); the colour
    is the fast read, never the only one. --up/--down are the page palette,
@@ -522,24 +690,26 @@ body.cc[data-mode="evening"] {
 /* ---- weather (header pill) ----------------------------------------------
    One line beside the greeting. */
 .cc-wx-pill {
-  display: inline-flex; align-items: center; gap: 9px;
-  margin-left: 18px; padding: 6px 14px; border-radius: 16px;
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-left: 18px; padding: 8px 16px; border-radius: 18px;
   /* Takes the space between the greeting and the buttons, and gives it back
      when there is none. `min-width: 0` is what actually lets it shrink — a
      flex item defaults to min-width:auto and refuses to go below its content,
      which is how it pushed the buttons off the edge and then wrapped. */
   flex: 0 1 auto; min-width: 0; overflow: hidden;
-  background: rgba(255,255,255,0.04); border: 1px solid var(--line);
+  background: var(--glass); border: 1px solid var(--glass-line);
+  box-shadow: var(--glass-shadow);
   color: var(--text); font: inherit; cursor: pointer; white-space: nowrap;
   /* Beside a 1-3 word greeting, not under it: the header is a flex row and
      this must not be the thing that wraps it. */
   align-self: center;
+  transition: border-color .18s ease, transform .18s ease;
 }
-.cc-wx-pill:hover { background: rgba(255,255,255,0.07); }
+.cc-wx-pill:hover { border-color: color-mix(in srgb, var(--sky) 55%, var(--glass-line)); transform: translateY(-1px); }
 .cc-wx-pill.empty { color: var(--muted); }
-.wxp-g { font-size: 17px; line-height: 1; }
+.wxp-g { font-size: 20px; line-height: 1; }
 .wxp-t {
-  font-size: 19px; font-weight: 650; letter-spacing: -0.4px;
+  font-size: 22px; font-weight: 800; letter-spacing: -0.8px;
   font-variant-numeric: tabular-nums;
 }
 .wxp-x { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -551,13 +721,13 @@ body.cc[data-mode="evening"] {
 /* The rest of today, inline. Each chip is hour over temperature so the strip
    reads left to right as time, and stays one line tall. */
 .wxp-hrs {
-  display: inline-flex; gap: 9px; padding-left: 10px; margin-left: 2px;
+  display: inline-flex; gap: 10px; padding-left: 12px; margin-left: 2px;
   border-left: 1px solid var(--line); align-self: stretch; align-items: center;
 }
 .wxp-h { display: inline-flex; flex-direction: column; align-items: center; line-height: 1.25; }
-.wxp-h b { font-size: 9.5px; font-weight: 600; color: var(--muted); letter-spacing: .2px; }
+.wxp-h b { font-size: 9.5px; font-weight: 700; color: var(--muted); letter-spacing: .2px; }
 .wxp-h i {
-  font-size: 12px; font-style: normal; font-variant-numeric: tabular-nums;
+  font-size: 12.5px; font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums;
 }
 /* A word, not just a colour. */
 .wxp-stale {
@@ -587,7 +757,7 @@ body.cc[data-mode="evening"] {
 }
 .wx-h {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  min-width: 40px; flex: 0 0 auto; padding: 6px 3px; border-radius: 10px;
+  min-width: 40px; flex: 0 0 auto; padding: 6px 3px; border-radius: 12px;
   background: rgba(255,255,255,0.03); border: 1px solid var(--line);
 }
 .wx-h-t { font-size: 10.5px; color: var(--muted); letter-spacing: .2px; }
@@ -597,3 +767,11 @@ body.cc[data-mode="evening"] {
    does not jump as rain enters and leaves the forecast. */
 .wx-h-p { font-size: 10px; color: var(--fyi); min-height: 12px; }
 .wx-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* ---- motion is optional ------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  body.cc::before, body.cc::after { animation: none; }
+  .cc-card, .wk-day { animation: none; }
+  .cc-time::before { animation: none; }
+  .cc-card, .cc-icon-btn, .cc-wx-pill, .hx-btn, .launch-tile { transition: none; }
+}

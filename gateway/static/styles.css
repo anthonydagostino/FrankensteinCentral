@@ -1,14 +1,20 @@
 :root {
-  --bg: #0d0f14;
-  --panel: #161a23;
-  --panel-2: #1d2230;
-  --line: #262c3a;
-  --text: #e7ecf3;
-  --muted: #8a93a6;
-  --accent: #6ee7b7;
-  --accent-2: #7c9cff;
-  --down: #ff6b6b;
-  --up: #6ee7b7;
+  --bg: #0a0c14;
+  --panel: #12162a;
+  --panel-2: #1a1f36;
+  --line: rgba(255, 255, 255, 0.085);
+  --text: #eef1f8;
+  --muted: #8f98ae;
+  --accent: #5eead4;
+  --accent-2: #8b9cff;
+  --down: #fb7185;
+  --up: #4ade80;
+  /* The card accents and the background glows. */
+  --violet: #a78bfa;
+  --sky: #60a5fa;
+  --amber: #fbbf24;
+  --gold: #f3cd7a;
+  --rose: #fb7185;
 }
 
 * { box-sizing: border-box; }
@@ -32,10 +38,11 @@ body {
 .muted { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
 
 .btn {
-  background: var(--accent-2);
-  color: #0d0f14;
+  background: linear-gradient(135deg, var(--accent-2), #6d7cff);
+  color: #0a0c14;
   border: 0;
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px -12px rgba(139, 156, 255, 0.8);
   padding: 9px 16px;
   font-weight: 600;
   cursor: pointer;
@@ -90,9 +97,9 @@ body {
 }
 .overlay.open { display: flex; }
 .modal {
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent 30%), var(--panel);
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 22px;
   width: min(680px, 100%);
   max-height: 86vh;
   overflow-y: auto;
@@ -119,7 +126,7 @@ body {
 .modal-body h4:first-child { margin-top: 0; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
-.tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.tile { background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
 .tile .n { font-size: 22px; font-weight: 700; }
 .tile .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .tile.good .n { color: var(--up); }
@@ -141,8 +148,8 @@ body {
 .btn.sm { padding: 6px 10px; font-size: 12px; }
 .row {
   display: flex; align-items: center; gap: 10px;
-  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; font-size: 14px;
+  background: rgba(255,255,255,0.035); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px; font-size: 14px;
 }
 .row .grow { flex: 1; min-width: 0; }
 .row .sub { color: var(--muted); font-size: 12px; }
