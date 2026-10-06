@@ -35,7 +35,6 @@ services:
       # be one the human chose. See .env.example.
       GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-}
       POWERBUY_URL: http://powerbuy:8000
-      FITNESS_URL: http://fitness:8000
       GMAIL_URL: http://gmail:8000
       SCHEDULE_URL: http://schedule:8000
       ASSISTANT_URL: http://assistant:8000
@@ -51,7 +50,6 @@ services:
       - "8080:8000"
     depends_on:
       - powerbuy
-      - fitness
       - gmail
       - schedule
       - assistant
@@ -66,39 +64,6 @@ services:
       POWERBUY_PASSWORD: ${POWERBUY_PASSWORD:-}
     ports:
       - "127.0.0.1:8081:8000"
-
-  fitness:
-    build: ./services/fitness
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8082:8000"
-
-  finance:
-    build: ./services/finance
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8086:8000"
-
-  tasks:
-    build: ./services/tasks
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8087:8000"
 
   # Amex credit tracker. The credit catalogue is code (services/amex/app/
   # credits.py); the only thing in Postgres is which credit you marked used in
@@ -155,33 +120,6 @@ services:
     ports:
       - "127.0.0.1:8088:8000"
 
-  deals:
-    build: ./services/deals
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8089:8000"
-
-  networth:
-    build: ./services/networth
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-      # Pull net worth live from Firefly III (via the firefly sub-app, which
-      # holds the token). Falls back to the manual accounts if not connected.
-      FIREFLY_SVC_URL: http://firefly:8000
-    depends_on:
-      db:
-        condition: service_healthy
-      firefly:
-        condition: service_started
-    ports:
-      - "127.0.0.1:8090:8000"
-
   vault:
     build: ./services/vault
     restart: unless-stopped
@@ -228,23 +166,17 @@ services:
     ports:
       - "127.0.0.1:8097:8000"
 
-  # Personal state & daily-score engine (study/focus, water, nutrition, Big 3,
-  # captures, history). Reads gym from fitness and open tasks from tasks.
+  # The settings store: holdings, budgets, the pay cycle, the weather place,
+  # which Firefly accounts are not cash. One JSONB row. It used to be the
+  # habit tracker and daily-score engine too; that went on 2026-10-06.
   core:
     build: ./services/core
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-frank}:${POSTGRES_PASSWORD:-frank}@db:5432/${POSTGRES_DB:-frankensteincentral}
-      FITNESS_URL: http://fitness:8000
-      TASKS_URL: http://tasks:8000
-      LOCAL_TZ: ${LOCAL_TZ:-America/New_York}
     depends_on:
       db:
         condition: service_healthy
-      fitness:
-        condition: service_started
-      tasks:
-        condition: service_started
     ports:
       - "127.0.0.1:8098:8000"
 
@@ -319,14 +251,9 @@ services:
     restart: unless-stopped
     environment:
       POWERBUY_URL: http://powerbuy:8000
-      FITNESS_URL: http://fitness:8000
       GMAIL_URL: http://gmail:8000
       SCHEDULE_URL: http://schedule:8000
-      FINANCE_URL: http://finance:8000
-      TASKS_URL: http://tasks:8000
       BUDGET_URL: http://budget:8000
-      DEALS_URL: http://deals:8000
-      NETWORTH_URL: http://networth:8000
       VAULT_URL: http://vault:8000
       PLEX_SVC_URL: http://plex:8000
       FIREFLY_URL_SVC: http://firefly:8000
@@ -364,15 +291,9 @@ services:
         condition: service_healthy
       powerbuy:
         condition: service_started
-      fitness:
-        condition: service_started
       gmail:
         condition: service_started
       schedule:
-        condition: service_started
-      finance:
-        condition: service_started
-      tasks:
         condition: service_started
       # `amex` is deliberately NOT here. gateway -> assistant -> amex meant a
       # service that had never started on this box before gated the front
@@ -380,14 +301,6 @@ services:
       # credits card. `amex_brief` already renders "unreachable" honestly, so
       # the dashboard degrades by one card instead of not serving at all.
       budget:
-        condition: service_started
-      deals:
-        condition: service_started
-      networth:
-        condition: service_started
-      vault:
-        condition: service_started
-      plex:
         condition: service_started
       firefly:
         condition: service_started

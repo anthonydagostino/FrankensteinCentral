@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth
-from .registry import load_registry
+from .registry import HIDDEN_FROM_LAUNCHER, load_registry
 
 app = FastAPI(title="FrankensteinCentral Gateway")
 REGISTRY = {s.key: s for s in load_registry()}
@@ -74,7 +74,8 @@ def host_is_allowed(host_header: str) -> bool:
 
 @app.get("/api/apps")
 async def list_apps():
-    """The catalog every dashboard renders from."""
+    """The tiles the launcher offers. Every registered service is proxied;
+    only the ones with something to show are listed here."""
     return [
         {
             "key": s.key,
@@ -83,6 +84,7 @@ async def list_apps():
             "icon": s.icon,
         }
         for s in REGISTRY.values()
+        if s.key not in HIDDEN_FROM_LAUNCHER
     ]
 
 

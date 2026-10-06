@@ -74,7 +74,7 @@ def _budget(paycheck):
 
 def _money(spending, paycheck):
     return am._money({"connected": True, "categories": []}, spending,
-                     {"upcoming": []}, _budget(paycheck), {"total": 1000}, {})
+                     _budget(paycheck), {"total": 1000}, {})
 
 
 PAYCHECK_TRUNCATED = {
@@ -257,7 +257,7 @@ REVIEWED = {"finance": {"not_spendable": ["Fidelity"]}}
 
 def _money_nw(spending, paycheck, networth=NW, settings=None):
     return am._money({"connected": True, "categories": []}, spending,
-                     {"upcoming": []}, _budget(paycheck), networth,
+                     _budget(paycheck), networth,
                      settings if settings is not None else {})
 
 

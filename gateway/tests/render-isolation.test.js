@@ -5,11 +5,12 @@
  * painted down to that point and stopped — no error banner, nothing missing
  * that looked missing, just a shorter dashboard.
  *
- * Anthony reported the weather and amex cards absent twice. They are 14th and
+ * Anthony reported the weather and amex cards absent twice. They were 14th and
  * 15th in that sequence. Both were present in the HTML and both had working
  * renderers; anything at all going wrong above them took them out, together
- * with the capture box, the "Updated" stamp and the deploy card. Two rounds
- * were spent moving cards that were never the problem.
+ * with the "Updated" stamp and the deploy card. Two rounds were spent moving
+ * cards that were never the problem. The chain is shorter now; the rule is
+ * the same.
  *
  * The console is not somewhere anyone looks at a dashboard from a phone, so
  * the failure is written into the card that failed. */
@@ -109,7 +110,7 @@ test("every renderer in the chain is painted, never called bare", () => {
   assert.deepStrictEqual(bare, [],
     `called outside paint(): ${bare}. One of these throwing erases every card ` +
     "below it, which is the defect this file exists for.");
-  assert.ok(chain.split("paint(").length - 1 >= 15,
+  assert.ok(chain.split("paint(").length - 1 >= 10,
     "the chain lost its paint() wrappers");
 });
 

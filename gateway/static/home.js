@@ -1,7 +1,13 @@
-/* Command center — the Today home screen.
- * Renders from /api/assistant/home and wires the quick actions (core service),
- * the focus timer, quick capture, and the Cmd/Ctrl-K command palette. Reuses
- * the app detail-modals from app.js (openApp) for deep dives. */
+/* The home screen. Renders from /api/assistant/home: the week, the money, the
+ * portfolio, the resale book, the Amex credits and the weather pill. Reuses
+ * the app detail-modals from app.js (openApp) for drill-downs.
+ *
+ * Anthony, 2026-09-09: "the only useful shit right now is the stocks, the
+ * financial section, and the calendar, the rest of the main dashboard fucking
+ * SUCKS." On 2026-10-06 the rest went: the daily score and its habit card, the
+ * Do-Next nudge engine and its attention feed, inbox triage, Big 3, quick
+ * capture, deadlines, the weekly review, the "while you were away" strip, the
+ * command palette, the focus timer and the seasonal decoration. */
 (function () {
   "use strict";
   const q = (s) => document.querySelector(s);
@@ -59,11 +65,6 @@
     HOME = d;
     render(d);
     showOffline(d.offline);
-    // The footer's health claim came from the assistant, which only ever looked
-    // at core and gmail -- 2 of 15 services. The gateway already probes all of
-    // them concurrently and the UI threw the answer away. Fetched separately so
-    // a slow health probe never delays the dashboard itself.
-    refreshSystems();
   }
 
   // ---- offline ---------------------------------------------------------------
@@ -78,8 +79,8 @@
       el = document.createElement("div");
       el.id = "cc-offline";
       el.setAttribute("role", "status");
-      const since = q("#cc-since");
-      if (since && since.parentNode) since.parentNode.insertBefore(el, since);
+      const grid = q("#cc-grid");
+      if (grid && grid.parentNode) grid.parentNode.insertBefore(el, grid);
       else document.body.insertBefore(el, document.body.firstChild);
     }
     // Three states, and `null` means something different from absent:
@@ -118,54 +119,6 @@
   }
   registerWorker();
 
-  // ---- footer: the REAL systems aggregate -----------------------------------
-  async function refreshSystems() {
-    const el = q("#cc-systems");
-    if (!el) return;
-    let health;
-    try {
-      health = await fetch("/api/health").then((r) => r.json());
-    } catch {
-      // Could not ask. That is not "healthy" -- the old default said it was.
-      el.textContent = "● Status unknown";
-      el.style.color = "var(--muted)";
-      el.title = "The health endpoint could not be reached";
-      el.onclick = null;
-      return;
-    }
-    if (!health || typeof health !== "object" || !Object.keys(health).length) {
-      el.textContent = "● Status unknown";
-      el.style.color = "var(--muted)";
-      el.title = "The health endpoint returned nothing usable";
-      return;
-    }
-    const keys = Object.keys(health).sort();
-    const down = keys.filter((k) => (health[k] || {}).status !== "up");
-    const total = keys.length;
-    if (!down.length) {
-      el.textContent = `● All ${total} services healthy`;
-      el.style.color = "var(--muted)";
-    } else {
-      // Name them. "Something is down" sends you looking; a name does not.
-      const shown = down.slice(0, 3).join(", ");
-      el.textContent = `⚠ ${down.length} of ${total} down: ${shown}`
-        + (down.length > 3 ? ` +${down.length - 3} more` : "");
-      el.style.color = "var(--imp)";
-    }
-    el.title = keys
-      .map((k) => `${(health[k] || {}).status === "up" ? "ok  " : "DOWN"} ${k}`)
-      .join("\n");
-    el.style.cursor = "pointer";
-    el.onclick = () => {
-      const list = keys
-        .map((k) => `${(health[k] || {}).status === "up" ? "●" : "⚠"} ${esch(k)}`)
-        .join(" · ");
-      el.insertAdjacentHTML("afterend",
-        `<span class="cc-sys-list">${list}</span>`);
-      el.onclick = null;
-    };
-  }
-
   // ---- top / clock ----------------------------------------------------------
   function paintClock() {
     const now = new Date();
@@ -180,22 +133,18 @@
   // ---- render ---------------------------------------------------------------
   // A card that renders NOTHING must not look like a card that is not there.
   //
-  // This is the failure that cost three rounds. An empty `<section
-  // class="cc-card">` collapses to a sliver of border with no content, which
-  // reads exactly like an absent card — so "the weather card is missing" and
-  // "the weather card rendered nothing" were indistinguishable from a
-  // screenshot, and I spent two deploys moving a card that was already in the
-  // right place.
+  // An empty `<section class="cc-card">` collapses to a sliver of border with
+  // no content, which reads exactly like an absent card — so "the weather card
+  // is missing" and "the weather card rendered nothing" were indistinguishable
+  // from a screenshot, and two deploys were spent moving a card that was
+  // already in the right place.
   //
-  // `hidden` is left alone: several cards hide themselves when they have
-  // genuinely nothing to say, and that is a decision, not a silence.
+  // `hidden` is left alone: a card that hides itself when it has genuinely
+  // nothing to say has made a decision, not fallen silent.
   const CARD_NAMES = {
     "cc-weather": "Weather", "cc-amex": "Amex credits", "cc-calendar": "Calendar",
     "cc-money": "Money", "cc-portfolio": "Portfolio", "cc-resale": "Resale",
-    "cc-safety": "Data safety", "cc-today": "Today", "cc-health": "Health",
-    "cc-inbox": "Inbox", "cc-deadlines": "Deadlines", "cc-weekly": "Weekly review",
-    "cc-donext": "Do next", "cc-capture": "Capture", "cc-systems": "Systems",
-    "cc-deploy": "Deploy", "cc-attention": "Attention", "cc-since": "Recent changes",
+    "cc-systems": "Systems", "cc-deploy": "Deploy", "cc-safety": "Data safety",
   };
 
   function reportBlankCards() {
@@ -235,8 +184,8 @@
       console.error("card failed to render:", label, err);
       const el = cardId && q(cardId);
       if (!el) return;
-      // `hidden` is how several cards stay out of the way when empty. A card
-      // that just failed has something to say, so the attribute comes off.
+      // `hidden` is how a card stays out of the way when empty. A card that
+      // just failed has something to say, so the attribute comes off.
       el.removeAttribute("hidden");
       el.innerHTML = `<h3>${esch(label)}</h3>
         <p class="att-empty">This card failed to render — ${esch(String((err && err.message) || err))}.
@@ -246,151 +195,37 @@
 
   function render(d) {
     paintClock();
-    // `|| 0` printed a confident 0 for BOTH a genuinely bad day and a day
-    // nothing had been logged on yet -- and it printed it in the header, all
-    // day, starting at midnight. A null score means "nothing tracked yet".
-    const sc = d.score && d.score.score;
-    const pill = q("#cc-score-n");
-    pill.textContent = sc == null ? "–" : sc;
-    const pillWrap = q("#cc-score-pill");
-    if (pillWrap) {
-      pillWrap.classList.toggle("untracked", sc == null);
-      pillWrap.title = sc == null
-        ? "Nothing tracked yet today"
-        : `Today's score: ${sc}, from ${d.score.tracked} of ${d.score.of} tracked`;
-    }
-    q("#cc-briefing").innerHTML = (d.briefing || [])
-      .map((b) => `<span class="cc-chip">${esch(b)}</span>`).join("");
-    // Each card painted in isolation. Until 2026-09-16 this was a bare
-    // sequence of calls, which means the FIRST one to throw silently erased
-    // every card below it — the page rendered down to that point and simply
-    // stopped, with no error anywhere a person would look. Anthony reported
-    // the weather and amex cards missing twice; they are 14th and 15th in this
-    // list, so anything at all going wrong above them takes both out, along
-    // with the capture box, the "Updated" stamp and the deploy card.
-    //
-    // One bad card is now one bad card, and it SAYS so where it sits.
-    paint("Recent changes", "#cc-since", () => renderSince(d));
-    paint("Weekly review", "#cc-weekly", () => renderWeeklyReview(d.weekly_review));
+    // Each card painted in isolation. A bare sequence of calls means the FIRST
+    // one to throw silently erases every card below it — the page renders
+    // down to that point and simply stops, with no error anywhere a person
+    // would look. One bad card is one bad card, and it SAYS so where it sits.
     paint("Calendar", "#cc-calendar", () => renderWeek(d));
-    paint("Do next", "#cc-donext", () => renderDoNext(d.do_next, d));
-    paint("Attention", "#cc-attention", () => renderAttention(d.nudges));
-    paint("Deadlines", "#cc-deadlines", () => renderDeadlines(d.deadlines));
-    paint("Inbox", "#cc-inbox", () => renderInbox(d.inbox));
     paint("Money", "#cc-money", () => renderMoney(d.money, d.budget));
     paint("Portfolio", "#cc-portfolio", () => renderPortfolio(d.portfolio));
-    paint("Today", "#cc-today", () => renderToday(d));
-    paint("Health", "#cc-health", () => renderHealth(d));
     paint("Resale", "#cc-resale", () => renderResale(d.resale));
-    paint("Data safety", "#cc-safety", () => renderSafety(d));
     paint("Amex credits", "#cc-amex", () => renderAmex(d.amex));
     paint("Weather", "#cc-weather", () => renderWeather(d.weather));
-    paint("Capture", "#cc-capture", () => renderCapture(d.captures));
     paint("Updated stamp", null, () => {
       q("#cc-updated").textContent = "Updated " + new Date(d.last_updated || Date.now()).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     });
     paint("Systems", "#cc-systems", () => renderSystems());
+    paint("Data safety", "#cc-safety", () => renderSafety(d));
     paint("Deploy", "#cc-deploy", () => renderDeploy(d));
     // Last, so it sees the finished page.
     paint("Blank-card check", null, reportBlankCards);
   }
 
-  // ---- since last check (shared across devices, computed in the assistant) --
-  //
-  // This used to live in localStorage under `cc_snap`, so the phone, both
-  // MacBooks, the Kali laptop and the OptiPlex each kept their own idea of what
-  // had already been shown — and a fresh browser had none at all. The baseline
-  // now belongs to the person: core holds one row, the assistant diffs against
-  // it, and this only renders what it is handed.
-  function renderSince(d) {
-    const el = q("#cc-since");
-    const since = d.since || {};
-    if (!since.show || !(since.changes || []).length) {
-      // Nothing to say, or too soon since the last look, or no baseline at all
-      // (a first run must not report every email you already read as new).
-      el.hidden = true;
-      el.innerHTML = "";
-      // Showing and STORING are different decisions. A first-ever load shows
-      // nothing and must still record the baseline, or one never exists and
-      // the feature cannot start. A too-soon refresh stores nothing, so an
-      // idle tab cannot consume this morning's changes.
-      if (since.store) markSeen(d);
-      return;
-    }
-    const bits = since.changes.map((c) =>
-      `<span class="it${c.urgent ? " urgent" : ""}">${esch(c.icon || "")} ${esch(c.text)}</span>`).join("");
-    const gap = since.gap_minutes;
-    const ago = gap == null ? ""
-      : gap >= 1440 ? ` <em>since ${Math.round(gap / 1440)}d ago</em>`
-      : gap >= 60 ? ` <em>since ${Math.round(gap / 60)}h ago</em>`
-      : ` <em>since ${Math.round(gap)}m ago</em>`;
-    el.hidden = false;
-    el.innerHTML = `<b>While you were away</b>${ago} ${bits}`;
-    markSeen(d);
-  }
-
-  // Record what was actually rendered, so the next device — or the next
-  // browser — starts from what YOU last saw rather than from nothing. Only
-  // called once the block has been shown, so an idle tab refreshing in the
-  // background cannot quietly consume this morning's changes.
-  let seenMarked = false;
-  async function markSeen(d) {
-    if (seenMarked) return;
-    seenMarked = true;
-    const snap = (d.since && d.since.snapshot) || null;
-    if (!snap) return;
-    try {
-      await fetch("/api/core/seen", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ snapshot: snap, device: deviceLabel() }),
-      });
-    } catch {}
-  }
-
-  // A human-readable hint about WHERE it was last seen. Never an identifier,
-  // never used for keying: the baseline is deliberately shared.
-  function deviceLabel() {
-    const ua = navigator.userAgent || "";
-    if (/iPhone|Android/i.test(ua)) return "phone";
-    if (/iPad|Tablet/i.test(ua)) return "tablet";
-    if (/Macintosh/i.test(ua)) return "mac";
-    if (/Linux/i.test(ua)) return "linux";
-    if (/Windows/i.test(ua)) return "windows";
-    return "browser";
-  }
-
-  // ---- schedule -------------------------------------------------------------
-  // Pending and countered holds are shown, not filtered. Bones proposes slots
-  // from your sent mail and writes them to the real calendar; a slot awaiting
-  // a reply is the single most actionable thing the pipeline produces, and it
-  // used to be dropped before it ever reached the page.
-  const CAL_STATUS = {
-    confirmed: { label: "confirmed" },
-    pending:   { label: "offered — awaiting reply" },
-    countered: { label: "they countered — needs your yes" },
-  };
-  // ---- systems footer (PRODUCT_IDEAS #14) ------------------------------------
-  // The footer used to compute its claim from `d.systems`, which the assistant
-  // builds from core and gmail alone — so eleven other services could be down
-  // while it said "Systems healthy". The gateway probes all fifteen at
-  // /api/health and the UI discarded it. Now it doesn't.
-  let SYSHEALTH = null;
-  async function loadSystems() {
-    try {
-      SYSHEALTH = await fetch("/api/health").then((r) => r.json());
-    } catch { SYSHEALTH = null; }   // null reads as "unknown", not healthy
-    renderSystems();
-  }
-
+  // ---- systems footer -------------------------------------------------------
+  // The gateway probes every registered service at /api/health. Fetched
+  // separately from the home payload so a slow probe never delays the page,
+  // and `null` reads as "unknown", never as healthy.
   function renderSystems() {
     const el = q("#cc-systems");
     if (!el) return;
     const s = SystemsHealth.summarize(SYSHEALTH);
     el.textContent = SystemsHealth.line(s);
-    el.style.color = s.state === "degraded" ? "var(--imp)"
-      : s.state === "unknown" ? "var(--muted)" : "var(--muted)";
-    // The full per-service roll is one click away rather than always on show.
+    el.style.color = s.state === "degraded" ? "var(--imp)" : "var(--muted)";
+    // The full per-service roll is one hover away rather than always on show.
     el.title = s.state === "unknown"
       ? "The gateway's /api/health probe did not answer"
       : Object.keys(SYSHEALTH || {}).sort().map((k) =>
@@ -398,8 +233,15 @@
     el.style.cursor = s.total ? "help" : "default";
   }
 
+  let SYSHEALTH = null;
+  async function loadSystems() {
+    try {
+      SYSHEALTH = await fetch("/api/health").then((r) => r.json());
+    } catch { SYSHEALTH = null; }
+    renderSystems();
+  }
 
-  // ---- the box's own deploy state (PRODUCT_IDEAS #24) ------------------------
+  // ---- the box's own deploy state -------------------------------------------
   // A failed deploy is otherwise completely silent: the previous build keeps
   // serving, so the dashboard looks perfect while the fix you shipped is not
   // the code you are looking at. Read-only — promote.sh stays the only path
@@ -417,83 +259,65 @@
     el.dataset.tone = v.tone;
   }
 
-  // ---- weekly review (PRODUCT_IDEAS #5) --------------------------------------
-  // core has served GET /weekly-review since it was written and nothing ever
-  // rendered it. On Sunday evening it takes the top of the page; the rest of
-  // the week it sits above the calendar, quietly.
-  function wrRow(label, row, unit, fmt) {
-    if (!row) return "";
-    const f = fmt || ((v) => `${v}${unit || ""}`);
-    // "No goal set" and "unknown" are NOT 0% — reporting either as failure is
-    // the same dishonesty the money layer's rules forbid.
-    if (row.state === "unknown") {
-      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
-        <span class="wr-v wr-unknown">—</span>
-        <span class="wr-note">not recorded</span></div>`;
-    }
-    if (row.state === "no_goal") {
-      return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
-        <span class="wr-v">${esch(f(row.value))}</span>
-        <span class="wr-note">no goal set</span></div>`;
-    }
-    const pct = Math.max(0, Math.min(100, row.pct));
-    return `<div class="wr-row"><span class="wr-l">${esch(label)}</span>
-      <span class="wr-v">${esch(f(row.value))} <i>/ ${esch(f(row.goal))}</i></span>
-      <span class="wr-bar"><i style="width:${pct}%" class="${row.state}"></i></span>
-      <span class="wr-pct ${row.state}">${row.pct}%</span></div>`;
-  }
+  // ---- data safety (SCRUM-67), in the footer --------------------------------
+  // "A backup you have never restored is a belief, not a backup." One line:
+  // days since the last VERIFIED restore, and "never" until one happens, plus
+  // whether the Firefly import is actually landing rows (SCRUM-142) — the
+  // money card's figures are only as current as that import.
+  //
+  // Loud when there is nothing proving the data is recoverable, quiet when
+  // there is. The asymmetry is the whole design. It was a card; it is an
+  // operator fact, and operator facts live in the footer with the others.
+  function renderSafety(d) {
+    const el = q("#cc-safety");
+    if (!el) return;
+    const s = (d && d.data_safety) || { state: "unknown" };
+    const days = (n) => (n === 0 ? "today" : n === 1 ? "1 day ago" : n + " days ago");
 
-  function renderWeeklyReview(wr) {
-    const el = q("#cc-weekly");
-    // An unreachable core is not a week where nothing happened: no card at all
-    // beats a card full of zeroes.
-    if (!wr) { el.hidden = true; return; }
-    el.hidden = false;
-    const lead = wr.slot === "lead";
-    el.classList.toggle("lead", lead);
-    // Sunday evening it takes the top of the page; the rest of the week it sits
-    // beside Health & Discipline, whose card already carries study-vs-goal and
-    // gym-vs-goal. Two cards restating the same two numbers, one of them above
-    // the calendar, is most of why the top of this page felt like noise.
-    //
-    // The card is MOVED rather than duplicated: a second copy with the same id
-    // is what made the earlier weekly card dead DOM (SCRUM/#45), and only one
-    // of them can ever be reachable by `q("#cc-weekly")`.
-    const grid = q("#cc-grid"), home = q("#cc-weekly-slot");
-    if (lead && el.parentElement !== grid) grid.insertBefore(el, grid.firstElementChild);
-    else if (!lead && home && el.parentElement !== home) home.appendChild(el);
+    const BODY = {
+      never: { cls: "bad", text: "Restore never verified",
+        title: "No restore has ever been verified. Until one is, these backups are a belief.\nRun: bash scripts/restore.sh --drill" },
+      stale: { cls: "bad", text: `Restore verified ${s.restore_days == null ? "long ago" : days(s.restore_days)}`,
+        title: "Long enough ago that the schema has probably moved since. A proof has an expiry date.\nRun: bash scripts/restore.sh --drill" },
+      unknown: { cls: "muted", text: "Backup state unknown",
+        title: "Can't read the backup record from here — that is not the same as being safe." },
+      ok: { cls: "good", text: `Restore verified ${s.restore_days == null ? "" : days(s.restore_days)}`.trim(),
+        title: s.rows ? `Last drill restored ${s.rows} rows and compared them against the backup's own record.`
+                      : "Last restore drill passed." },
+    };
+    const b = BODY[s.state] || BODY.unknown;
 
-    const mins = (v) => (v >= 60 ? `${Math.floor(v / 60)}h ${v % 60}m`.replace(" 0m", "") : `${v}m`);
-    const t = wr.study && wr.study.trend_min;
-    const trend = (t === null || t === undefined || t === 0) ? ""
-      : `<span class="wr-trend ${t > 0 ? "up" : "down"}">${t > 0 ? "▲" : "▼"} ${esch(mins(Math.abs(t)))} vs last week</span>`;
+    const bits = [b.text];
+    // Reported separately on purpose: a fresh backup says nothing about
+    // whether it can be restored, and that gap is this line's whole subject.
+    if (s.backup_days != null) bits.push(`backup ${days(s.backup_days)}`);
+    // "Runs but nothing enters" is the shape that hid a thin ledger for five
+    // months, so the import's state is named, not rounded off into "ran".
+    const imp = (d && d.import_run) || { state: "unknown" };
+    const IMPORT = {
+      never: ["warn", "import never run"],
+      stale: ["warn", `import last tried ${imp.attempt_days != null ? days(imp.attempt_days) : "a while ago"}`],
+      failed: ["warn", `import failed${imp.reason ? ` (${imp.reason})` : ""}`],
+      unverified: ["warn", "import unverified"],
+      quiet: ["", `import ran ${imp.attempt_days != null ? days(imp.attempt_days) : ""}, nothing new`],
+      suspect: ["warn", `import runs but nothing enters${imp.ledger_ingest_days != null ? ` (ledger still for ${imp.ledger_ingest_days}d)` : ""}`],
+      ok: ["", `import ${imp.rows != null ? imp.rows + " rows " : ""}${imp.landed_days != null ? days(imp.landed_days) : "landed"}`],
+      unknown: ["", "import unknown"],
+    };
+    const [impCls, impText] = IMPORT[imp.state] || IMPORT.unknown;
+    bits.push(impText);
+    // Disk free on the state volume, omitted rather than invented when the
+    // mount is absent: a number about the container's own disk would be the
+    // wrong fact dressed as the right one.
+    if (d && d.disk && d.disk.state !== "unknown" && d.disk.free_pct != null)
+      bits.push(`disk ${d.disk.free_pct}% free`);
 
-    // Sunday evening: the full review, at the top of the page, which is what it
-    // was built for. Any other day: ONE line, and only the part Health &
-    // Discipline does not already carry.
-    //
-    // Its three bars are study-vs-goal, gym-vs-goal and water — and the card it
-    // now sits beside states all three, with today's figures as well as the
-    // week's. Two cards stacked saying the same two numbers is not twice the
-    // information. What it alone knows is the week-over-week trend: whether
-    // this week is better than the last one is the actual question "where did
-    // the week go" is asking, and no other card answers it.
-    if (!lead) {
-      const study = wr.study || {};
-      const done = study.value == null ? null : mins(study.value);
-      el.innerHTML = `<div class="wr-line">
-        <span class="wr-l">This week</span>
-        ${done ? `<b>${esch(done)}</b> studying` : `<span class="muted">not tracked</span>`}
-        ${trend || `<span class="wr-trend flat">level with last week</span>`}
-      </div>`;
-      return;
-    }
-
-    el.innerHTML = `<h3>Your week</h3>
-      ${wrRow("Study", wr.study, "", mins)}
-      ${wrRow("Gym", wr.gym, "")}
-      ${wrRow("Water", wr.water, " days")}
-      ${trend}`;
+    const loud = b.cls === "bad" || impCls === "warn" || (d && d.disk && d.disk.state === "low");
+    el.textContent = bits.join(" · ");
+    el.title = b.title;
+    el.style.color = loud ? "var(--imp)" : "var(--muted)";
+    el.style.cursor = "help";
+    el.dataset.tone = b.cls;
   }
 
   // ---- the week grid --------------------------------------------------------
@@ -501,32 +325,11 @@
   // decision (see services/assistant/app/dashboard.py:week_window and its
   // calendar sweep); this only draws what it is handed, so the browser clock
   // and the container clock can never disagree about which day is which.
-
-  // Decoration only. A season is picked from the date and changes accent and
-  // motif — never text colour, never what the data says.
-  const SEASONS = {
-    jan: { name: "Deep Winter", glyph: "❄", drift: ["❄", "❅", "❆"] },
-    feb: { name: "Sweetheart", glyph: "♥", drift: ["♥", "♡"] },
-    mar: { name: "First Green", glyph: "☘", drift: ["☘", "❀"] },
-    apr: { name: "Showers", glyph: "☂", drift: ["☂", "ᴗ"] },
-    may: { name: "Bloom", glyph: "✿", drift: ["✿", "❀", "✾"] },
-    jun: { name: "Solstice", glyph: "☀", drift: ["☀", "✺"] },
-    jul: { name: "Fireworks", glyph: "✺", drift: ["✺", "✹"] },
-    aug: { name: "High Summer", glyph: "⛱", drift: ["⛱", "≋"] },
-    // The autumn months mix emoji with text symbols on purpose. Emoji carry
-    // their own colour and cannot take the theme's (`color` does nothing to
-    // 🍁), so a month drawn only in emoji can never wear its palette — and
-    // these are the months whose palette is most worth seeing. The ❦/❧ are
-    // leaf-shaped and DO take it, so each card gets both: real leaves, and
-    // leaves in that day's rotation of the month's colours.
-    sep: { name: "Harvest", glyph: "✾", drift: ["🌾", "❦", "🍃", "❧"] },
-    oct: { name: "Pumpkin Season", glyph: "🎃", drift: ["🎃", "❦", "🍁", "❧"] },
-    nov: { name: "Late Autumn", glyph: "🍂", drift: ["🍂", "❦", "🍁", "❧"] },
-    dec: { name: "Snowfall", glyph: "❄", drift: ["❄", "❅", "❆", "✻"] },
+  const CAL_STATUS = {
+    confirmed: { label: "confirmed" },
+    pending:   { label: "offered — awaiting reply" },
+    countered: { label: "they countered — needs your yes" },
   };
-
-  const AMBIENCE_KEY = "cc.ambience";
-  const ambienceOn = () => localStorage.getItem(AMBIENCE_KEY) !== "off";
 
   // Each commitment gets its own colour, so a day reads as a set of distinct
   // things instead of one grey block, and so a recurring event keeps the same
@@ -570,12 +373,11 @@
   }
 
   // How many commitments a day column shows before it starts counting. Three
-  // is what fits the trimmed column without the tallest day dictating the
-  // height of the whole grid.
+  // is what fits the column without the tallest day dictating the height of
+  // the whole grid.
   const DAY_EVENTS_SHOWN = 3;
 
   function dayCard(day, index) {
-    const season = SEASONS[day.season] || SEASONS.jan;
     const cls = [
       "wk-day",
       day.is_today ? "is-today" : "",
@@ -584,10 +386,9 @@
       day.conflicts ? "has-clash" : "",
     ].filter(Boolean).join(" ");
 
-    // "Today" replaces the weekday rather than sitting next to it: on the two
-    // cards that have one it is the more useful of the pair, and the two
-    // together were the only thing that made this line wrap onto a second row.
-    // The full weekday and date stay in the card's aria-label regardless.
+    // "Today" replaces the weekday rather than sitting next to it: on the card
+    // that has one it is the more useful of the pair. The full weekday and date
+    // stay in the card's aria-label regardless.
     const rel = day.relative_label
       ? `<span class="wk-rel">${esch(day.relative_label)}</span>` : "";
     const count = day.counts.total
@@ -607,9 +408,7 @@
             : ""}`
       : `<p class="wk-clear">Clear</p>`;
     // The month appears only where the window actually crosses into a new one.
-    // `starts_month` is also true on the first card, but the range beside the
-    // "This week" heading already names that month, and the first card is the
-    // one carrying the TODAY pill — the least room and the least need.
+    // The range beside the "This week" heading already names the first month.
     const month = day.starts_month && index > 0
       ? `<span class="wk-mo">${esch(day.month_short)}</span>` : "";
 
@@ -618,16 +417,7 @@
     const label = `${day.long_label}${day.counts.total
       ? `, ${day.counts.total} scheduled` : ", nothing scheduled"}${
       day.conflicts ? ", has overlapping commitments" : ""}`;
-    // The date is a small marker in the top-left corner, not the headline: what
-    // matters on a day is what is happening on it. The number was 26px and took
-    // the widest line in the card, which pushed the actual commitments down and
-    // made every column look the same from across the room.
-    // data-tint rotates the month's palette per day, so seven cards are a
-    // progression across the theme rather than one gradient stamped seven
-    // times. Decoration only, and derived from the date server-side.
-    return `<article class="${cls}" data-season="${esch(day.season)}"
-        data-tint="${esch(day.tint == null ? 0 : day.tint)}"
-        role="listitem" tabindex="0" aria-label="${esch(label)}">
+    return `<article class="${cls}" role="listitem" tabindex="0" aria-label="${esch(label)}">
       <header class="wk-hd">
         <div class="wk-hd-top">
           <time class="wk-date" datetime="${esch(day.iso)}">
@@ -637,35 +427,8 @@
           ${month}${rel}${count}
         </div>
       </header>
-      ${body}${motifs(day, season)}
+      ${body}
     </article>`;
-  }
-
-  // A few of the month's own glyphs scattered in each card, in the colours
-  // that card is already wearing. One glyph at opacity .1 in a corner was
-  // decoration you had to be told about; this is what the "Decor" toggle is
-  // actually for.
-  //
-  // The scatter is derived from the DATE, not from Math.random: the grid
-  // re-renders on every refresh and at midnight, and decoration that leaps to
-  // a new position each time reads as a glitch rather than as ornament.
-  //
-  // They live in the card (not its header) so they can use its full height,
-  // and stay at z-index 0 behind the events — `.wk-day` clips them, so a leaf
-  // can sit half off the edge without escaping into the grid.
-  function motifs(day, season) {
-    if (!ambienceOn()) return "";
-    const set = season.drift;
-    let html = "";
-    for (let i = 0; i < 3; i++) {
-      const seed = day.day * 7 + i * 13;
-      const glyph = set[(day.day + i) % set.length];
-      html += `<span class="wk-motif" data-m="${i}" aria-hidden="true" style="
-        right:${1 + (seed % 62)}%; bottom:${-8 + (seed % 34)}px;
-        font-size:${19 + (seed % 17)}px;
-        transform:rotate(${(seed % 54) - 27}deg)">${glyph}</span>`;
-    }
-    return html;
   }
 
   function renderWeek(d) {
@@ -702,7 +465,6 @@
     const range = first.month === last.month
       ? `${first.month} ${first.day}–${last.day}`
       : `${first.month} ${first.day} – ${last.month} ${last.day}`;
-    const season = SEASONS[first.season] || SEASONS.jan;
 
     const clashes = days.reduce((n, x) => n + (x.conflicts ? 1 : 0), 0);
     const notes = [
@@ -766,54 +528,17 @@
       : "";
 
     el.innerHTML = `
-      <div class="wk-top" data-season="${esch(first.season)}">
+      <div class="wk-top">
         <h3>This week</h3>
         <span class="wk-range">${esch(range)}</span>
-        <span class="wk-season" title="Seasonal theme">${
-          ambienceOn() ? season.glyph + " " : ""}${esch(season.name)}${
-          // The month's three colours, next to the name it already spells
-          // out. Suppressed with the rest of the decoration when the toggle
-          // is off — this is decor, and the toggle means all of it.
-          ambienceOn()
-            ? `<span class="wk-swatch" aria-hidden="true"><i></i><i></i><i></i></span>`
-            : ""}</span>
         ${synced}${notes}
-        <button class="wk-amb" id="wk-amb" type="button"
-          aria-pressed="${ambienceOn()}" title="Seasonal decoration">
-          ${ambienceOn() ? "✦ Decor on" : "✧ Decor off"}</button>
+        ${openBtn}
       </div>
       ${caveat}
-      <div class="wk-grid" role="list" data-season="${esch(first.season)}">
+      <div class="wk-grid" role="list">
         ${days.map((day, i) => dayCard(day, i)).join("")}
-        <div class="wk-amb-layer" aria-hidden="true"></div>
-      </div>
-      <div class="hx-btns" style="margin-top:12px">${openBtn}</div>`;
-
-    mountAmbience(el.querySelector(".wk-amb-layer"), first.season);
+      </div>`;
     wireWeek();
-  }
-
-  function mountAmbience(layer, seasonKey) {
-    if (!layer) return;
-    layer.innerHTML = "";
-    if (!ambienceOn()) return;
-    // Motion is opt-out via the toggle and automatically suppressed for
-    // prefers-reduced-motion in CSS; the glyphs stay purely decorative and
-    // never sit above interactive content.
-    const drift = (SEASONS[seasonKey] || SEASONS.jan).drift;
-    const n = 14;
-    let html = "";
-    for (let i = 0; i < n; i++) {
-      const g = drift[i % drift.length];
-      const left = Math.round((i / n) * 100 + (i % 3) * 4);
-      const dur = 9 + ((i * 7) % 11);
-      const delay = -((i * 13) % 17);
-      const size = 11 + ((i * 5) % 10);
-      html += `<span class="wk-flake" style="left:${left}%;
-        animation-duration:${dur}s; animation-delay:${delay}s;
-        font-size:${size}px">${g}</span>`;
-    }
-    layer.innerHTML = html;
   }
 
   function wireWeek() {
@@ -825,11 +550,6 @@
     document.querySelectorAll(".wk-more").forEach((m) => {
       m.onclick = (e) => { e.stopPropagation(); openAppKey("schedule"); };
     });
-    const amb = q("#wk-amb");
-    if (amb) amb.onclick = () => {
-      localStorage.setItem(AMBIENCE_KEY, ambienceOn() ? "off" : "on");
-      if (HOME) renderWeek(HOME);
-    };
     // Left/right move between days; the grid is one tab stop per column.
     const cards = Array.from(document.querySelectorAll(".wk-day"));
     cards.forEach((card, i) => {
@@ -843,292 +563,6 @@
     });
   }
 
-  // ---- snooze / dismiss (PRODUCT_IDEAS #34) ---------------------------------
-  // Nothing here could be told "not now" or "not ever", so an email you had
-  // consciously decided not to answer sat at the top of the card for a week
-  // and Do-Next re-suggested what you had just handled. A menu rather than a
-  // bare X: "hidden until when" is the question, and answering it silently
-  // with "forever" would be worse than not offering it.
-  async function dismiss(key, scope, reason) {
-    if (!key) return;
-    await fetch("/api/core/dismiss", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: key, scope: scope, reason: reason || null }),
-    });
-    refresh(true);
-  }
-  async function undismiss(key) {
-    if (!key) return;
-    await fetch("/api/core/dismiss/" + encodeURIComponent(key), { method: "DELETE" });
-    refresh(true);
-  }
-  // The affordance, as markup. `data-key` is read by one delegated handler so
-  // every surface that grows a snooze does not grow its own listener.
-  function snoozeBtn(key, label) {
-    if (!key) return "";
-    return `<span class="snz" data-snz-key="${esch(key)}">
-      <button class="snz-b" type="button" title="${esch(label || "Not now")}"
-        aria-label="${esch(label || "Not now")}">⏳</button>
-      <span class="snz-menu" hidden>
-        <button type="button" data-scope="today">Not today</button>
-        <button type="button" data-scope="forever">Never show this</button>
-      </span></span>`;
-  }
-  // One listener for every snooze on the page, including ones rendered later.
-  document.addEventListener("click", (e) => {
-    const opener = e.target.closest(".snz-b");
-    if (opener) {
-      const menu = opener.parentElement.querySelector(".snz-menu");
-      const wasOpen = !menu.hidden;
-      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
-      menu.hidden = wasOpen;
-      e.stopPropagation();
-      return;
-    }
-    const choice = e.target.closest(".snz-menu button");
-    if (choice) {
-      const wrap = choice.closest(".snz");
-      dismiss(wrap.dataset.snzKey, choice.dataset.scope);
-      document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
-      e.stopPropagation();
-      return;
-    }
-    document.querySelectorAll(".snz-menu").forEach((m) => (m.hidden = true));
-  });
-
-  function renderDoNext(dn, d) {
-    dn = dn || { title: "You're on track", reason: "Nothing urgent.", action: null };
-    const el = q("#cc-donext");
-
-    // Do-Next and the attention feed share nudge keys deliberately, so the two
-    // are frequently the SAME item — and it was drawn twice: once as a 180px
-    // hero, then again as the first attention row a few pixels below, carrying
-    // the same title and the same button. Where they agree, the feed keeps it
-    // (it is the list you scan) and the hero stands down.
-    const duplicate = Attention.isDuplicate(dn, d && d.nudges);
-    const hiddenRow = renderHidden(d);
-    if (duplicate) {
-      // The way back to something you dismissed lives in this card, so it has
-      // to survive the hero standing down — otherwise clearing your last nudge
-      // would also take away the only control that brings it back.
-      el.className = "cc-card";
-      el.hidden = !hiddenRow;
-      el.innerHTML = hiddenRow;
-      return;
-    }
-
-    el.hidden = false;
-    const calm = !dn.action;
-    const btn = dn.action ? `<button class="big-btn" id="dn-go">${esch(actionLabel(dn.action))}</button>` : "";
-    el.className = "cc-card compact";
-    el.innerHTML = `
-      <h3>Do this next${snoozeBtn(dn.key, "Not this — show me the next thing")}</h3>
-      <div class="donext ${calm ? "calm" : ""}">
-        <div class="title">${esch(dn.title)}</div>
-        <div class="reason">${esch(dn.reason || "")}</div>
-        <div class="cta">${btn}</div>
-      </div>
-      ${hiddenRow}`;
-    if (dn.action) q("#dn-go").onclick = () => handleAction(dn.action);
-  }
-
-  // Hidden things say so. A snooze you cannot see or undo is indistinguishable
-  // from the system having quietly lost your data, which is exactly the
-  // suspicion that makes people stop trusting a dashboard.
-  function renderHidden(d) {
-    const keys = (d && d.dismissed) || [];
-    if (!keys.length) return "";
-    const chips = keys.map((k) =>
-      `<button class="hid-x" type="button" data-unhide="${esch(k)}"
-        title="Bring this back">${esch(k)} ✕</button>`).join("");
-    return `<div class="hid-row"><span class="hid-l">Hidden</span>${chips}</div>`;
-  }
-  document.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-unhide]");
-    if (b) undismiss(b.dataset.unhide);
-  });
-
-  // ---- Needs attention ------------------------------------------------------
-  // AUDIT.md section 3 promised a unified attention feed with Important/FYI
-  // severity. core._nudges() has been building exactly that on every /today --
-  // icons, severity, detail lines, typed actions -- and nothing ever rendered
-  // it. Do-Next shows the single most urgent thing; this is everything else
-  // that is still waiting, which is the difference between a prompt and a list
-  // you can actually clear.
-  function renderAttention(nudges) {
-    const el = q("#cc-attention");
-    if (!el) return;
-    const items = Array.isArray(nudges) ? nudges : [];
-    if (!items.length) {
-      // Empty because nothing needs attention is a real state and worth
-      // saying, but it does not need a whole card competing for the eye.
-      el.hidden = true;
-      el.innerHTML = "";
-      return;
-    }
-    // Important first, then FYI, each keeping the order core produced.
-    const rank = (n) => (n.severity === "important" ? 0 : 1);
-    const sorted = items.slice().sort((a, b) => rank(a) - rank(b));
-    const important = sorted.filter((n) => n.severity === "important").length;
-    const rows = sorted.map((n, i) => {
-      const sev = n.severity === "important" ? "important" : "fyi";
-      const btn = n.action
-        ? `<button class="att-btn" data-nudge="${i}">${esch(actionLabel(n.action))}</button>`
-        : "";
-      return `<div class="att-row ${sev}">
-          <span class="att-icon" aria-hidden="true">${esch(n.icon || "•")}</span>
-          <span class="att-text">
-            <b>${esch(n.title || "")}</b>
-            ${n.detail ? `<em>${esch(n.detail)}</em>` : ""}
-          </span>
-          <span class="att-sev" title="${sev === "important" ? "Important" : "FYI"}">${sev === "important" ? "Important" : "FYI"}</span>
-          ${btn}${snoozeBtn(n.key, "Not now")}
-        </div>`;
-    }).join("");
-    el.hidden = false;
-    el.innerHTML = `<h3>Needs attention`
-      + (important ? ` <span class="att-count">${important} important</span>` : "")
-      + `</h3>${rows}`;
-    // Reuse the Do-Next executor rather than a second copy of the same
-    // vocabulary -- the two must not drift into doing different things for
-    // the same action type.
-    el.querySelectorAll("[data-nudge]").forEach((b) => {
-      b.onclick = () => handleAction(sorted[Number(b.dataset.nudge)].action);
-    });
-  }
-
-  // ---- Deadlines ------------------------------------------------------------
-  // The assistant has been extracting interview times and bill due dates on
-  // every sync and filing them since the pipeline was written; this card is
-  // where they surface.
-  function renderDeadlines(dl) {
-    const el = q("#cc-deadlines");
-    if (!el) return;
-    const d = dl || {};
-    const overdue = d.overdue || [], upcoming = d.upcoming || [], undated = d.undated || [];
-    if (!overdue.length && !upcoming.length && !undated.length) {
-      el.hidden = true;
-      el.innerHTML = "";
-      return;
-    }
-    const when = (iso) => {
-      const t = new Date(iso);
-      if (isNaN(t)) return "";
-      return t.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-    };
-    const row = (x, cls, note) => `<div class="dl-row ${cls}">
-        <span class="dl-text"><b>${esch(x.title)}</b>${x.source ? `<em>${esch(x.source)}</em>` : ""}</span>
-        <span class="dl-when">${esch(note || when(x.due_at))}</span>
-      </div>`;
-    // Overdue is its own state and is never sorted in with upcoming. An
-    // undated row says so rather than being rendered as due today -- the
-    // extractor stores a null when the email carried no date, and inventing
-    // one would be the "unknown rendered as a value" mistake again.
-    const html = overdue.map((x) => row(x, "overdue")).join("")
-      + upcoming.map((x) => row(x, "upcoming")).join("")
-      + undated.map((x) => row(x, "undated", "no date found")).join("");
-    el.hidden = false;
-    el.innerHTML = `<h3>Deadlines`
-      + (overdue.length ? ` <span class="dl-count">${overdue.length} overdue</span>` : "")
-      + `</h3>${html}`;
-  }
-
-
-  function actionLabel(a) {
-    if (!a) return "";
-    if (a.type === "focus") return `Start ${a.minutes || 45}-min session`;
-    if (a.type === "gym") return "Log workout";
-    if (a.type === "water") return `+${a.oz || 16} oz water`;
-    if (a.type === "gmail") return "Open Gmail";
-    if (a.type === "big3") return "Mark done";
-    if (a.type === "open") return "Open " + (a.app || "");
-    return "Go";
-  }
-
-  // ---- Inbox (email signal) ----
-  function renderInbox(inbox) {
-    inbox = inbox || {};
-    const items = inbox.items || [];
-    const catTag = (c) => (c === "interview" || c === "deadline")
-      ? `<span class="inbox-tag ${c}">${c}</span>` : "";
-    const rows = items.map((e) =>
-      `<div class="inbox-item ${e.important ? "important" : ""} ${e.stale ? "stale" : ""}" data-id="${esch(e.id)}">
-        <span class="cat"></span>
-        <div class="inbox-main">
-          <div class="s">${esch(e.subject || "(no subject)")}</div>
-          <div class="f"><span>${esch(e.from)}</span><span class="age">${esch(e.age || "")}</span></div>
-        </div>${catTag(e.category)}${snoozeBtn(e.key, "I'm not answering this")}</div>`).join("");
-    const need = inbox.need_reply || 0;
-    const header = `<h3>Inbox${need ? ` · ${need} need a reply` : ""}</h3>`;
-    // Sync age, not message age — these are different facts. A 72h-old
-    // message can sit in an inbox checked 4 minutes ago.
-    const sync = inbox.sync || {};
-    const agoStr = (iso) => {
-      const t = new Date(iso); if (isNaN(t)) return null;
-      const mins = Math.floor((Date.now() - t.getTime()) / 60000);
-      if (mins < 1) return "just now";
-      if (mins < 60) return mins + "m ago";
-      const h = Math.floor(mins / 60);
-      return h < 24 ? h + "h ago" : Math.floor(h / 24) + "d ago";
-    };
-    const checked = agoStr(sync.last_successful_sync);
-    const syncLine = sync.sync_status === "failed"
-      ? `<div class="inbox-sync failed">Last updated ${esch(checked || "never")} · refresh failed</div>`
-      : checked
-        ? `<div class="inbox-sync">Checked ${esch(checked)}</div>`
-        : (sync.sync_status ? `<div class="inbox-sync">Not checked yet</div>` : "");
-    const replies = (inbox.replies || []).length
-      ? `<div class="att-empty" style="margin-top:8px">↩ ${inbox.replies.length} interview thread(s) countered your time.</div>` : "";
-    q("#cc-inbox").innerHTML = header + syncLine +
-      `<div class="inbox">${rows || `<div class="att-empty">${esch(inbox.empty || "Inbox looks clear. 🎉")}</div>`}</div>` +
-      replies +
-      `<div class="hx-btns" style="margin-top:10px">
-         <button class="hx-btn" id="inbox-open">Open Gmail ↗</button>
-         <button class="hx-btn" id="inbox-refresh" title="Check Gmail now">↻ Refresh</button>
-       </div>`;
-    const rf = q("#inbox-refresh");
-    if (rf) rf.onclick = async () => {
-      rf.disabled = true; rf.textContent = "Checking…";
-      const r = await post("/gmail/refresh");
-      if (r && r.refreshed === false && r.retry_after_seconds)
-        toast(`Just checked — try again in ${r.retry_after_seconds}s`);
-      else if (r && r.sync_status === "failed") toast("Gmail refresh failed — inbox shows last known good");
-      else toast("Inbox updated");
-      await refresh(true);   // re-pull the homepage so counts/cards agree
-    };
-    q("#cc-inbox").querySelectorAll(".inbox-item").forEach((el) => (el.onclick = () => openGmail()));
-    q("#inbox-open").onclick = () => openGmail();
-  }
-
-  // ---- Today (Big 3 + next event) ----
-  function renderToday(d) {
-    const items = d.big3 || [];
-    const ev = d.next_event;
-    let b3;
-    if (!items.length) {
-      b3 = `<div class="big3-empty">
-        <input class="cc-input" id="big3-input" placeholder="Your 3 wins for today…" />
-        <button class="hx-btn" id="big3-save">Set</button></div>`;
-    } else {
-      b3 = items.map((b) =>
-        `<div class="big3-item ${b.done ? "done" : ""}" data-id="${b.id}">
-          <div class="big3-box">${b.done ? "✓" : ""}</div><div class="t">${esch(b.text)}</div></div>`).join("");
-    }
-    const evLine = ev ? `<div class="att-empty" style="margin-top:10px">🗓️ Next: <b style="color:var(--text)">${esch(ev.title)}</b>${ev.starts_at ? " · " + esch(String(ev.starts_at).slice(11, 16) || String(ev.starts_at).slice(0, 10)) : ""}</div>` : "";
-    q("#cc-today").innerHTML = `<h3>Today's Big 3</h3>${b3}${evLine}`;
-    if (!items.length) {
-      q("#big3-save").onclick = async () => {
-        const v = q("#big3-input").value.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 3);
-        if (!v.length) return; await post("/core/big3", { items: v }); refresh(true);
-      };
-      const inp = q("#big3-input");
-      if (inp) inp.onkeydown = (e) => { if (e.key === "Enter") q("#big3-save").click(); };
-    } else {
-      q("#cc-today").querySelectorAll(".big3-item").forEach((el) =>
-        (el.onclick = async () => { await post("/core/big3/" + el.dataset.id + "/toggle", {}); refresh(true); }));
-    }
-  }
-
   // "Aug 28" — short enough to sit inline in a sentence.
   const dshort = (iso) => {
     if (!iso) return "";
@@ -1138,6 +572,7 @@
       + " " + (+p[2]);
   };
 
+  // ---- Money ----------------------------------------------------------------
   function renderMoney(m, bud) {
     m = m || {}; bud = bud || {};
     // Unreachable and unconfigured are different problems with different
@@ -1200,15 +635,13 @@
       // what this paycheck left you, so it is stated separately, never added.
       const fromSav = pay.from_savings
         ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
-      // An ambiguous allocation config would otherwise just look like a
-      // smaller number.
-      // A transfer whose description says "savings" but whose accounts don't.
-      // Direction can't be read from a description, so it is named here rather
-      // than guessed — silently ignoring it would push "left to spend" up.
       // A real transfer whose only matching rule is withheld-before-deposit:
       // deducted by nothing, so the configuration needs fixing.
       const withheldConflict = (pay.withheld_rule_conflicts || []).length
         ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
+      // A transfer whose description says "savings" but whose accounts don't.
+      // Direction can't be read from a description, so it is named here rather
+      // than guessed — silently ignoring it would push "left to spend" up.
       const unmatched = (pay.unmatched_savings || []).length
         ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
       const overlap = (pay.allocation_overlaps || []).length
@@ -1278,8 +711,7 @@
       // silently dividing by brokerages and credit-card balances.
       const counted = (rw.liquid_accounts || []).length
         ? `<br><span class="sub">Counting: ${esch((rw.liquid_accounts || []).join(", "))}.</span>` : "";
-      // An account that is dropped must still be SEEN to be dropped. Discover
-      // fell out of this card entirely once, into no list at all.
+      // An account that is dropped must still be SEEN to be dropped.
       const owed = (rw.debts || []).length
         ? `<br><span class="sub">${esch((rw.debts || []).join(", "))} ${
              (rw.debts || []).length === 1 ? "carries a debt" : "carry debts"
@@ -1295,18 +727,10 @@
           <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days</span>${counted}${excl}${owed}</p>`;
       } else {
         // The range is open. Lead with the FLOOR, never the ceiling: the high
-        // end is the optimistic direction and the expensive one to anchor on,
-        // and 64.7 is precisely the number that shipped. The ceiling is stated
-        // as conditional, because that is what it is.
+        // end is the optimistic direction and the expensive one to anchor on.
+        // NO warning colour on an open range: `months_low` is a BOUND, not a
+        // measurement, and a colour change is an alarm.
         const amb = rw.ambiguous || [];
-        // NO warning colour on an open range, deliberately. A colour change is
-        // an alarm, and `months_low` is a BOUND, not a measurement: on this
-        // ledger the floor is one account, so moving money between two of your
-        // own accounts would turn the card red while nothing about your
-        // position changed. The rule that no consumer may alert on an open
-        // bound applies to the stylesheet too — it was the last consumer still
-        // reading the floor. The `certain` branch above keeps the warning,
-        // because there the number IS a measurement.
         runLine = `<p class="mny-run">🧭 <b>At least ${rw.months_low} months</b> of runway
           <span class="sub">— ${money(rw.liquid)} of confirmed cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days. Could be as much as ${rw.months_high} months.</span>${counted}
           <br><span class="sub">Firefly can't say whether ${esch(amb.slice(0, 4).join(", "))}${
@@ -1331,12 +755,6 @@
       subBits.push(`Subscriptions <b>${money(rec.monthly_equivalent)}</b>/mo across ${rec.tracked}${rec.annual_equivalent ? ` (≈ ${money(rec.annual_equivalent)}/yr)` : ""}`);
     const subLine = subBits.length ? `<p class="mny-sub">${subBits.join(" · ")}</p>` : "";
 
-    const bills = (m.upcoming_bills || []).slice(0, 2).map((b) =>
-      `<div class="pos"><span>${esch(b.name)}${b.days_until != null ? ` · ${b.days_until}d` : ""}</span><span class="mono">${money(b.amount, 2)}</span></div>`).join("");
-    // The pay-cycle line already says what the first observation would.
-    const obs = (m.observations || []).filter((o) => !(pay.text && o === pay.text))
-      .slice(0, 2).map((o) => `<li>${esch(o)}</li>`).join("");
-
     // The Firefly sub-app's headline figures, here so they cost no clicks.
     // A missing value renders as an em dash, never as $0 — unknown is not zero.
     //
@@ -1358,10 +776,7 @@
     // Spending by category, last 30 days — the Firefly sub-app's own donut,
     // called rather than reimplemented (app.js loads first and defines it
     // globally). One implementation means the dashboard and the sub-app
-    // cannot drift into showing the same data two different ways; it already
-    // handles slice colours, an "Other" roll-up past 8 categories, and the
-    // centre total. It replaced a bar version here because the pie is what
-    // was asked for.
+    // cannot drift into showing the same data two different ways.
     const catPie = (typeof spendingDonut === "function")
       ? spendingDonut(m.categories, "Spending by category · last 30 days")
       : "";
@@ -1406,15 +821,14 @@
       </div>
       ${owedLine}
       ${payLine}${runLine}${budLine}${recLine}${subLine}
-      <div class="hx-btns" style="margin:10px 0 4px"><button class="hx-btn" id="money-budget">View budget →</button></div>
-      ${obs ? `<ul class="mny-obs">${obs}</ul>` : ""}
       <div class="mny-hero mny-ff">${ffTiles}</div>
       ${catPie}
       ${accts ? `<h3 style="margin-top:12px">Accounts</h3>${accts}` : ""}
-      ${bills ? `<h3 style="margin-top:12px">Upcoming bills</h3>${bills}` : ""}
-      <div class="hx-btns" style="margin-top:10px"><button class="hx-btn" id="money-firefly">Recent transactions →</button></div>`;
-    const ffBtn = q("#money-firefly");
-    if (ffBtn) ffBtn.onclick = () => openAppKey("firefly");
+      <div class="hx-btns" style="margin-top:10px">
+        <button class="hx-btn" id="money-budget">Budget →</button>
+        <button class="hx-btn" id="money-firefly">Transactions →</button>
+      </div>`;
+    q("#money-firefly").onclick = () => openAppKey("firefly");
     q("#money-budget").onclick = () => openAppKey("budget");
     const setup = q("#bud-setup");
     if (setup) setup.onclick = () => openSettings();
@@ -1424,9 +838,9 @@
 
   function renderPortfolio(p) {
     p = p || { state: "unreachable" };
-    // Three states, not two (PRODUCT_IDEAS #13). A stocks service that is down
-    // is NOT an empty portfolio, and telling you to "add your stocks" over a
-    // transient blip sends you to fix configuration that is already correct.
+    // Three states, not two. A stocks service that is down is NOT an empty
+    // portfolio, and telling you to "add your stocks" over a transient blip
+    // sends you to fix configuration that is already correct.
     if (p.state === "unreachable") {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
         <p class="att-empty">Couldn't reach the stocks service just now — a
@@ -1440,7 +854,7 @@
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
       return;
     }
-    // The "Alert on move >= (%)" setting finally produces an alert.
+    // The "Alert on move >= (%)" setting produces an alert.
     const alerts = p.alerts || [];
     const alertLine = alerts.length
       ? `<div class="pf-alert">⚡ ${alerts.length} past your ${esch(String(p.move_threshold_pct))}% alert: `
@@ -1461,7 +875,7 @@
     const noneLive = !live.length
       ? `<p class="att-empty">Quotes unavailable right now — your ${(p.positions || []).length} holding(s) are saved and will price when the quote source responds.</p>` : "";
     q("#cc-portfolio").innerHTML = `
-      <h3>Portfolio · what changed</h3>
+      <h3>Portfolio</h3>
       ${live.length ? `<div class="mny-hero">
         <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">${esch(p.session_label || "Last session")} · ${dc >= 0 ? "+" : ""}${money(dc)}${p.session_label ? "" : `<br><span style="font-size:10px">as-of date unavailable</span>`}</div></div>
         <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
@@ -1473,142 +887,55 @@
   }
 
   // ---- resale (SCRUM-139) ---------------------------------------------------
-  // What replaced the habit-logging form. PowerBuy already computed all of
-  // this; build_home simply never fetched it (SCRUM-71), so none of it could
-  // reach a screen.
-  // ---- data safety (SCRUM-67) ----------------------------------------------
-  // "A backup you have never restored is a belief, not a backup." The one
-  // number: days since the last VERIFIED restore, and "never" until one
-  // happens.
-  //
-  // Loud when there is nothing proving the data is recoverable, quiet when
-  // there is. That asymmetry is the whole design — an infra card that looks
-  // the same whether or not you are protected is one you stop reading.
-  function renderSafety(d) {
-    const el = q("#cc-safety");
+  // Money with a deadline: PowerBuy's expiring buys are the only figure on
+  // this page that can be lost by waiting.
+  function renderResale(r) {
+    const el = q("#cc-resale");
     if (!el) return;
-    const s = (d && d.data_safety) || { state: "unknown" };
-    const days = (n) => (n === 0 ? "today" : n === 1 ? "1 day ago" : n + " days ago");
+    r = r || { state: "unreachable" };
 
-    const BODY = {
-      never: {
-        cls: "bad", lead: "Never",
-        sub: "No restore has ever been verified. Until one is, these backups are a belief.",
-      },
-      stale: {
-        cls: "bad", lead: s.restore_days == null ? "Stale" : days(s.restore_days),
-        sub: "Long enough ago that the schema has probably moved since. A proof has an expiry date.",
-      },
-      unknown: {
-        cls: "muted", lead: "Unknown",
-        sub: "Can't read the backup record from here — that is not the same as being safe.",
-      },
-      ok: {
-        cls: "good", lead: s.restore_days == null ? "Verified" : days(s.restore_days),
-        sub: s.rows ? `Last drill restored ${esch(String(s.rows))} rows and compared them against the backup's own record.`
-                    : "Last restore drill passed.",
-      },
-    };
-    const b = BODY[s.state] || BODY.unknown;
-
-    // Reported separately on purpose: a fresh backup says nothing about
-    // whether it can be restored, and that gap is this card's whole subject.
-    const backup = s.backup_days == null
-      ? `<span class="ds-x">Last backup <b>unknown</b></span>`
-      : `<span class="ds-x${s.backup_stale ? " warn" : ""}">Last backup <b>${esch(days(s.backup_days))}</b></span>`;
-    // Disk free on the state volume — fact 1 of the ticket, the half that the
-    // bind mount exposes without host access. Omitted rather than invented
-    // when the mount is absent: a number about the container's own disk would
-    // be the wrong fact dressed as the right one.
-    const disk = d && d.disk && d.disk.state !== "unknown" && d.disk.free_pct != null
-      ? `<span class="ds-x${d.disk.state === "low" ? " warn" : ""}">Disk <b>${esch(String(d.disk.free_pct))}% free</b></span>`
-      : "";
-
-    // The scheduled Firefly import (SCRUM-142), on its own line rather than
-    // folded into the backup verdict: a backup protects what is in the
-    // ledger, and this says whether anything has been getting in. "Runs but
-    // nothing enters" is the shape that hid a thin card for five months, so
-    // it is named, not rounded off into "ran fine".
-    const imp = (d && d.import_run) || { state: "unknown" };
-    const IMPORT = {
-      never: ["warn", "Import <b>never run</b> from here"],
-      stale: ["warn", `Import <b>last tried ${imp.attempt_days != null ? esch(days(imp.attempt_days)) : "a while ago"}</b>`],
-      failed: ["warn", `Import <b>failed</b>${imp.reason ? ` (${esch(String(imp.reason))})` : ""}`],
-      unverified: ["warn", "Import <b>unverified</b> — the ledger couldn't be checked afterwards"],
-      quiet: ["", `Import <b>ran ${imp.attempt_days != null ? esch(days(imp.attempt_days)) : ""}</b>, nothing new`],
-      suspect: ["warn", `Import <b>runs but nothing enters</b>${imp.ledger_ingest_days != null ? ` — ledger still for ${esch(String(imp.ledger_ingest_days))}d` : ""}`],
-      ok: ["", `Import <b>${imp.rows != null ? esch(String(imp.rows)) + " rows " : ""}${imp.landed_days != null ? esch(days(imp.landed_days)) : "landed"}</b>`],
-      unknown: ["", "Import <b>unknown</b>"],
-    };
-    const [impCls, impText] = IMPORT[imp.state] || IMPORT.unknown;
-    const importLine = `<span class="ds-x${impCls ? " " + impCls : ""}">${impText}</span>`;
-
-    el.innerHTML = `<h3>Data safety</h3>
-      <div class="ds-lead ${b.cls}">${esch(b.lead)}</div>
-      <div class="ds-label">since the last verified restore</div>
-      <p class="ds-sub">${b.sub}</p>
-      <div class="ds-row">${backup}${importLine}${disk}</div>
-      ${s.state === "never" || s.state === "stale" ? `<p class="ds-how">
-        Run <code>bash scripts/restore.sh --drill</code> on the box — it restores
-        the newest backup into a scratch database and never touches the live one.</p>` : ""}`;
-  }
-
-  // ---- Weather (header pill) -----------------------------------------------
-  // One line beside the greeting: sky, degrees, high and low, place. It was a
-  // full card with an hourly strip; Anthony asked for it small and at the top,
-  // and a glance does not need twelve hours — the sub-app has those and the
-  // ten days.
-  //
-  // The rule the card had still holds in a quarter of the space: the big
-  // number is either true or absent. A temperature is the one thing here read
-  // without being read, and 0° from a timed-out request is believable in
-  // February.
-  function renderWeather(w) {
-    const el = q("#cc-weather");
-    if (!el) return;
-    w = w || { state: "unreachable" };
-    const deg = w.degree || "°";
-    const t = (v) => (v == null ? "—" : Math.round(v) + deg);
-    el.onclick = () => openAppKey("weather");
-
-    if (w.state === "not_configured") {
-      // Fixable in ten seconds, so it reads as an invitation rather than a
-      // fault. Clicking it opens the place picker.
-      el.className = "cc-wx-pill empty";
-      el.title = "No location set — click to pick one";
-      el.innerHTML = `<span class="wxp-g">🌤️</span><span class="wxp-set">Set location</span>`;
+    // Three states, not two. An unreachable service is not an empty book, and
+    // this is the card whose entire job is to say when money is about to be
+    // lost — rendering an outage as "$0 expected, 0 expiring" would be the
+    // most reassuring possible version of something it does not know.
+    if (r.state === "unreachable") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">Couldn't reach PowerBuy just now — a connection
+        problem, not an empty book. Figures are hidden rather than guessed at.</p>`;
       return;
     }
-    if (w.state !== "ok") {
-      el.className = "cc-wx-pill empty";
-      el.title = "Couldn't reach the forecast. No temperature is shown rather "
-        + "than a stale one.";
-      el.innerHTML = `<span class="wxp-g">⛅</span><span class="wxp-set">Weather —</span>`;
+    if (r.state === "not_configured") {
+      el.innerHTML = `<h3>Resale</h3>
+        <p class="att-empty">PowerBuy isn't connected — set POWERBUY_EMAIL and
+        POWERBUY_PASSWORD to see your purchases here.</p>`;
       return;
     }
 
-    el.className = "cc-wx-pill";
-    el.title = `${w.label || "Weather"}${w.place ? " · " + w.place : ""}`
-      + (w.feels_like != null ? ` · feels ${Math.round(w.feels_like)}${deg}` : "")
-      + (w.stale ? " · not current" : "");
-    // The rest of today by the hour, inline. The service decides how many —
-    // "the rest of today" is 23 chips at 1am and none at 11pm, so dashboard.py
-    // bounds it and rolls past midnight late in the evening rather than
-    // showing a stub exactly when the next few hours matter most.
-    const hours = (w.hourly || []).map((h) => `
-      <span class="wxp-h" title="${esch((h.label || "") + (h.precip_pct != null ? ` · ${h.precip_pct}% rain` : ""))}">
-        <b>${esch(h.hour === 0 ? "12a" : h.hour < 12 ? h.hour + "a"
-          : h.hour === 12 ? "12p" : (h.hour - 12) + "p")}</b>
-        <i>${esch(t(h.temp))}</i>
-      </span>`).join("");
+    // The lead figure is whichever one is actually urgent. Expiring buys have
+    // a deadline and the profit number does not, so on any day something is
+    // expiring that is the headline; otherwise the money you expect to make is.
+    const money = (v) => "$" + Number(v || 0).toLocaleString(undefined,
+      { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    const lead = r.urgent
+      ? `<span class="rs-lead urgent">${r.expiring}</span>
+         <span class="rs-unit">expiring within 7 days</span>`
+      : `<span class="rs-lead">${esch(money(r.profit))}</span>
+         <span class="rs-unit">profit expected</span>`;
+    const sub = [
+      r.urgent && r.profit != null ? `<span>${esch(money(r.profit))} <b>expected</b></span>` : "",
+      r.unpaid ? `<span><b>${r.unpaid}</b> unpaid</span>` : "",
+      r.in_flight ? `<span><b>${r.in_flight}</b> not delivered</span>` : "",
+      r.total != null ? `<span><b>${r.total}</b> tracked</span>` : "",
+    ].filter(Boolean).join("");
 
-    el.innerHTML = `
-      <span class="wxp-g">${esch(w.glyph || "")}</span>
-      <span class="wxp-t">${esch(t(w.temp))}</span>
-      <span class="wxp-x">H ${esch(t(w.high))} · L ${esch(t(w.low))}</span>
-      ${hours ? `<span class="wxp-hrs">${hours}</span>` : ""}
-      ${w.place ? `<span class="wxp-p">${esch(w.place)}</span>` : ""}
-      ${w.stale ? `<span class="wxp-stale" title="The forecast service was unreachable, so this is the last reading we got">old</span>` : ""}`;
+    el.innerHTML = `<h3>Resale</h3>
+      <div class="rs-row">${lead}</div>
+      <div class="rs-sub">${sub}</div>
+      <div class="hx-btns" style="margin-top:12px">
+        <button class="hx-btn" id="rs-open">Open PowerBuy →</button>
+      </div>`;
+    const b = q("#rs-open");
+    if (b) b.onclick = () => openAppKey("powerbuy");
   }
 
   // ---- Amex credits --------------------------------------------------------
@@ -1690,202 +1017,59 @@
     if (open) open.onclick = () => openAppKey("amex");
   }
 
-  function renderResale(r) {
-    const el = q("#cc-resale");
+  // ---- Weather (header pill) -----------------------------------------------
+  // One line beside the greeting: sky, degrees, high and low, the rest of
+  // today by the hour, place. The ten days are a tap away in the sub-app.
+  //
+  // The big number is either true or absent. A temperature is the one thing
+  // here read without being read, and 0° from a timed-out request is
+  // believable in February.
+  function renderWeather(w) {
+    const el = q("#cc-weather");
     if (!el) return;
-    r = r || { state: "unreachable" };
+    w = w || { state: "unreachable" };
+    const deg = w.degree || "°";
+    const t = (v) => (v == null ? "—" : Math.round(v) + deg);
+    el.onclick = () => openAppKey("weather");
 
-    // Three states, not two. An unreachable service is not an empty book, and
-    // this is the card whose entire job is to say when money is about to be
-    // lost — rendering an outage as "$0 expected, 0 expiring" would be the
-    // most reassuring possible version of something it does not know.
-    if (r.state === "unreachable") {
-      el.innerHTML = `<h3>Resale</h3>
-        <p class="att-empty">Couldn't reach PowerBuy just now — a connection
-        problem, not an empty book. Figures are hidden rather than guessed at.</p>`;
+    if (w.state === "not_configured") {
+      // Fixable in ten seconds, so it reads as an invitation rather than a
+      // fault. Clicking it opens the place picker.
+      el.className = "cc-wx-pill empty";
+      el.title = "No location set — click to pick one";
+      el.innerHTML = `<span class="wxp-g">🌤️</span><span class="wxp-set">Set location</span>`;
       return;
     }
-    if (r.state === "not_configured") {
-      el.innerHTML = `<h3>Resale</h3>
-        <p class="att-empty">PowerBuy isn't connected — set POWERBUY_EMAIL and
-        POWERBUY_PASSWORD to see your purchases here.</p>`;
+    if (w.state !== "ok") {
+      el.className = "cc-wx-pill empty";
+      el.title = "Couldn't reach the forecast. No temperature is shown rather "
+        + "than a stale one.";
+      el.innerHTML = `<span class="wxp-g">⛅</span><span class="wxp-set">Weather —</span>`;
       return;
     }
 
-    // The lead figure is whichever one is actually urgent. Expiring buys have
-    // a deadline and the profit number does not, so on any day something is
-    // expiring that is the headline; otherwise the money you expect to make is.
-    const money = (v) => "$" + Number(v || 0).toLocaleString(undefined,
-      { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-    const lead = r.urgent
-      ? `<span class="rs-lead urgent">${r.expiring}</span>
-         <span class="rs-unit">expiring within 7 days</span>`
-      : `<span class="rs-lead">${esch(money(r.profit))}</span>
-         <span class="rs-unit">profit expected</span>`;
-    const sub = [
-      r.urgent && r.profit != null ? `<span>${esch(money(r.profit))} <b>expected</b></span>` : "",
-      r.unpaid ? `<span><b>${r.unpaid}</b> unpaid</span>` : "",
-      r.in_flight ? `<span><b>${r.in_flight}</b> not delivered</span>` : "",
-      r.total != null ? `<span><b>${r.total}</b> tracked</span>` : "",
-    ].filter(Boolean).join("");
+    el.className = "cc-wx-pill";
+    el.title = `${w.label || "Weather"}${w.place ? " · " + w.place : ""}`
+      + (w.feels_like != null ? ` · feels ${Math.round(w.feels_like)}${deg}` : "")
+      + (w.stale ? " · not current" : "");
+    // The rest of today by the hour, inline. The service decides how many —
+    // "the rest of today" is 23 chips at 1am and none at 11pm, so dashboard.py
+    // bounds it and rolls past midnight late in the evening rather than
+    // showing a stub exactly when the next few hours matter most.
+    const hours = (w.hourly || []).map((h) => `
+      <span class="wxp-h" title="${esch((h.label || "") + (h.precip_pct != null ? ` · ${h.precip_pct}% rain` : ""))}">
+        <b>${esch(h.hour === 0 ? "12a" : h.hour < 12 ? h.hour + "a"
+          : h.hour === 12 ? "12p" : (h.hour - 12) + "p")}</b>
+        <i>${esch(t(h.temp))}</i>
+      </span>`).join("");
 
-    el.innerHTML = `<h3>Resale</h3>
-      <div class="rs-row">${lead}</div>
-      <div class="rs-sub">${sub}</div>
-      ${r.urgent ? `<p class="rs-note">An expiring buy is the only figure here
-        with a deadline on it.</p>` : ""}
-      <div class="hx-btns" style="margin-top:12px">
-        <button class="hx-btn" id="rs-open">Open PowerBuy →</button>
-      </div>`;
-    const b = q("#rs-open");
-    if (b) b.onclick = () => openAppKey("powerbuy");
-  }
-
-  // Whether the logging drawer was left open. localStorage can throw in a
-  // private window, so every read is guarded and the default is closed.
-  const HX_LOG_KEY = "cc.hxlog";
-  const hxLogOpen = () => {
-    try { return localStorage.getItem(HX_LOG_KEY) === "open"; } catch (e) { return false; }
-  };
-
-  function renderHealth(d) {
-    const logOpen = hxLogOpen();
-    const h = d.health || {};
-    const score = d.score || { score: null, parts: {}, tracked: 0, of: 0 };
-    const st = h.study || {}, gym = h.gym || {}, w = h.water || {}, nut = h.nutrition || {};
-    const studyPct = st.goal_min ? Math.min(100, Math.round((st.today_min / st.goal_min) * 100)) : 0;
-    const waterPct = w.goal ? Math.min(100, Math.round((w.oz / w.goal) * 100)) : 0;
-    const fmtH = (m) => `${Math.floor((m || 0) / 60)}h ${(m || 0) % 60}m`;
-    // `focus_sessions.label` is in the schema and the UI only ever wrote
-    // "Study", so a column built to tell sessions apart held one value.
-    const focusBtns = (st.presets || [25, 45, 60]).map((m) => `<button class="hx-btn" data-focus="${m}">${m}m</button>`).join("")
-      + `<input class="cc-input hx-label" id="hx-focus-label" list="hx-focus-labels" placeholder="Study" title="What is this session for?" />`
-      + `<datalist id="hx-focus-labels"><option>Study</option><option>Deep work</option><option>Reading</option><option>Job hunt</option><option>Admin</option></datalist>`;
-    const waterBtns = (w.presets || [8, 16, 24]).map((oz) => `<button class="hx-btn" data-water="${oz}">+${oz}</button>`).join("");
-    const rating = nut.rating;
-    const nutBtns = ["poor", "okay", "good"].map((r) => `<button class="hx-btn ${rating === r ? "on" : ""}" data-nut="${r}">${r[0].toUpperCase() + r.slice(1)}</button>`).join("");
-    // Sleep: column, model, POST /sleep and a score component all shipped with
-    // no control anywhere, so the value stayed null and the component could
-    // never contribute. Unlogged reads as "not logged", never as 0 hours.
-    const sleepHours = (d.health && d.health.sleep && d.health.sleep.hours != null)
-      ? d.health.sleep.hours : null;
-    const sleepBtnsHtml = [6, 7, 8, 9].map((h) =>
-      `<button class="hx-btn ${sleepHours === h ? "on" : ""}" data-sleep="${h}">${h}h</button>`).join("");
-    const exam = st.exam;
-    const parts = score.parts || {};
-    // An untracked component is drawn as an empty, muted track labelled "not
-    // tracked yet" -- NOT as a full-width bar at 0%, which is what a real miss
-    // looks like. `ratio || 0` rendered both identically.
-    const scoreBars = Object.keys(parts).map((k) => {
-      const part = parts[k] || {};
-      const untracked = part.ratio == null;
-      const pct = untracked ? 0 : Math.round(part.ratio * 100);
-      return `<div class="score-bar${untracked ? " untracked" : ""}">`
-        + `<span>${esch(k)}</span>`
-        + `<div class="track"><div class="fill" style="width:${pct}%"></div></div>`
-        + `<em>${untracked ? "not tracked yet" : pct + "%"}</em></div>`;
-    }).join("");
-    const hasScore = score.score != null;
-    const scoreHeading = hasScore
-      ? `today's score ${score.score}`
-      : "nothing tracked yet today";
-    const scoreSub = hasScore && score.of && score.tracked !== score.of
-      ? `<span class="score-of">from ${score.tracked} of ${score.of} tracked</span>`
-      : "";
-    q("#cc-health").innerHTML = `
-      <h3>Health &amp; discipline · ${scoreHeading}</h3>
-      <!-- The ring that used to sit here drew the same number as the score
-           pill in the page header, a few hundred pixels apart on one screen.
-           The heading above already names it. -->
-      <div class="score-bars">${scoreBars || '<span class="att-empty">Set goals in ⚙ to start scoring.</span>'}${scoreSub}</div>
-      <div class="hx">
-        <div class="hx-row">
-          <div class="hx-head"><span class="l">📚 Study${st.streak ? ` · ${st.streak}d streak` : ""}</span><span class="v">${fmtH(st.today_min)} / ${fmtH(st.goal_min)}</span></div>
-          <div class="hx-track"><div class="hx-fill" style="width:${studyPct}%"></div></div>
-          ${exam && exam.days_left != null ? `<div class="hx-head"><span class="l">${esch(exam.label)} in ${exam.days_left}d</span>${exam.remaining_hours != null ? `<span class="v">${exam.remaining_hours}h left · ${exam.weekly_needed_hours}h/wk</span>` : ""}</div>` : ""}
-        </div>
-        <div class="hx-row">
-          <div class="hx-head"><span class="l">🏋️ Gym${gym.last ? ` · last ${timeAgoShort(gym.last)}` : ""}</span><span class="v">${gym.week || 0} / ${gym.goal || 0} this week</span></div>
-          <div class="hx-track"><div class="hx-fill" style="width:${gym.goal ? Math.min(100, (gym.week / gym.goal) * 100) : 0}%"></div></div>
-        </div>
-        <div class="hx-row">
-          <div class="hx-head"><span class="l">💧 Water</span><span class="v">${w.oz || 0} / ${w.goal || 0} oz</span></div>
-          <div class="hx-track"><div class="hx-fill" style="width:${waterPct}%;background:var(--accent-2)"></div></div>
-        </div>
-        <div class="hx-row">
-          <div class="hx-head"><span class="l">🍽️ Nutrition today</span><span class="v">${rating ? esch(rating) : "not logged"}</span></div>
-        </div>
-        <div class="hx-row">
-          <div class="hx-head"><span class="l">😴 Sleep</span><span class="v">${sleepHours == null ? "not logged" : sleepHours + "h"}</span></div>
-        </div>
-      </div>
-      <!-- Logging is a FORM, and a home screen is for what you monitor at a
-           glance; entry belongs on a drill-down. Nothing is removed — it is one
-           click away, and the disclosure remembers whether you left it open, so
-           if you do log from here every day it simply stays open. -->
-      <details class="hx-log"${logOpen ? " open" : ""}>
-        <summary>Log something</summary>
-        <div class="hx-log-grid">
-          <div><span class="hx-log-l">Study</span><div class="hx-btns">${focusBtns}</div></div>
-          <div><span class="hx-log-l">Gym</span><div class="hx-btns"><button class="hx-btn" data-gym="1">Log workout</button></div></div>
-          <div><span class="hx-log-l">Water</span><div class="hx-btns">${waterBtns}</div></div>
-          <div><span class="hx-log-l">Nutrition</span><div class="hx-btns">${nutBtns}</div></div>
-          <div><span class="hx-log-l">Sleep</span><div class="hx-btns">${sleepBtnsHtml}</div></div>
-        </div>
-      </details>`;
-    const logEl = q("#cc-health").querySelector(".hx-log");
-    if (logEl) logEl.ontoggle = () => {
-      try { localStorage.setItem(HX_LOG_KEY, logEl.open ? "open" : "closed"); } catch (e) {}
-    };
-    const focusLabel = () => (q("#hx-focus-label") && q("#hx-focus-label").value.trim()) || "Study";
-    q("#cc-health").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => startFocus(+b.dataset.focus, focusLabel())));
-    q("#cc-health").querySelectorAll("[data-water]").forEach((b) => (b.onclick = async () => { await post("/core/water", { oz: +b.dataset.water }); toast(`+${b.dataset.water} oz`); refresh(true); }));
-    q("#cc-health").querySelector("[data-gym]").onclick = async () => { await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); };
-    q("#cc-health").querySelectorAll("[data-nut]").forEach((b) => (b.onclick = async () => { await post("/core/nutrition", { rating: b.dataset.nut }); refresh(true); }));
-    // `daily_log.sleep_hours`, POST /sleep and the `sleep` score component all
-    // existed with no control anywhere in the UI, so the column stayed null
-    // forever and the component could never contribute.
-    const sleepBtns = q("#cc-health").querySelectorAll("[data-sleep]");
-    sleepBtns.forEach((b) => (b.onclick = async () => {
-      await post("/core/sleep", { hours: +b.dataset.sleep });
-      toast(`${b.dataset.sleep}h sleep logged`);
-      refresh(true);
-    }));
-  }
-
-  function renderCapture(items) {
-    items = items || [];
-    // `captures.kind` and `CapturePatch.kind` have been in the schema from the
-    // start; the UI only ever wrote 'note', so the column carried one value.
-    const KINDS = { note: "📝", task: "✓", idea: "💡" };
-    const list = items.map((c) =>
-      `<div class="cap-item" data-id="${c.id}"><span title="${esch(c.kind || "note")}">${KINDS[c.kind] || "•"}</span><span>${esch(c.text)}</span><button class="x" title="done">✕</button></div>`).join("");
-    q("#cc-capture").innerHTML = `
-      <h3>Quick capture</h3>
-      <div class="cap-form">
-        <select class="cc-input cap-kind" id="cap-kind" title="What kind of thing is this?">
-          <option value="note">📝 Note</option>
-          <option value="task">✓ Task</option>
-          <option value="idea">💡 Idea</option>
-        </select>
-        <input class="cc-input" id="cap-input" placeholder="What's on your mind?" /><button class="hx-btn" id="cap-add">Add</button>
-      </div>
-      <div class="cap-list">${list}</div>`;
-    const add = async () => {
-      const v = q("#cap-input").value.trim(); if (!v) return;
-      const kind = (q("#cap-kind") || {}).value || "note";
-      await post("/core/capture", { text: v, kind }); q("#cap-input").value = ""; refresh(true);
-    };
-    q("#cap-add").onclick = add;
-    q("#cap-input").onkeydown = (e) => { if (e.key === "Enter") add(); };
-    q("#cc-capture").querySelectorAll(".cap-item").forEach((el) =>
-      (el.querySelector(".x").onclick = async () => { await fetch("/api/core/capture/" + el.dataset.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: true }) }); refresh(true); }));
-  }
-
-  function timeAgoShort(iso) {
-    const d = new Date(iso); if (isNaN(d)) return iso;
-    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-    return days <= 0 ? "today" : days === 1 ? "yesterday" : days + "d ago";
+    el.innerHTML = `
+      <span class="wxp-g">${esch(w.glyph || "")}</span>
+      <span class="wxp-t">${esch(t(w.temp))}</span>
+      <span class="wxp-x">H ${esch(t(w.high))} · L ${esch(t(w.low))}</span>
+      ${hours ? `<span class="wxp-hrs">${hours}</span>` : ""}
+      ${w.place ? `<span class="wxp-p">${esch(w.place)}</span>` : ""}
+      ${w.stale ? `<span class="wxp-stale" title="The forecast service was unreachable, so this is the last reading we got">old</span>` : ""}`;
   }
 
   // ---- actions --------------------------------------------------------------
@@ -1900,138 +1084,16 @@
     }
     openApp(app);
   }
-  // "Open Gmail" means GMAIL — the real thing, new tab. (The dashboard's own
-  // triage view stays reachable from the Apps launcher tile.)
-  function openGmail() {
-    window.open("https://mail.google.com/", "_blank", "noopener");
-  }
-  async function handleAction(a) {
-    if (!a) return;
-    if (a.type === "focus") return startFocus(a.minutes || 45, a.label || "Study");
-    if (a.type === "water") { await post("/core/water", { oz: a.oz || 16 }); toast(`+${a.oz || 16} oz`); return refresh(true); }
-    if (a.type === "gym") { await post("/core/gym", {}); toast("Workout logged 💪"); return refresh(true); }
-    if (a.type === "big3") { await post("/core/big3/" + a.id + "/toggle", {}); return refresh(true); }
-    if (a.type === "gmail") return openGmail();
-    if (a.type === "open") return openAppKey(a.app);
-  }
-
-  // ---- focus timer ----------------------------------------------------------
-  let focus = { total: 0, left: 0, label: "Study", timer: null, paused: false };
-  function startFocus(min, label) {
-    focus = { total: min * 60, left: min * 60, label: label || "Study", timer: null, paused: false };
-    q("#focus-label").textContent = focus.label;
-    q("#focus-toggle").textContent = "Pause";
-    q("#focus").hidden = false;
-    paintFocus();
-    focus.timer = setInterval(() => {
-      if (focus.paused) return;
-      focus.left--;
-      paintFocus();
-      if (focus.left <= 0) finishFocus(true);
-    }, 1000);
-  }
-  function paintFocus() {
-    const m = Math.floor(focus.left / 60), s = focus.left % 60;
-    q("#focus-clock").textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  async function finishFocus(complete) {
-    clearInterval(focus.timer);
-    const done = Math.round((focus.total - Math.max(0, focus.left)) / 60);
-    q("#focus").hidden = true;
-    if (done >= 1) { await post("/core/focus", { minutes: done, label: focus.label }); toast(`Logged ${done} min of ${focus.label.toLowerCase()} 📚`); refresh(true); }
-  }
-  q("#focus-toggle").onclick = () => { focus.paused = !focus.paused; q("#focus-toggle").textContent = focus.paused ? "Resume" : "Pause"; };
-  q("#focus-done").onclick = () => finishFocus(false);
-  q("#focus-cancel").onclick = () => { clearInterval(focus.timer); q("#focus").hidden = true; };
-
-  // ---- command palette ------------------------------------------------------
-  let PAL = { items: [], sel: 0 };
-  function commands() {
-    const base = [
-      { ic: "📚", label: "Start 45-min study session", hint: "study", run: () => startFocus(45, "Study") },
-      { ic: "📚", label: "Start 25-min focus", hint: "study", run: () => startFocus(25, "Study") },
-      { ic: "📚", label: "Start 60-min study session", hint: "study", run: () => startFocus(60, "Study") },
-      { ic: "💧", label: "Add 16 oz water", hint: "water", run: async () => { await post("/core/water", { oz: 16 }); toast("+16 oz"); refresh(true); } },
-      { ic: "💧", label: "Add 24 oz water", hint: "water", run: async () => { await post("/core/water", { oz: 24 }); toast("+24 oz"); refresh(true); } },
-      { ic: "🏋️", label: "Log a workout", hint: "gym", run: async () => { await post("/core/gym", {}); toast("Workout logged 💪"); refresh(true); } },
-      { ic: "🍽️", label: "Nutrition: good", hint: "food", run: async () => { await post("/core/nutrition", { rating: "good" }); refresh(true); } },
-      { ic: "📝", label: "Add a task", hint: "task", run: () => quickCapturePrompt("Add task", (t) => post("/tasks/tasks", { title: t })) },
-      { ic: "💭", label: "Quick capture a note", hint: "capture", run: () => q("#cap-input") && q("#cap-input").focus() },
-      { ic: "⚙️", label: "Settings (goals, holdings, score)", hint: "settings", run: () => openSettings() },
-      { ic: "📈", label: "Set stocks / holdings", hint: "stocks", run: () => openSettings() },
-      { ic: "📬", label: "Open Gmail (web)", hint: "gmail mail email inbox", run: () => openGmail() },
-      { ic: "🎬", label: "Open Plex", hint: "plex media movies tv", run: () => window.open(q("#cc-plex").href, "_blank", "noopener") },
-      { ic: "🔐", label: "Open Vaultwarden", hint: "vault vaultwarden passwords bitwarden", run: () => q("#cc-vault").click() },
-      { ic: "▦", label: "Apps & services launcher", hint: "apps containers launcher", run: () => openLauncher() },
-      { ic: "🔄", label: "Refresh dashboard", hint: "sync", run: () => refresh(true) },
-    ];
-    // one command per app -> opens its modal, with natural aliases
-    const ALIASES = {
-      gmail: "mail email inbox", firefly: "money finance spending firefly ledger",
-      vault: "passwords password vaultwarden bitwarden secrets", plex: "media movies tv shows jellyfin",
-      stocks: "stocks portfolio investments shares", schedule: "calendar cal events",
-      tasks: "todo task list", core: "score stats habits", networth: "net worth wealth",
-      finance: "bills subscriptions", budget: "budget categories",
-    };
-    Object.values(APPSMAP).forEach((a) => base.push({
-      ic: a.icon || "▦", label: "Open " + a.name,
-      hint: (a.key + " " + (ALIASES[a.key] || "")).trim(), run: () => openAppKey(a.key),
-    }));
-    return base;
-  }
-  function openPalette() {
-    PAL.items = commands(); PAL.sel = 0;
-    q("#palette").hidden = false;
-    const inp = q("#palette-input"); inp.value = ""; inp.focus();
-    paintPalette("");
-  }
-  function closePalette() { q("#palette").hidden = true; }
-  function paintPalette(filter) {
-    const f = filter.toLowerCase();
-    const matches = PAL.items.filter((c) => c.label.toLowerCase().includes(f) || (c.hint || "").includes(f));
-    // if user typed a number after "study"/"water", offer a custom command
-    const numMatch = f.match(/(study|focus|water)\s*(\d+)/);
-    if (numMatch) {
-      const n = +numMatch[2];
-      if (numMatch[1] === "water") matches.unshift({ ic: "💧", label: `Add ${n} oz water`, hint: "", run: async () => { await post("/core/water", { oz: n }); toast(`+${n} oz`); refresh(true); } });
-      else matches.unshift({ ic: "📚", label: `Start ${n}-min session`, hint: "", run: () => startFocus(n, "Study") });
-    }
-    PAL.filtered = matches; PAL.sel = 0;
-    q("#palette-list").innerHTML = matches.map((c, i) =>
-      `<li class="${i === 0 ? "sel" : ""}" data-i="${i}"><span class="ic">${c.ic}</span><span>${esch(c.label)}</span><span class="hint">${esch(c.hint || "")}</span></li>`).join("") || '<li class="att-empty">No match</li>';
-    q("#palette-list").querySelectorAll("li[data-i]").forEach((li) =>
-      (li.onclick = () => runPal(+li.dataset.i)));
-  }
-  function runPal(i) { const c = PAL.filtered[i]; if (c) { closePalette(); c.run(); } }
-  function quickCapturePrompt(title, fn) {
-    const v = prompt(title); if (v && v.trim()) { fn(v.trim()); toast("Added"); setTimeout(() => refresh(true), 300); }
-  }
 
   // ---- wiring ---------------------------------------------------------------
-  q("#cc-open-palette").onclick = openPalette;
   q("#cc-apps").onclick = openLauncher;
-  q("#cc-score-pill").onclick = () => openAppKey("core");
-  q("#palette").onclick = (e) => { if (e.target.id === "palette") closePalette(); };
-  q("#palette-input").addEventListener("input", (e) => paintPalette(e.target.value));
-  q("#palette-input").addEventListener("keydown", (e) => {
-    const n = (PAL.filtered || []).length;
-    if (e.key === "ArrowDown") { PAL.sel = Math.min(n - 1, PAL.sel + 1); highlight(); e.preventDefault(); }
-    else if (e.key === "ArrowUp") { PAL.sel = Math.max(0, PAL.sel - 1); highlight(); e.preventDefault(); }
-    else if (e.key === "Enter") { runPal(PAL.sel); }
-    else if (e.key === "Escape") { closePalette(); }
-  });
-  function highlight() {
-    q("#palette-list").querySelectorAll("li").forEach((li, i) => li.classList.toggle("sel", i === PAL.sel));
-  }
   document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); q("#palette").hidden ? openPalette() : closePalette(); }
-    else if (e.key === "Escape" && !q("#palette").hidden) closePalette();
-    else if (e.key === "Escape" && !q("#launcher").hidden) closeLauncher();
+    if (e.key === "Escape" && !q("#launcher").hidden) closeLauncher();
   });
 
   // ---- apps & services launcher ---------------------------------------------
-  // The one place to reach every sub-app/container: tile -> dashboard modal,
-  // ↗ -> the full underlying application (Firefly, Plex, importer…).
+  // The one place to reach every sub-app: tile -> dashboard modal, ↗ -> the
+  // full underlying application (Firefly, Plex, importer…).
   let EXT_LINKS = null;  // cached {key: url}
   async function externalLinks() {
     if (EXT_LINKS) return EXT_LINKS;
@@ -2058,14 +1120,16 @@
   // the home screen. Plex always has somewhere to go (app.plex.tv even when the
   // sub-app is not connected); Vaultwarden needs VAULTWARDEN_WEB_URL and SAYS
   // so on click rather than 404ing — an instruction on this dashboard has to
-  // point at a control that exists.
+  // point at a control that exists. Titles stay "Open Plex" / "Open
+  // Vaultwarden" so a screen reader announces the destination, not an emoji.
   async function wireLaunchButtons() {
     const links = await externalLinks();
     const plex = q("#cc-plex"), vault = q("#cc-vault");
-    if (plex && links.plex) plex.href = links.plex;
+    if (plex) { plex.title = "Open Plex"; if (links.plex) plex.href = links.plex; }
     if (!vault) return;
     if (links.vault) {
       vault.href = links.vault;
+      vault.title = "Open Vaultwarden";
       vault.classList.remove("unconfigured");
       vault.onclick = null;
     } else {
@@ -2107,6 +1171,11 @@
   q("#launcher").onclick = (e) => { if (e.target.id === "launcher") closeLauncher(); };
 
   // ---- settings -------------------------------------------------------------
+  // Only what the cards on this page read: holdings for the portfolio, the
+  // budgets and pay cycle for the money card, and which Firefly accounts are
+  // not spendable cash for the runway. The weather location is set from the
+  // weather sub-app, where you can see the forecast you are choosing.
+  //
   // Accounts as the ledger reports them, kept by index so a name never has to
   // survive a round-trip through an HTML attribute — `esch` does not escape
   // quotes and an account is named by the user.
@@ -2123,31 +1192,9 @@
     _runwayAccounts = ((nw || {}).accounts || []).filter(
       (a) => a && a.kind !== "liability" && a.role !== "ccAsset");
     _financeSettings = s.finance || {};
-    const w = s.score_weights || {};
     const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
     const pc = s.paycheck || {};
     q("#settings-body").innerHTML = `
-      <div class="set-group"><h4>Goals</h4><div class="set-grid">
-        <div class="set-field"><label>Study/day (min)</label><input id="s-sd" type="number" value="${s.study_daily_min ?? 120}"></div>
-        <div class="set-field"><label>Study/week (min)</label><input id="s-sw" type="number" value="${s.study_weekly_min ?? 600}"></div>
-        <div class="set-field"><label>Workouts/week</label><input id="s-gw" type="number" value="${s.gym_weekly ?? 4}"></div>
-        <div class="set-field"><label>Water goal (oz)</label><input id="s-wg" type="number" value="${s.water_goal_oz ?? 80}"></div>
-      </div></div>
-      <div class="set-group"><h4>Exam / deadline (optional)</h4><div class="set-grid">
-        <div class="set-field"><label>Label</label><input id="s-el" value="${esch(s.exam_label || "")}"></div>
-        <div class="set-field"><label>Date (YYYY-MM-DD)</label><input id="s-ed" value="${esch(s.exam_date || "")}"></div>
-        <div class="set-field"><label>Target study hours</label><input id="s-eh" type="number" value="${s.exam_target_hours ?? ""}"></div>
-      </div></div>
-      <div class="set-group"><h4>Cash runway — which of these is not spendable cash?</h4>
-        <div class="set-field" style="grid-column:1/-1"><label>Firefly has no account type for a brokerage, so it cannot tell a current account from a retirement fund — both are "defaultAsset". Tick the ones that are NOT money you could spend this month. Until you do, the runway is shown as a range instead of a number.</label>
-        <div class="set-runway">${
-          _runwayAccounts.length
-            ? _runwayAccounts.map((a, i) => `<label class="set-check"><input type="checkbox" class="runway-x" data-i="${i}"${
-                (_financeSettings.not_spendable || []).includes(a.name) ? " checked" : ""
-              }> ${esch(a.name)}</label>`).join("")
-            : `<span class="muted">No accounts to show — Firefly did not answer.</span>`
-        }</div></div>
-      </div>
       <div class="set-group"><h4>Investments</h4><div class="set-grid">
         <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line (or comma-separated): SYMBOL shares cost — cost optional, fractional shares OK</label>
           <textarea id="s-hold" placeholder="NVDA 10 150&#10;AAPL 2.5&#10;VOO:1.25:380">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
@@ -2155,13 +1202,6 @@
           <input id="s-watch" value="${esch((((s.market || {}).watchlist) || []).join(", "))}"></div>
         <div class="set-field"><label>Alert on move ≥ (%)</label><input id="s-mv" type="number" value="${(s.market || {}).move_threshold_pct ?? 3}"></div>
       </div></div>
-      <div class="set-group"><h4>Monthly budgets</h4>
-        <p class="set-hint">Each budget maps to one or more Firefly category names. Spending in those
-        categories fills the budget's vessel on the Budget page.</p>
-        <div id="s-budgets"></div>
-        <button class="hx-btn" id="s-budget-add" type="button">+ Add budget</button>
-        <p class="set-hint" id="s-cat-hint"></p>
-      </div>
       <div class="set-group"><h4>Paycheck &amp; savings</h4>
         <p class="set-hint">Powers <b>Left to spend</b> on the Money card: the paycheck that landed,
         minus the savings that come out of it, minus what you've spent since. Matching is
@@ -2181,16 +1221,23 @@
         <div id="s-allocs"></div>
         <button class="hx-btn" id="s-alloc-add" type="button">+ Add savings deduction</button>
       </div>
-      <div class="set-group"><h4>Important senders (comma-separated emails/domains)</h4><div class="set-field">
-        <input id="s-imp" value="${esch((s.important_senders || []).join(", "))}"></div></div>
-      <div class="set-group"><h4>Daily-score weights (0 disables a component)</h4><div class="set-grid">
-        <div class="set-field"><label>Study</label><input id="w-study" type="number" value="${w.study ?? 30}"></div>
-        <div class="set-field"><label>Fitness</label><input id="w-fitness" type="number" value="${w.fitness ?? 20}"></div>
-        <div class="set-field"><label>Tasks/Big3</label><input id="w-tasks" type="number" value="${w.tasks ?? 20}"></div>
-        <div class="set-field"><label>Hydration</label><input id="w-hydration" type="number" value="${w.hydration ?? 10}"></div>
-        <div class="set-field"><label>Nutrition</label><input id="w-nutrition" type="number" value="${w.nutrition ?? 10}"></div>
-        <div class="set-field"><label>Sleep</label><input id="w-sleep" type="number" value="${w.sleep ?? 0}"></div>
-      </div></div>`;
+      <div class="set-group"><h4>Monthly budgets</h4>
+        <p class="set-hint">Each budget maps to one or more Firefly category names. Spending in those
+        categories fills the budget's vessel on the Budget page.</p>
+        <div id="s-budgets"></div>
+        <button class="hx-btn" id="s-budget-add" type="button">+ Add budget</button>
+        <p class="set-hint" id="s-cat-hint"></p>
+      </div>
+      <div class="set-group"><h4>Cash runway — which of these is not spendable cash?</h4>
+        <div class="set-field" style="grid-column:1/-1"><label>Firefly has no account type for a brokerage, so it cannot tell a current account from a retirement fund — both are "defaultAsset". Tick the ones that are NOT money you could spend this month. Until you do, the runway is shown as a range instead of a number.</label>
+        <div class="set-runway">${
+          _runwayAccounts.length
+            ? _runwayAccounts.map((a, i) => `<label class="set-check"><input type="checkbox" class="runway-x" data-i="${i}"${
+                (_financeSettings.not_spendable || []).includes(a.name) ? " checked" : ""
+              }> ${esch(a.name)}</label>`).join("")
+            : `<span class="muted">No accounts to show — Firefly did not answer.</span>`
+        }</div></div>
+      </div>`;
     q("#settings").hidden = false;
 
     // budgets editor: one row per budget (name / $limit / mapped categories)
@@ -2327,14 +1374,8 @@
         cadence_days: num("#s-pay-cad", 14),
         allocations: allocations,
       },
-      study_daily_min: num("#s-sd", 120), study_weekly_min: num("#s-sw", 600),
-      gym_weekly: num("#s-gw", 4), water_goal_oz: num("#s-wg", 80),
-      exam_label: q("#s-el").value.trim() || "exam",
-      exam_date: q("#s-ed").value.trim() || null,
-      exam_target_hours: q("#s-eh").value.trim() ? num("#s-eh", null) : null,
-      important_senders: list("#s-imp"),
-      // Merged, not replaced: large_txn and low_balance are not editable here
-      // and a bare {not_spendable} would drop them on every save.
+      // Merged, not replaced: anything else `finance` carries survives a save
+      // of the picker rather than being dropped by a bare {not_spendable}.
       finance: { ..._financeSettings, not_spendable:
         [...q("#settings-body").querySelectorAll(".runway-x")]
           .filter((c) => c.checked)
@@ -2342,7 +1383,6 @@
           .filter(Boolean) },
       budgets: budgets,
       market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
-      score_weights: { study: num("#w-study", 30), fitness: num("#w-fitness", 20), tasks: num("#w-tasks", 20), hydration: num("#w-hydration", 10), nutrition: num("#w-nutrition", 10), sleep: num("#w-sleep", 0) },
     };
     status.style.color = "";
     status.textContent = "Saving…";
@@ -2376,10 +1416,10 @@
     await refresh(true);
     loadSystems();
     scheduleMidnightRollover();
-    // background refresh every 60s (skip while a modal/palette/focus is open)
+    // background refresh every 60s (skip while a modal is open)
     setInterval(() => {
       if (q("#overlay").classList.contains("open")) return;
-      if (!q("#palette").hidden || !q("#focus").hidden) return;
+      if (!q("#settings").hidden || !q("#launcher").hidden) return;
       refresh(false);
       loadSystems();
     }, 60000);

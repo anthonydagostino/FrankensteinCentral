@@ -18,13 +18,9 @@ const at = (mins) => new Date(Date.parse(T0) + mins * 60000).toISOString();
 
 function payload(over) {
   return Object.assign({
-    score: { score: 74, parts: {} },
-    do_next: { text: "Head to Acme — starts in 20 min" },
-    since: { show: true, changes: [{ text: "1 new email" }] },
     deploy: { running: "abc1234" },
-    health: { gym: { week: 2 } },
     money: { today: 65.0, month: 900.0, paycheck: { left: 420 } },
-    inbox: { items: [{ id: "m1" }] },
+    amex: { state: "ok", urgent: [{ name: "Uber", amount: 15 }] },
     calendar: [{ id: "e1", title: "Acme", status: "confirmed" }],
     budget: { over_budget: [] },
   }, over || {});
@@ -81,15 +77,11 @@ test("a cache stamped in the future is unknown, not fresh", () => {
 
 test("every volatile field is suppressed, not shown stale", () => {
   const v = Offline.staleView(payload(), T0, at(600));
-  for (const k of ["score", "do_next", "since", "deploy", "health"]) {
+  for (const k of Offline.VOLATILE) {
     assert.equal(k in v, false, `${k} survived into the stale view`);
   }
-});
-
-test("a stale do_next can never say to head somewhere in 20 minutes", () => {
-  // The worst one: acted on immediately, and wrong the moment it is old.
-  const v = Offline.staleView(payload(), T0, at(600));
-  assert.equal(JSON.stringify(v).includes("starts in 20 min"), false);
+  assert.ok(Offline.VOLATILE.includes("deploy"),
+    "what the box is running is exactly what we cannot reach while offline");
 });
 
 test("spent-today is blanked while the month figure survives", () => {
@@ -101,7 +93,7 @@ test("spent-today is blanked while the month figure survives", () => {
 
 test("durable content is kept, because hiding it helps nobody", () => {
   const v = Offline.staleView(payload(), T0, at(600));
-  assert.deepEqual(v.inbox, { items: [{ id: "m1" }] });
+  assert.deepEqual(v.amex, { state: "ok", urgent: [{ name: "Uber", amount: 15 }] });
   assert.equal(v.calendar.length, 1);
 });
 
@@ -110,7 +102,7 @@ test("the stale view is always labelled with when it was captured", () => {
   assert.equal(v.offline.stale, true);
   assert.equal(v.offline.cached_at, T0);
   assert.equal(v.offline.age_label, "3h ago");
-  assert.ok(v.offline.suppressed.includes("score"));
+  assert.ok(v.offline.suppressed.includes("deploy"));
   assert.ok(v.offline.suppressed.includes("money.today"));
 });
 
@@ -152,13 +144,11 @@ test("the box is unreachable and the phone still renders something true", () => 
   const cached = payload();
   const v = Offline.staleView(cached, T0, at(60 * 11));
   // It renders...
-  assert.ok(v.inbox, "nothing was rendered at all");
+  assert.ok(v.amex, "nothing was rendered at all");
   assert.ok(v.calendar);
   // ...it says it is old...
   assert.ok(Offline.banner(v.offline).includes("11h ago"));
   // ...and it makes no claim that depends on the moment.
-  const blob = JSON.stringify(v);
-  assert.equal(blob.includes("starts in 20 min"), false);
   assert.equal(v.money.today, null);
-  assert.equal("score" in v, false);
+  assert.equal("deploy" in v, false);
 });

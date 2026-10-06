@@ -631,7 +631,7 @@ else:
     add("WARN", "firefly audit", f"{err or 'not connected'}")
 
 print()
-print("-- stocks / tasks / schedule / fitness --")
+print("-- stocks / schedule --")
 st, pq, errq = get(8099, "/quotes?symbols=NVDA", timeout=30)
 if st == 200 and pq is not None:
     got = (pq.get("quotes") or [])
@@ -659,35 +659,27 @@ if st == 200 and pf:
 else:
     add("FAIL", "stocks svc", f"{err}")
 
-st, ts, err = get(8087, "/summary")
-add("PASS" if st == 200 else "FAIL", "tasks",
-    f"{(ts or {}).get('open')} open task(s)" if st == 200 else f"{err}")
 st, ev, err = get(8084, "/events")
 add("PASS" if st == 200 else "FAIL", "schedule",
     f"{len((ev or {}).get('events', []))} event(s)" if st == 200 else f"{err}")
-st, vs, err = get(8082, "/visits")
-add("PASS" if st == 200 else "FAIL", "fitness",
-    f"{(vs or {}).get('count')} gym visit(s) logged" if st == 200 else f"{err}")
 print()
 
 print("-- homepage aggregator (assistant /home) --")
 st, home, err = get(8085, "/home?fresh=1", timeout=60)
 if st == 200 and home:
-    missing = [k for k in ("inbox", "money", "portfolio", "do_next", "attention",
-                           "health", "score", "briefing") if k not in home]
+    # The cards the home screen renders, and nothing else: the habit, inbox
+    # and nudge sections left the payload on 2026-10-06.
+    missing = [k for k in ("week", "money", "portfolio", "resale", "amex",
+                           "weather", "deploy", "data_safety") if k not in home]
     if missing:
         add("WARN", "home build", f"payload missing {missing} — assistant is an OLD build, redeploy")
     else:
         add("PASS", "home build", f"all sections present, mode={home.get('mode')}, "
             f"greeting=\"{home.get('greeting')}\", now={home.get('now','')[:19]}")
-    dn = home.get("do_next", {})
-    add("PASS" if dn.get("title") else "WARN", "home do_next",
-        f"\"{dn.get('title')}\" — {trunc(dn.get('reason'), 70)}")
     money = home.get("money", {})
     add("PASS" if money.get("connected") else "WARN", "home money",
         f"connected={money.get('connected')}, today=${money.get('today')}, "
-        f"month=${money.get('month')}, pace={money.get('pace_pct')}%, "
-        f"obs={len(money.get('observations', []))}")
+        f"month=${money.get('month')}, pace={money.get('pace_pct')}%")
     # Exact user-facing freshness copy (auditable, not paraphrased).
     if money.get("stale_days") is not None:
         add("WARN", "home money copy",
@@ -695,24 +687,6 @@ if st == 200 and home:
             f"— day-level figures suppressed (today=None, not $0)")
     else:
         add("PASS", "home money copy", "no staleness notice — day-level figures shown as-is")
-    for o in money.get("observations", [])[:3]:
-        add("PASS", "  money obs", trunc(o, 88))
-    inbox = home.get("inbox", {})
-    add("PASS" if inbox.get("mode") == "live" else "WARN", "home inbox",
-        f"mode={inbox.get('mode')}, {len(inbox.get('items', []))} surfaced, "
-        f"{inbox.get('need_reply')} need reply")
-    sysh = home.get("systems", {})
-    # `healthy` was deliberately REMOVED from this payload: it meant "core and
-    # gmail answered" while thirteen other services could be down, so it was
-    # replaced by what was actually checked. This read was never updated, so it
-    # was None every time — a permanent FAIL whose own message said "down: []",
-    # i.e. nothing is down. A diagnostic that contradicts itself in one line
-    # trains you to ignore it, which is worse than not having it.
-    down = sysh.get("down")
-    checked = ", ".join(sysh.get("checked") or []) or "nothing"
-    add("FAIL" if down else "PASS", "home systems",
-        f"down: {down}" if down
-        else f"{checked} answered (NOT the whole stack — see gateway /api/health)")
     # cache check
     st2, cached, _ = get(8085, "/home")
     if st2 == 200 and cached:

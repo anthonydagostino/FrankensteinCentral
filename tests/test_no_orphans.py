@@ -55,10 +55,10 @@ def settings_keys():
 # Keys whose consumer cannot be seen in source text. One line each, saying
 # WHERE it is consumed and WHY a grep cannot see it. Adding a key here is a
 # decision, which is the whole point.
-SETTINGS_REACHED_ANOTHER_WAY = {
-    "focus_presets": "served to the UI renamed: core /today emits it as study.presets",
-    "water_presets": "served to the UI renamed: core /today emits it as water.presets",
-    "score_weights": "iterated generically by compute_score; no per-key reference exists",
+SETTINGS_REACHED_ANOTHER_WAY: dict[str, str] = {
+    # Empty since 2026-10-06: every remaining settings key has a consumer a
+    # grep can see. The three that used to be here (focus and water presets,
+    # score weights) went with the habit tracker.
 }
 
 
@@ -127,11 +127,17 @@ ENDPOINTS_REACHED_ANOTHER_WAY = {
         "source tree this test scans) before and after each import to judge "
         "whether rows entered; tests/test_firefly_import.py exercises it"),
     ("stocks", "/quotes"): "manual diagnostic; the dashboard reads /portfolio",
-    ("core", "/history"): "manual diagnostic; the dashboard reads /today",
+    ("gmail", "/refresh"): (
+        "manual trigger (curl -X POST) to poll Gmail now instead of waiting "
+        "for GMAIL_REFRESH_SECONDS; the inbox card that had a button for it "
+        "left the home screen on 2026-10-06"),
     ("assistant", "/sync"): (
-        "manual trigger of the orchestration pass (curl -X POST); "
-        "_auto_sync_loop calls the same function on AUTO_SYNC_SECONDS. Its "
-        "only UI caller was the retired lounge (SCRUM-140)."),
+        "manual trigger of the calendar sync (curl -X POST); "
+        "_auto_sync_loop calls the same function on AUTO_SYNC_SECONDS."),
+    ("assistant", "/notify"): (
+        "manual: send yourself a message on the configured channel "
+        "(curl -X POST '/api/assistant/notify?text=...'); the sync sends its "
+        "digest through notify.send directly. docs/SETUP-NOTIFICATIONS.md"),
 }
 
 
@@ -159,68 +165,17 @@ def test_the_endpoint_allowlist_has_no_stale_entries():
         assert entry in live, f"{entry} is declared but no longer an endpoint"
 
 
-# ── the nine from the inventory, pinned individually ───────────────────────
+# ── the ones that survive the 2026-10-06 cut, pinned individually ─────────
 #
 # The checks above are generic and would pass again if any of these regressed
-# in a way that kept a stray reference alive. These name them.
+# in a way that kept a stray reference alive. These name them. Most of the
+# nine PRODUCT_IDEAS #17 found (the attention feed, deadlines, the weekly
+# review, the "since" block, sleep, capture kinds, focus labels, the
+# low-balance floor) were wired up and then removed along with the cards they
+# fed — a feature nobody reads is not improved by being reachable.
 
 HOME_JS = (ROOT / "gateway" / "static" / "home.js").read_text()
 ASSISTANT = (ROOT / "services" / "assistant" / "app" / "main.py").read_text()
-
-
-def test_the_attention_feed_reaches_the_home_screen():
-    """core._nudges() — AUDIT.md §3's promised feed — was computed on every
-    /today and the string "nudges" appeared nowhere outside core."""
-    assert '"nudges"' in ASSISTANT, "the assistant drops the feed again"
-    assert "renderAttention" in HOME_JS, "nothing renders the feed"
-
-
-def test_deadlines_reach_the_home_screen():
-    assert '"deadlines"' in ASSISTANT
-    assert "renderDeadlines" in HOME_JS
-
-
-def test_the_weekly_review_reaches_the_home_screen():
-    assert "/weekly-review" in ASSISTANT
-    assert "renderWeeklyReview" in HOME_JS
-
-
-def test_the_since_block_reaches_the_home_screen():
-    """PRODUCT_IDEAS #4. `since_changes` is fully unit-tested and core exposes
-    /seen, so BOTH ends look consumed to the generic check above -- the
-    assistant calls /seen in its gather and home.js PUTs to it. What no grep
-    could see is the one line in the middle: if build_home stops assigning
-    data["since"], every unit test still passes, both endpoints still have
-    callers, and the feature renders nothing forever. Verified by deleting
-    that assignment: 643 passed. That is the hole this closes."""
-    assert 'data["since"]' in ASSISTANT, (
-        "build_home no longer puts the block on the payload, so the client "
-        "has nothing to render and nothing to mark seen")
-    assert "renderSince" in HOME_JS, "nothing renders the block"
-    assert "d.since" in HOME_JS, "the renderer reads it from somewhere else now"
-
-
-def test_showing_and_storing_stay_separate_decisions():
-    """The design bug that made the feature unable to start at all: the client
-    recorded the baseline only when it had shown something, but nothing can be
-    shown without a baseline. If home.js ever calls markSeen only on the shown
-    path again, the deadlock is back -- and no assertion about since_changes
-    can catch it, because the server side is correct in both worlds."""
-    body = HOME_JS[HOME_JS.index("function renderSince"):]
-    body = body[:body.index("function deviceLabel")]
-    early, shown = body.split("return;", 1)
-    assert "markSeen" in early, (
-        "the not-shown path no longer records a baseline, so a first-ever "
-        "load never creates one and the feature can never start")
-    assert "since.store" in early, (
-        "the not-shown path stores unconditionally, so an idle background tab "
-        "consumes this morning's changes without showing them")
-    assert "markSeen" in shown, "the shown path no longer advances the baseline"
-
-
-def test_sleep_has_a_control():
-    assert "data-sleep" in HOME_JS, "no way to log sleep, so the column stays null"
-    assert "/core/sleep" in HOME_JS
 
 
 def test_the_move_threshold_produces_an_alert():
@@ -239,18 +194,6 @@ def test_the_move_threshold_produces_an_alert():
         "alertLine is built but never interpolated, so the alert never renders"
 
 
-def test_the_low_balance_floor_is_consumed():
-    assert "low_balance_accounts" in ASSISTANT
-
-
-def test_capture_can_write_more_than_one_kind():
-    assert "cap-kind" in HOME_JS, "the UI only ever writes 'note' again"
-
-
-def test_a_focus_session_can_be_labelled():
-    assert "hx-focus-label" in HOME_JS, "the UI only ever writes 'Study' again"
-
-
 def test_the_job_board_is_gone_and_unreferenced():
     """jobs.html was a 554-line hand-maintained comparison of four job offers
     (SCRUM-140). Retired on Anthony's instruction; a dangling link to it would
@@ -260,47 +203,14 @@ def test_the_job_board_is_gone_and_unreferenced():
     assert "jobs.html" not in (ROOT / "gateway" / "static" / "index.html").read_text()
 
 
-def test_the_legacy_lounge_is_gone_and_unreferenced():
-    """lounge.html and ~700 lines of canvas code in app.js drew an animated
-    office of agent personas (SCRUM-140). Retired; the modals it shared with
-    the home screen stay in app.js."""
-    static = ROOT / "gateway" / "static"
-    assert not (static / "lounge.html").exists()
-    for f in ("index.html", "home.js", "app.js"):
-        assert "lounge.html" not in (static / f).read_text(), f
-    assert 'getElementById("stage")' not in (static / "app.js").read_text()
-    # ...and not in the gateway's Python either: the auth allowlist shipped
-    # naming both retired pages as public paths — dead entries that read as
-    # live routes to the next person.
-    for p in list((ROOT / "gateway" / "app").glob("*.py")) + list((ROOT / "gateway" / "tests").glob("*.py")):
-        text = p.read_text()
-        assert "lounge.html" not in text and "jobs.html" not in text, p.name
-
-
-# ── duplicate element ids ──────────────────────────────────────────────────
-#
-# A duplicate id is the same orphan defect wearing different clothes. `home.js`
-# reaches every card through `q("#id")` — `querySelector`, which returns only
-# the FIRST match — so a second element with that id is unreachable markup: it
-# renders empty, keeps whatever `hidden` it was authored with, and never fails.
-#
-# This is not hypothetical. Two branches each added a weekly-review card in a
-# different position and both survived the merge, leaving `id="cc-weekly"`
-# twice on production. The renderer wrote to the top one; the copy in the
-# right-hand column sat hidden forever. Duplicate ids are invalid HTML, so
-# nothing anywhere warned. With this many branches landing in one static page
-# it will happen again, and the check is cheaper than the excavation.
-
-def static_pages():
-    return sorted((ROOT / "gateway" / "static").glob("*.html"))
-
-
-@pytest.mark.parametrize("page", static_pages(), ids=lambda p: p.name)
-def test_no_element_id_appears_twice_on_a_page(page):
-    ids = re.findall(r'\bid="([^"]+)"', page.read_text())
-    dupes = sorted({i for i in ids if ids.count(i) > 1})
-    assert not dupes, (
-        f"{page.name} declares these ids more than once: {', '.join(dupes)}. "
-        "querySelector returns the first match, so every later copy is dead "
-        "DOM — delete the wrong placement rather than renaming it."
-    )
+def test_the_retired_cards_are_really_gone():
+    """The removal was the point. A renderer that quietly survives in home.js
+    is dead weight the next reader has to understand, and a payload key the
+    assistant still builds is a service fan-out nobody consumes."""
+    for name in ("renderAttention", "renderDeadlines", "renderWeeklyReview",
+                 "renderSince", "renderDoNext", "renderInbox", "renderToday",
+                 "renderHealth", "renderCapture", "startFocus", "openPalette"):
+        assert name not in HOME_JS, f"{name} is still in home.js"
+    for key in ('"nudges"', '"deadlines"', '"weekly_review"', 'data["since"]',
+                '"do_next"', '"big3"', '"captures"', '"score"', '"health"'):
+        assert key not in ASSISTANT, f"the assistant still builds {key}"

@@ -32,9 +32,9 @@ Full reference lives in [`docs/`](docs/README.md):
                                         │ (internal http)
       ┌───────────────┬─────────────────┼──────────────┬───────────────┐
       ▼               ▼                 ▼              ▼               ▼
-  assistant       powerbuy          fitness         gmail          schedule
-   :8085           :8081            :8082           :8083           :8084
-  (the brain)   (your API)      (gym+food)      (own OAuth)      (calendar)
+  assistant       powerbuy          firefly         gmail          schedule
+   :8085           :8081            :8097           :8083           :8084
+  (home screen)  (your API)     (your ledger)    (own OAuth)      (calendar)
 ```
 
 The **assistant** is the orchestrator: on each sync it reads the gmail sub-app,
@@ -48,7 +48,7 @@ cp .env.example .env      # fill in secrets when you have them
 docker compose up --build
 ```
 
-Then open **http://localhost:8080**. Hit **Sync now** to run the assistant.
+Then open **http://localhost:8080**.
 
 Each service is also directly reachable (8081–8099) and self-documents its
 endpoints at `/` and `/health`. Full port map in
@@ -58,18 +58,13 @@ endpoints at `/` and `/health`. Full port map in
 
 | App        | Port | What it does                                              |
 |------------|------|-----------------------------------------------------------|
-| Assistant  | 8085 | The orchestrator. Reads every sub-app, briefing, home payload |
-| Core       | 8098 | Personal state & daily score — study, water, nutrition, Big 3, captures |
+| Assistant  | 8085 | Builds the home payload; books interviews from your mail onto the calendar |
+| Core       | 8098 | The settings store — holdings, budgets, pay cycle, which accounts are cash |
 | Gmail      | 8083 | Whole-inbox triage + sent-mail availability detection. Own Google OAuth |
 | Schedule   | 8084 | Your calendar. Idempotent, color-coded, pushes to real Google Calendar |
 | Firefly    | 8097 | Read-only view of your Firefly III — net worth, spend, accounts |
 | Budget     | 8088 | Time-aware budgets over Firefly. Definitions live in core settings |
-| Net Worth  | 8090 | Balances from Firefly, with manual accounts as fallback     |
-| Finance    | 8086 | Bills & subscriptions — monthly spend, what's due soon      |
-| Tasks      | 8087 | Your to-do list — quick capture, check things off           |
-| Fitness    | 8082 | Gym visits, weekly plan, groceries & nutrition              |
 | Stocks     | 8099 | Portfolio & watchlist. Keyless quotes via Stooq             |
-| Deals      | 8089 | Real discounts spotted in your inbox                        |
 | PowerBuy   | 8081 | Your arbitrage tracker — purchases, profit, unpaid/expiring |
 | Vault      | 8091 | Password health from Vaultwarden. Metadata only, no secrets |
 | Plex       | 8092 | A Plex server shared with you — continue watching, libraries |
@@ -92,16 +87,16 @@ which is which, and what each one holds, is in
   Once connected, `/needs-reply` reads your real unread inbox, and
   `/thread-availability` scans your **sent** mail for "I'm available X at Y"
   proposals and tracks whether the other side confirmed, countered, or
-  declined. This scope also now includes `calendar.events` (added so Bones
+  declined. This scope also now includes `calendar.events` (added so the assistant
   can write to your real Google Calendar) — if you connected before this
   was added, **revisit `/auth/login` once** to re-consent; a token minted
   with only the old `gmail.modify` scope will 403 on Calendar calls.
 
-## Gmail → Bones → Calendar pipeline
+## Gmail → assistant → Calendar pipeline
 
 1. **Posty** (gmail service) triages the inbox and separately scans sent
    mail for your own availability proposals (`/thread-availability`).
-2. **Bones** (assistant) diffs each thread's state against what it saw last
+2. **The assistant** diffs each thread's state against what it saw last
    sync (`thread_state` table) — unchanged threads are a total no-op, so
    nothing re-announces or re-books itself.
 3. **Cal** (schedule service) gets a pending event per proposed slot, then:
@@ -138,10 +133,10 @@ Nothing resets on restart:
 
 To wipe everything and start clean: `docker compose down -v`.
 
-## Bones texts you
+## Notifications
 
-The manager can text you a digest — on demand (**📱 Text me** on the hub) or
-automatically after each sync. Supports Telegram, WhatsApp (Twilio), SMS
+The assistant can text you — on demand (`POST /api/assistant/notify?text=`) or
+automatically after each calendar sync, when something changed. Supports Telegram, WhatsApp (Twilio), SMS
 (Twilio), or a generic webhook. Pick a channel and add credentials per
 [docs/SETUP-NOTIFICATIONS.md](docs/SETUP-NOTIFICATIONS.md). (iMessage isn't
 possible from a self-hosted app — no Apple API.)
@@ -149,6 +144,6 @@ possible from a self-hosted app — no Apple API.)
 ## Auto-pilot
 
 Set `AUTO_SYNC_SECONDS` in `.env` (e.g. `900` for every 15 min) and the
-assistant syncs itself on that interval — the floor stays busy and your
-briefing/deadlines stay current without opening the browser. `0` (default)
-means manual only (the "Sync now" / "Dispatch team" buttons).
+assistant syncs the calendar against your inbox on that interval without
+anyone opening the browser. `0` (default) means manual only
+(`curl -X POST /api/assistant/sync`).

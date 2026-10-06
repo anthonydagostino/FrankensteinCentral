@@ -61,16 +61,15 @@ docker-network hostname.
 
 | Variable | Set on | Points at |
 |---|---|---|
-| `POWERBUY_URL`, `FITNESS_URL`, `GMAIL_URL`, `SCHEDULE_URL`, `ASSISTANT_URL` | gateway | the matching service |
-| `CORE_URL`, `STOCKS_URL`, `BUDGET_URL`, `DEALS_URL`, `NETWORTH_URL`, `VAULT_URL`, `FINANCE_URL`, `TASKS_URL` | assistant | the matching service |
+| `POWERBUY_URL`, `GMAIL_URL`, `SCHEDULE_URL`, `ASSISTANT_URL` | gateway | the matching service |
+| `CORE_URL`, `STOCKS_URL`, `BUDGET_URL`, `POWERBUY_URL`, `GMAIL_URL`, `SCHEDULE_URL`, `AMEX_URL`, `WEATHER_URL` | assistant | the matching service |
 | `PLEX_SVC_URL` | assistant, gateway | `http://plex:8000` |
 | `FIREFLY_URL_SVC` | assistant, gateway | `http://firefly:8000` — the **sub-app**, not Firefly III itself |
-| `FIREFLY_SVC_URL` | budget, networth | `http://firefly:8000` — same target, different name |
-| `TASKS_URL`, `FITNESS_URL` | core | services core reads for the daily score |
+| `FIREFLY_SVC_URL` | budget | `http://firefly:8000` — same target, different name |
 | `GMAIL_URL` | schedule | where it fetches the Google token from |
 
 > Three near-identical names point at the same firefly sub-app:
-> `FIREFLY_URL_SVC` (assistant/gateway), `FIREFLY_SVC_URL` (budget/networth),
+> `FIREFLY_URL_SVC` (assistant/gateway), `FIREFLY_SVC_URL` (budget),
 > and `FIREFLY_URL` (**different** — the real Firefly III instance). Read the
 > suffix carefully before changing one.
 

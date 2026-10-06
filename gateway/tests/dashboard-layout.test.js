@@ -1,8 +1,14 @@
-/* The main dashboard: ordered by what gets used, each fact said once.
+/* The main dashboard: the few things that get used, in the order they get used.
  *
  * Anthony, 2026-09-09: "the only useful shit right now is the stocks, the
  * financial section, and the calendar, the rest of the main dashboard fucking
- * SUCKS." SCRUM-138. */
+ * SUCKS." SCRUM-138 reordered the page around that. On 2026-10-06 the rest
+ * was removed outright (SCRUM-140): the daily score and habit card, the
+ * Do-Next nudge and its attention feed, inbox triage, Big 3, quick capture,
+ * deadlines, the weekly review, the "while you were away" strip, the command
+ * palette, the focus timer and the seasonal decoration.
+ *
+ * These pin what is left and, just as deliberately, that the rest stays gone. */
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
@@ -11,225 +17,126 @@ const path = require("node:path");
 
 const CSS = fs.readFileSync(path.join(__dirname, "../static/home.css"), "utf8");
 const HTML = fs.readFileSync(path.join(__dirname, "../static/index.html"), "utf8");
-const Attention = require("../static/attention.js");
-
-/* --- the dismiss menu was open on every card, permanently ---------------- */
-
-test("a hidden snooze menu is actually hidden", () => {
-  /* `.snz-menu { display: flex }` outranks the UA stylesheet's
-   * `[hidden] { display: none }` — a class selector beats it — so every one of
-   * these menus rendered OPEN, on every card, forever. The JS toggled `hidden`
-   * correctly the whole time and it never once had an effect; three of them
-   * hung over the money card. Verified in a browser before the fix: 4 menus,
-   * all 4 carrying the attribute, all 4 still painted.
-   *
-   * So: any `display` this rule sets must be guarded by `:not([hidden])`. */
-  const rules = [...CSS.matchAll(/\.snz-menu([^{,]*)\{([^}]*)\}/g)];
-  assert.ok(rules.length, "no .snz-menu rule at all");
-  for (const [, selectorTail, body] of rules) {
-    if (!/(^|[;\s])display\s*:/.test(body)) continue;
-    assert.match(selectorTail, /:not\(\[hidden\]\)/,
-      `.snz-menu${selectorTail} sets display without a :not([hidden]) guard, ` +
-      `which overrides the attribute and pins the menu open`);
-  }
-});
-
-test("the snooze menu still has a way to be shown", () => {
-  /* A guard that never matches would fix the bug by breaking the feature. */
-  assert.match(CSS, /\.snz-menu:not\(\[hidden\]\)\s*\{[^}]*display:\s*flex/);
-});
-
-/* --- ordered by what actually gets opened -------------------------------- */
+const JS = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
 
 const at = (needle) => HTML.indexOf(needle);
 
-test("the calendar, money and portfolio come before everything else", () => {
-  /* The three things this dashboard is used for. Money used to start ~1141px
-   * down, behind a weekly-review bar chart, the calendar and a 180px hero;
-   * measured at 533px after. */
-  const cal = at('id="cc-calendar"'), money = at('id="cc-money"');
-  const port = at('id="cc-portfolio"'), cols = at('class="cc-cols"');
-  for (const [name, i] of [["calendar", cal], ["money", money],
-                           ["portfolio", port], ["columns", cols]]) {
-    assert.ok(i > -1, `${name} is missing from the page`);
-  }
-  assert.ok(cal < money, "the calendar should lead");
-  assert.ok(money < cols && port < cols,
-    "money and the portfolio must sit above the two-column region, not inside it");
+/* --- what is on the page, in order ----------------------------------------- */
+
+test("the page is the calendar, the money row and the amex credits", () => {
+  const grid = HTML.slice(at('id="cc-grid"'), at("</main>"));
+  const cards = [...grid.matchAll(/<section class="cc-card[^"]*" id="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(cards,
+    ["cc-calendar", "cc-money", "cc-portfolio", "cc-resale", "cc-amex"],
+    "the grid carries exactly these cards, in this order");
+});
+
+test("the calendar leads, the money row follows, amex is under it", () => {
+  const cal = at('id="cc-calendar"'), row = at('class="cc-money-row"'), ax = at('id="cc-amex"');
+  assert.ok(cal > -1 && row > -1 && ax > -1);
+  assert.ok(cal < row, "the calendar should lead");
+  assert.ok(row < ax, "amex sits under the money row, where it gets seen");
 });
 
 test("the money cards share one row that stacks on a phone", () => {
   assert.match(HTML, /cc-money-row/);
+  assert.match(CSS, /\.cc-money-row\s*\{[^}]*repeat\(auto-fit,\s*minmax\(/,
+    "three cards reflow without a breakpoint per arrangement");
   assert.match(CSS, /@media[^{]*max-width:\s*900px[^{]*\{\s*\.cc-money-row[^}]*1fr/,
     "the row must stack on a narrow screen");
 });
 
-test("the weekly review is out of the top slot", () => {
-  /* It used to be the FIRST card on the page, above the calendar, restating
-   * study-vs-goal and gym-vs-goal — both of which the Health & Discipline card
-   * states in full. It now lives beside that card. */
-  assert.ok(at('id="cc-weekly-slot"') > at('id="cc-calendar"'),
-    "the weekly review should no longer precede the calendar");
-  assert.ok(at('id="cc-weekly-slot"') > at('id="cc-money"'));
-});
-
-test("there is exactly one weekly-review element", () => {
-  /* Sunday evening it moves to the top of the grid. Moving it — rather than
-   * rendering a second copy — is deliberate: two elements with one id is
-   * exactly how the previous weekly card became unreachable DOM, since
-   * querySelector only ever returns the first. */
-  assert.strictEqual((HTML.match(/id="cc-weekly"/g) || []).length, 1);
-});
-
-/* --- Do-Next stands down when the feed already has the item -------------- */
-
-test("the hero is suppressed only when it is the same item", () => {
-  const nudges = [{ key: "study" }, { key: "water" }];
-  assert.strictEqual(Attention.isDuplicate({ key: "study" }, nudges), true);
-  assert.strictEqual(Attention.isDuplicate({ key: "gym" }, nudges), false);
-});
-
-test("matching is by key, never by title", () => {
-  /* Two emails can both say "Reply to Dana" and be different emails.
-   * Suppressing on that coincidence would silently drop a real
-   * recommendation. */
-  const nudges = [{ key: "email:1", title: "Reply to Dana" }];
-  assert.strictEqual(
-    Attention.isDuplicate({ key: "email:2", title: "Reply to Dana" }, nudges), false);
-  assert.strictEqual(
-    Attention.isDuplicate({ key: "email:1", title: "Something else" }, nudges), true);
-});
-
-test("a keyless Do-Next is never suppressed", () => {
-  /* The calm "You're on track" fallback carries no key. Suppressing it would
-   * leave the page with no hero and nothing in the feed either. */
-  assert.strictEqual(Attention.isDuplicate({ title: "You're on track" }, [{ key: "study" }]), false);
-  assert.strictEqual(Attention.isDuplicate({ key: "" }, [{ key: "" }]), false);
-});
-
-test("nothing to compare against is not a duplicate", () => {
-  for (const nudges of [[], null, undefined, "nonsense"]) {
-    assert.strictEqual(Attention.isDuplicate({ key: "study" }, nudges), false);
-  }
-  for (const dn of [null, undefined, {}]) {
-    assert.strictEqual(Attention.isDuplicate(dn, [{ key: "study" }]), false);
-  }
-});
-
-test("a ragged nudge list does not throw", () => {
-  /* The feed is built from core's payload and has carried nulls before. */
-  assert.strictEqual(
-    Attention.isDuplicate({ key: "study" }, [null, undefined, {}, { key: "study" }]), true);
-});
-
-
-/* --- the habit form gave way to the resale book (SCRUM-139) -------------- */
-
-test("resale sits with the other money cards, not below the fold", () => {
+test("resale sits with the other money cards", () => {
   /* It is money, and it is the only card on the page carrying a deadline. */
-  assert.ok(at('id="cc-resale"') > -1, "no resale card");
-  assert.ok(at('id="cc-resale"') < at('class="cc-cols"'),
-    "resale must sit in the top money row");
-  assert.ok(at('id="cc-money"') < at('id="cc-resale"'));
+  const start = at('class="cc-money-row"');
+  const row = HTML.slice(start, HTML.indexOf("</div>", start));
+  assert.ok(row.includes('id="cc-money"') && row.includes('id="cc-portfolio"')
+    && row.includes('id="cc-resale"'));
 });
 
-test("the money row reflows instead of pinning a card count", () => {
-  /* Three cards where there were two, without a breakpoint per arrangement. */
-  assert.match(CSS, /\.cc-money-row\s*\{[^}]*repeat\(auto-fit,\s*minmax\(/);
-});
+/* --- the header is the greeting, the weather and five controls -------------- */
 
-test("the health card's score ring is gone", () => {
-  /* It drew the same number as the score pill in the page header, a few
-   * hundred pixels apart on one screen. The card heading still names it. */
-  const health = HTML.indexOf('id="cc-health"');
-  assert.ok(health > -1);
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderHealth\([\s\S]*?\n  \}/);
-  assert.ok(fn, "renderHealth not found");
-  assert.ok(!/score-ring/.test(fn[0]),
-    "the health card still draws a score ring, duplicating the header pill");
-});
-
-test("every logging control is behind the disclosure", () => {
-  /* A home screen carries what you monitor; a form belongs on a drill-down.
-   * Nothing was removed — each control must still exist, inside the drawer. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderHealth\([\s\S]*?\n  \}/)[0];
-  const drawer = fn.match(/<details class="hx-log"[\s\S]*?<\/details>/);
-  assert.ok(drawer, "no logging drawer");
-  for (const control of ["focusBtns", "waterBtns", "nutBtns", "sleepBtnsHtml", 'data-gym="1"']) {
-    assert.ok(drawer[0].includes(control),
-      `${control} is not inside the drawer — it was dropped, or left on the card`);
-  }
-  // ...and rendered nowhere else. The check is on the INTERPOLATION, not the
-  // name: `const focusBtns = ...` legitimately sits at the top of the function,
-  // and an earlier version of this test failed on those declarations while the
-  // markup was already correct.
-  const outside = fn.replace(drawer[0], "");
-  for (const control of ["focusBtns", "waterBtns", "nutBtns", "sleepBtnsHtml"]) {
-    assert.ok(!outside.includes("${" + control + "}"),
-      `${control} is still rendered outside the drawer`);
+test("the header carries no score pill and no command palette", () => {
+  const head = HTML.slice(at("<header"), at("</header>"));
+  assert.ok(!head.includes("cc-score-pill"), "the daily score is back in the header");
+  assert.ok(!head.includes("cc-open-palette"), "the command palette button is back");
+  for (const id of ["cc-weather", "cc-plex", "cc-vault", "cc-apps", "cc-settings-btn", "fc-logout"]) {
+    assert.ok(head.includes(`id="${id}"`), `${id} is missing from the header`);
   }
 });
 
-test("the drawer remembers whether it was left open", () => {
-  /* If he does log from here daily it should simply stay open, and a private
-   * window must not throw on the read. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  assert.match(js, /localStorage\.getItem\(HX_LOG_KEY\)/);
-  assert.match(js, /catch\s*\(e\)\s*\{\s*return false;\s*\}/);
-});
+/* --- the footer is operator facts, one line each ---------------------------- */
 
-
-/* --- data safety (SCRUM-67) ---------------------------------------------- */
-
-test("the home screen has a data-safety card", () => {
-  /* Acceptance signal: "the home screen states how many days since the last
-   * verified restore, and says 'never' until one happens." */
-  assert.ok(at('id="cc-safety"') > -1, "no data-safety card on the home screen");
+test("data safety is a footer line, not a card", () => {
+  /* SCRUM-67's acceptance signal still holds: the home screen states how many
+   * days since the last verified restore and says "never" until one happens.
+   * It just does so where the other operator facts live. */
+  const foot = HTML.slice(at("<footer"), at("</footer>"));
+  for (const id of ["cc-updated", "cc-systems", "cc-deploy", "cc-safety"]) {
+    assert.ok(foot.includes(`id="${id}"`), `${id} is missing from the footer`);
+  }
+  assert.ok(!/<section[^>]*id="cc-safety"/.test(HTML), "data safety is a card again");
 });
 
 test("never and stale are loud; ok is not", () => {
-  /* The asymmetry is the design. An infra card that looks the same whether or
+  /* The asymmetry is the design. An infra line that looks the same whether or
    * not you are protected is one you stop reading. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/);
+  const fn = JS.match(/function renderSafety\([\s\S]*?\n  \}/);
   assert.ok(fn, "renderSafety not found");
-  const body = fn[0];
-  assert.match(body, /never:\s*\{[^}]*cls:\s*"bad"/);
-  assert.match(body, /stale:\s*\{[^}]*cls:\s*"bad"/);
-  assert.match(body, /ok:\s*\{[^}]*cls:\s*"good"/);
-  assert.match(body, /unknown:\s*\{[^}]*cls:\s*"muted"/);
-  assert.match(CSS, /\.ds-lead\.bad\s*\{[^}]*var\(--imp\)/);
-});
-
-test("an unreadable record never renders as safe", () => {
-  /* The assistant runs in a container and the record is written on the host,
-   * so an absent mount is a normal failure. It must not read as protected. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
-  assert.match(fn, /BODY\[s\.state\]\s*\|\|\s*BODY\.unknown/,
+  assert.match(fn[0], /never:\s*\{\s*cls:\s*"bad"/);
+  assert.match(fn[0], /stale:\s*\{\s*cls:\s*"bad"/);
+  assert.match(fn[0], /ok:\s*\{\s*cls:\s*"good"/);
+  assert.match(fn[0], /unknown:\s*\{\s*cls:\s*"muted"/);
+  assert.match(fn[0], /BODY\[s\.state\]\s*\|\|\s*BODY\.unknown/,
     "an unrecognised state must fall back to unknown, not to ok");
-  assert.match(fn, /state:\s*"unknown"/, "a missing payload must default to unknown");
+  assert.match(fn[0], /restore\.sh --drill/, "the way out is named");
 });
 
-test("the card names the command that fixes it", () => {
-  /* "Never" with no way out is a complaint. The drill is the way out. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
-  assert.match(fn, /restore\.sh --drill/);
-});
-
-test("disk free is shown from the payload and never invented", () => {
-  /* Fact 1 of the ticket, the half a bind mount exposes without host access.
-   * When the mount is absent the assistant sends `unknown`, and the card must
-   * omit the line rather than print a number about the container's own disk. */
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+test("the footer names every import state, and the suspect one loudest", () => {
+  const fn = JS.match(/function renderSafety\([\s\S]*?\n  \}/)[0];
+  assert.ok(fn.includes("import_run"), "the footer no longer reads import_run");
+  for (const st of ["never", "stale", "failed", "unverified", "quiet", "suspect", "ok", "unknown"])
+    assert.ok(new RegExp(`\\n\\s+${st}: \\[`).test(fn), `import state ${st} has no wording`);
+  assert.ok(/suspect: \["warn"/.test(fn), "'runs but nothing enters' is not marked as a warning");
+  assert.ok(/never: \["warn"/.test(fn), "'never run' is not marked as a warning");
   assert.match(fn, /d\.disk\.state !== "unknown"/, "an unknown disk state must render nothing");
-  assert.match(fn, /d\.disk\.free_pct != null/, "a missing percentage must render nothing");
-  assert.match(fn, /% free/, "the line states the percentage");
-  assert.match(fn, /d\.disk\.state === "low" \? " warn"/, "a low disk is flagged, not just listed");
+});
+
+/* --- and the rest stays gone ------------------------------------------------- */
+
+test("the retired cards have no element, no renderer and no stylesheet", () => {
+  for (const id of ["cc-donext", "cc-attention", "cc-deadlines", "cc-inbox", "cc-today",
+                    "cc-health", "cc-weekly", "cc-weekly-slot", "cc-capture", "cc-since",
+                    "cc-briefing", "palette", "focus"]) {
+    assert.ok(!HTML.includes(`id="${id}"`), `${id} is back in index.html`);
+  }
+  for (const fn of ["renderDoNext", "renderAttention", "renderDeadlines", "renderInbox",
+                    "renderToday", "renderHealth", "renderWeeklyReview", "renderCapture",
+                    "renderSince", "startFocus", "openPalette", "snoozeBtn"]) {
+    assert.ok(!JS.includes(fn + "("), `${fn} is back in home.js`);
+  }
+  for (const sel of [".donext", ".big3-item", ".score-ring", ".hx-log", ".cap-form",
+                     ".palette", ".focus-overlay", ".wr-row", ".snz-menu", ".wk-flake",
+                     ".wk-motif", 'data-season="oct"']) {
+    assert.ok(!CSS.includes(sel), `${sel} is back in home.css`);
+  }
+});
+
+test("the week grid carries no seasonal decoration", () => {
+  /* A calendar is for reading. The events carry their own colours. */
+  const week = JS.slice(JS.indexOf("function renderWeek("), JS.indexOf("function wireWeek("));
+  assert.ok(!/SEASONS|motifs\(|mountAmbience|ambienceOn|data-season|data-tint/.test(week));
+  assert.ok(!/localStorage/.test(week), "no decor toggle to remember");
+});
+
+test("settings carry only what the remaining cards read", () => {
+  const fn = JS.slice(JS.indexOf("async function openSettings("), JS.indexOf("function parseHoldings("));
+  for (const gone of ["Goals", "Exam", "score weights", "Daily-score", "Important senders"]) {
+    assert.ok(!fn.includes(gone), `settings still offer "${gone}"`);
+  }
+  for (const kept of ["Investments", "Monthly budgets", "Paycheck", "Cash runway"]) {
+    assert.ok(fn.includes(kept), `settings lost "${kept}"`);
+  }
 });
 
 /* ---- SCRUM-142 / SCRUM-143: the import that feeds the money, and the
@@ -238,8 +145,8 @@ test("disk free is shown from the payload and never invented", () => {
  * each one is the point of its ticket. */
 
 test("every recurring row states its yearly cost and who bills it", () => {
-  const js = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
-  const fn = js.match(/async budget\(app, body\) \{[\s\S]*?\n  \},/);
+  const app = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
+  const fn = app.match(/async budget\(app, body\) \{[\s\S]*?\n  \},/);
   assert.ok(fn, "budget panel not found");
   assert.ok(fn[0].includes("i.annual_cost"), "rows no longer show the per-year figure");
   assert.ok(fn[0].includes("i.via"), "rows no longer say which processor billed the charge");
@@ -249,28 +156,16 @@ test("every recurring row states its yearly cost and who bills it", () => {
 });
 
 test("the money card gives subscriptions per year as well as per month", () => {
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  assert.ok(/rec\.annual_equivalent/.test(js), "home.js never reads annual_equivalent");
+  assert.ok(/rec\.annual_equivalent/.test(JS), "home.js never reads annual_equivalent");
 });
 
 test("the firefly panel shows what the import landed, per account", () => {
-  const js = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
-  assert.ok(js.includes('"/firefly/accounts-health"'), "the panel no longer reads /accounts-health");
-  const fn = js.match(/function importHealth\([\s\S]*?\n\}/);
+  const app = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
+  assert.ok(app.includes('"/firefly/accounts-health"'), "the panel no longer reads /accounts-health");
+  const fn = app.match(/function importHealth\([\s\S]*?\n\}/);
   assert.ok(fn, "importHealth not found");
   for (const flag of ["no_credits", "stale"])
     assert.ok(fn[0].includes(flag), `the ${flag} flag is not rendered`);
   assert.ok(fn[0].includes("nothing in the window"),
     "an account with no rows must be listed as such, not left out");
-});
-
-test("the data-safety card names every import state, and the suspect one loudest", () => {
-  const js = fs.readFileSync(path.join(__dirname, "../static/home.js"), "utf8");
-  const fn = js.match(/function renderSafety\([\s\S]*?\n  \}/);
-  assert.ok(fn, "renderSafety not found");
-  assert.ok(fn[0].includes("import_run"), "the card no longer reads import_run");
-  for (const st of ["never", "stale", "failed", "unverified", "quiet", "suspect", "ok", "unknown"])
-    assert.ok(new RegExp(`\\n\\s+${st}: \\[`).test(fn[0]), `import state ${st} has no wording`);
-  assert.ok(/suspect: \["warn"/.test(fn[0]), "'runs but nothing enters' is not marked as a warning");
-  assert.ok(/never: \["warn"/.test(fn[0]), "'never run' is not marked as a warning");
 });

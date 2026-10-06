@@ -58,13 +58,13 @@ test("weather is no longer a card in the grid", () => {
   assert.ok(!HTML.includes('class="cc-card cc-wx"'), "still carrying card styling");
 });
 
-test("the calendar leads the grid and amex sits under it", () => {
+test("the calendar leads the grid and amex follows the money row", () => {
   const cal = HTML.indexOf('id="cc-calendar"');
+  const money = HTML.indexOf('class="cc-money-row"');
   const ax = HTML.indexOf('id="cc-amex"');
-  const cols = HTML.indexOf('class="cc-cols"');
-  assert.ok(cal > -1 && ax > -1 && cols > -1);
-  assert.ok(cal < ax, "amex under the calendar");
-  assert.ok(ax < cols, "amex must not sink into the two-column region");
+  assert.ok(cal > -1 && ax > -1 && money > -1);
+  assert.ok(cal < money, "the calendar leads");
+  assert.ok(money < ax, "amex sits under the money row, where it gets seen");
 });
 
 test("the pill stays one line tall and carries no card chrome", () => {

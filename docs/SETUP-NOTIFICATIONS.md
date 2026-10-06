@@ -1,7 +1,7 @@
-# Letting Bones text you
+# Notifications
 
-The manager (Bones) can text you a digest — either on demand (the **📱 Text me**
-button on the hub) or automatically after each sync. Pick **one** channel below,
+The assistant can text you — on demand (`POST /api/assistant/notify?text=...`)
+or automatically after each calendar sync, when something actually changed. Pick **one** channel below,
 put the values in your `.env`, and set `NOTIFY_CHANNEL`.
 
 > **About iMessage:** there's no way to send iMessage from a self-hosted app —
@@ -83,14 +83,15 @@ NOTIFY_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ## Try it
 
 1. `docker compose up --build`
-2. On the hub, click **📱 Text me** → Bones sends the current digest.
-3. If it says "Not set up", double-check `NOTIFY_CHANNEL` and that channel's
+2. `curl -X POST 'http://<box>:8080/api/assistant/notify?text=hello'` — it
+   should arrive on your channel.
+3. If the reply says "Not set up", double-check `NOTIFY_CHANNEL` and that channel's
    values in `.env`.
 
-A digest looks like:
+A sync digest looks like:
 
-> 🦴 Bones here — 3 emails to reply; 2 open tasks; over budget. Today is Pull
-> day. Next up: Interview @ Acme.
+> FrankensteinCentral — 📅 Booked: Interview — Acme — 2026-10-09T14:00; ✅
+> Confirmed: Panel loop — Dana — 2026-10-12T10:00
 
-With `NOTIFY_ON_SYNC=true` (and `AUTO_SYNC_SECONDS` set), Bones texts you on his
-own whenever the digest changes — so you're not pinged with the same thing twice.
+With `NOTIFY_ON_SYNC=true` (and `AUTO_SYNC_SECONDS` set), the assistant texts
+you only when a sync changed something — never a routine heartbeat.

@@ -36,15 +36,11 @@ database is shared infrastructure, not a shared model — that is what keeps the
 
 | Service | Tables |
 |---|---|
-| `assistant` | `activity`, `deadlines`, `memory`, `thread_state` |
-| `core` | `big3`, `captures`, `core_settings`, `daily_log`, `focus_sessions` |
+| `assistant` | `thread_state` |
+| `core` | `core_settings` |
 | `schedule` | `events` |
-| `networth` | `accounts`, `recurring` |
-| `deals` | `deals` |
-| `finance` | `bills` |
-| `fitness` | `visits` |
-| `tasks` | `tasks` |
-| — (legacy) | `budget` |
+| `amex` | its used-credits table |
+| — (legacy, see below) | `budget`, `activity`, `deadlines`, `memory`, `big3`, `captures`, `daily_log`, `focus_sessions`, `dismissals`, `seen`, `accounts`, `recurring`, `deals`, `bills`, `visits`, `tasks` |
 
 Stateless services — `budget`, `stocks`, `vault`, `plex`, `firefly`,
 `powerbuy`, `gateway` — hold no tables at all. They derive everything from an
@@ -198,77 +194,25 @@ one slot needs to find every sibling slot on the same thread and clear it.
 
 ---
 
-## networth
+## Legacy tables — unused since 2026-10-06
 
-### `accounts`
+The home screen was cut back to the calendar, the money cards, the Amex
+credits and the weather pill. The services and endpoints that fed everything
+else were removed, and the tables they wrote were left in place: dropping a
+table is a destructive migration, and leaving one costs nothing.
 
-| Column | Type |
-|---|---|
-| `id` | `integer NOT NULL` |
-| `name` | `text NOT NULL` |
-| `balance` | `numeric NOT NULL` |
-| `updated_at` | `text NOT NULL` |
-
-Manual fallback. When Firefly is connected, net worth is read live from the
-`firefly` service and these rows are not the source of truth.
-
-### `recurring`
-
-| Column | Type | Notes |
+| Table | Was written by | What it held |
 |---|---|---|
-| `id` | `integer NOT NULL` | |
-| `account_id` | `integer NOT NULL` | References `accounts.id` by convention. |
-| `amount` | `numeric NOT NULL` | |
-| `interval_days` | `integer NOT NULL` | |
-| `next_due_at` | `text NOT NULL` | |
-| `created_at` | `text NOT NULL` | |
+| `big3`, `captures`, `daily_log`, `focus_sessions`, `dismissals`, `seen` | `core` | the habit tracker, daily score, Big 3, quick capture, snoozes, the cross-device "seen" baseline |
+| `activity`, `deadlines`, `memory` | `assistant` | the retired lounge's agent narration, deadlines extracted from mail, the digest notebook |
+| `accounts`, `recurring` | `networth` (removed) | hand-typed balances and recurring contributions; Firefly replaced both |
+| `deals` | `deals` (removed) | coupons parsed from the inbox |
+| `bills` | `finance` (removed) | a hand-typed bills table; Firefly's recurring detection replaced it |
+| `visits` | `fitness` (removed) | gym visits |
+| `tasks` | `tasks` (removed) | a to-do list |
 
-Applied by `POST /recurring/apply`, not by a background job — nothing changes a
-balance unless that endpoint is called.
-
----
-
-## Leaf-service tables
-
-### `tasks` (tasks)
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `integer NOT NULL` | |
-| `title` | `text NOT NULL` | |
-| `done` | `boolean NOT NULL` | |
-| `created_at` | `text NOT NULL` | |
-| `external_id` | `text` | For tasks created from another sub-app. |
-
-### `bills` (finance)
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `integer NOT NULL` | |
-| `name` | `text NOT NULL` | |
-| `amount` | `numeric NOT NULL` | |
-| `due_day` | `integer NOT NULL` | Day of month, judged against `LOCAL_TZ`. |
-| `category` | `text NOT NULL` | |
-| `created_at` | `text NOT NULL` | |
-
-### `deals` (deals)
-
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `integer NOT NULL` | |
-| `merchant` | `text NOT NULL` | |
-| `offer` | `text NOT NULL` | |
-| `source` | `text NOT NULL` | Usually the source email. |
-| `external_id` | `text` | Dedupe across syncs. |
-| `created_at` | `text NOT NULL` | |
-
-### `visits` (fitness)
-
-| Column | Type |
-|---|---|
-| `id` | `integer NOT NULL` |
-| `when_at` | `text NOT NULL` |
-| `note` | `text NOT NULL` |
+Nothing reads or writes any of them. If they are ever wanted back, the data is
+still there; if they are ever dropped, do it deliberately, from a backup.
 
 ### `budget` — **legacy, unused**
 
@@ -298,7 +242,7 @@ you can do interval arithmetic on them in SQL without a cast.
 
 Separately, and more importantly: **the box runs in UTC, but day boundaries in
 the product mean the user's local day.** Services that make a "today" judgment
-(`core`, `finance` due-days, `fitness` plan, `firefly` windows) resolve it
+(`amex` periods, `firefly` windows, the assistant's week grid) resolve it
 through `LOCAL_TZ`, not through the container clock. A query written directly
 against these tables in UTC will disagree with the dashboard around midnight.
 See [TESTING.md](TESTING.md) for the incident that established this rule.

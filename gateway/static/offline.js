@@ -69,13 +69,12 @@
 
   /* Fields that are only true at the moment they were computed. Suppressed
    * rather than shown stale, because each is a claim about NOW:
-   *   score/health   today's progress, wrong from the next log onward
    *   money.today    "spent today", flatly false on a later day
-   *   do_next        "head to X, it starts in 20 minutes" — the worst one
-   *   since          a diff against a baseline, meaningless when replayed
    *   deploy         what the box is running, which is what we cannot reach
+   * (The score, Do-Next, "since" and health blocks were on this list until
+   * the cards that carried them were removed on 2026-10-06.)
    */
-  var VOLATILE = ["score", "do_next", "since", "deploy", "health"];
+  var VOLATILE = ["deploy"];
 
   /* Strip a cached payload down to what is still honestly sayable, and tell
    * the UI it is doing so. Never mutates the input. */

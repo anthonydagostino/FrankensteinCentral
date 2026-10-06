@@ -56,7 +56,7 @@ PORTS = published_ports()
 def test_the_scan_found_the_ports():
     """A scan that silently matches nothing passes forever. This file is the
     only thing reading compose, so an empty result must fail loudly."""
-    assert len(PORTS) >= 15, f"only found {len(PORTS)} published ports"
+    assert len(PORTS) >= 10, f"only found {len(PORTS)} published ports"
     assert any(s == "gateway" for s, _ in PORTS)
     assert any(s == "db" for s, _ in PORTS)
 

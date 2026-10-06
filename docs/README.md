@@ -1,7 +1,7 @@
 # Documentation Index
 
 FrankensteinCentral is a personal life-OS dashboard: a thin FastAPI gateway in
-front of fifteen independent microservices and one Postgres, deployed with
+front of twelve independent microservices and one Postgres, deployed with
 `docker compose` on a home OptiPlex.
 
 This branch — **`production`** — is the branch the box actually deploys.

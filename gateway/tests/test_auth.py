@@ -72,7 +72,7 @@ def test_api_data_needs_a_session(locked, path):
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
 def test_mutations_need_a_session_too(locked, method):
-    r = locked.request(method, "/api/core/capture")
+    r = locked.request(method, "/api/core/settings")
     assert r.status_code == 401
 
 

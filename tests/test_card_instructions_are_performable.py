@@ -45,13 +45,13 @@ def test_the_setting_exists_on_the_service_that_stores_it():
 
 
 def test_saving_the_picker_preserves_the_rest_of_finance():
-    """`finance` holds large_txn and low_balance, which this modal does not
-    edit. A bare {not_spendable} patch would silently reset them."""
+    """`finance` is a block, and this modal edits one key of it. A bare
+    {not_spendable} patch would silently reset whatever else it carries."""
     i = HOME_JS.index("not_spendable:")
     window = HOME_JS[max(0, i - 400):i]
     assert "_financeSettings" in window, (
         "the finance patch does not spread the existing settings — saving the "
-        "runway picker would drop large_txn and low_balance")
+        "runway picker would drop the rest of the block")
 
 
 @pytest.mark.parametrize("dead_value", ["sharesAsset"])

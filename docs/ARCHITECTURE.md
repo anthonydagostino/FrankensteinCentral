@@ -11,7 +11,7 @@ For what is *deployed right now* on the box, see
 
 ## 1. Shape of the system
 
-One gateway, fifteen independent FastAPI services, one Postgres. Everything
+One gateway, twelve independent FastAPI services, one Postgres. Everything
 runs as containers under a single `docker compose` project on a home OptiPlex.
 
 ```
@@ -69,23 +69,18 @@ silently did nothing. `no-cache` still permits `304`s, so it stays fast.
 
 ## 2. The service catalog
 
-Fifteen sub-apps. "Source" is where the numbers actually come from — the single
+Twelve sub-apps. "Source" is where the numbers actually come from — the single
 most important column when judging whether a card can be trusted.
 
 | Key | Name | Host port | Source of truth | State |
 |---|---|---|---|---|
-| `core` | Core | 8098 | user input + fitness + tasks | Postgres |
+| `core` | Core | 8098 | user input (the ⚙ modal) | Postgres (one settings row) |
 | `stocks` | Stocks | 8099 | Stooq (keyless quotes) | stateless, config in core |
-| `assistant` | Assistant | 8085 | every other sub-app | Postgres |
+| `assistant` | Assistant | 8085 | the sub-apps the home screen reads | Postgres (`thread_state`) |
 | `powerbuy` | PowerBuy | 8081 | external PowerBuy API (Render) | stateless |
-| `fitness` | Fitness | 8082 | user input | Postgres |
 | `gmail` | Gmail Checker | 8083 | Google Gmail API (own OAuth) | volume `gmail_token` |
 | `schedule` | Schedule | 8084 | user + assistant + Google Calendar | Postgres |
-| `finance` | Finance | 8086 | user input | Postgres |
-| `tasks` | Tasks | 8087 | user input | Postgres |
 | `budget` | Budget | 8088 | firefly service + core settings | stateless |
-| `deals` | Deals | 8089 | parsed from gmail | Postgres |
-| `networth` | Net Worth | 8090 | firefly service, manual fallback | Postgres |
 | `vault` | Vault | 8091 | Vaultwarden via `bw serve` | stateless, read-only |
 | `plex` | Plex | 8092 | plex.tv / Plex server | stateless, read-only |
 | `firefly` | Firefly | 8097 | self-hosted Firefly III | stateless, read-only |
@@ -99,7 +94,7 @@ Notes on the port map:
 - **`firefly` is on 8097, not 8094**, because the Firefly III *data importer*
   already occupies 8094 on this box. The hub reaches the service internally, so
   the host port only matters for direct debugging.
-- **`amex` and `weather` publish NO host port**, unlike the sixteen services
+- **`amex` and `weather` publish NO host port**, unlike the ten services
   above them. A publish only ever bought debugging convenience — the gateway
   reaches every service over the docker network and `docker compose logs <svc>`
   works regardless — and it is the one line in a service definition that can
@@ -115,19 +110,18 @@ Notes on the port map:
 
 Services fall into three tiers, and the tier tells you what a failure means:
 
-**Tier 1 — leaf services.** `powerbuy`, `fitness`, `finance`, `tasks`, `deals`,
-`vault`, `plex`, `firefly`, `gmail`. They own one data source and depend on
-nothing else in the stack (except Postgres where they persist). A failure here
-is contained to one card.
+**Tier 1 — leaf services.** `powerbuy`, `vault`, `plex`, `firefly`, `gmail`,
+`amex`, `core`. They own one data source and depend on nothing else in the
+stack (except Postgres where they persist). A failure here is contained to one
+card.
 
-**Tier 2 — derived services.** `budget` (reads `firefly` + `core`), `networth`
-(reads `firefly`, falls back to its own Postgres accounts), `stocks` (reads
-`core` for holdings/watchlist), `core` (reads `fitness` + `tasks`), `schedule`
-(reads `gmail` for a Google token). A failure here usually means a *dependency*
-failed; check the tier-1 service first.
+**Tier 2 — derived services.** `budget` (reads `firefly` + `core`), `stocks`
+(reads `core` for holdings/watchlist), `weather` (reads `core` for the place),
+`schedule` (reads `gmail` for a Google token). A failure here usually means a
+*dependency* failed; check the tier-1 service first.
 
-**Tier 3 — the orchestrator.** `assistant` reads all fourteen others and is the
-only service that writes across app boundaries. It is the last thing to
+**Tier 3 — the orchestrator.** `assistant` reads the others and is the only
+service that writes across app boundaries. It is the last thing to
 suspect and the first thing to check when *everything* looks stale.
 
 ---
@@ -138,17 +132,17 @@ This is the one genuinely cross-app flow, and the reason the assistant exists.
 It runs on every `POST /api/assistant/sync`.
 
 ```
- 1. gmail (Posty)
+ 1. gmail
       /needs-reply            triages the inbox
       /thread-availability    scans SENT mail for "I'm available X at Y"
               │
               ▼
- 2. assistant (Bones)
+ 2. assistant
       diffs each thread against thread_state (Postgres)
       unchanged thread ⇒ total no-op, nothing re-announces or re-books
               │
               ▼
- 3. schedule (Cal)
+ 3. schedule
       one pending event per proposed slot, then:
         they CONFIRM  → that slot flips confirmed; every other proposed slot
                         on the thread is auto-declined and removed

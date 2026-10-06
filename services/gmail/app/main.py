@@ -1036,13 +1036,6 @@ async def sample():
             "sync": _sync_meta(), "items": out}
 
 
-@app.get("/deals")
-async def deals():
-    """Real discounts/promos spotted in the inbox — never needs a reply."""
-    items, mode = await _current_inbox()
-    return {"deals": [m for m in items if m["category"] == "deal"], "mode": mode}
-
-
 @app.get("/summary")
 async def summary():
     """Counts across the whole primary inbox, by category."""
@@ -1063,7 +1056,7 @@ async def summary():
 async def root():
     return {
         "app": "Gmail Checker",
-        "endpoints": ["/needs-reply", "/thread-availability", "/deals", "/summary",
+        "endpoints": ["/needs-reply", "/thread-availability", "/summary",
                       "/sync-status", "/refresh", "/auth/login", "/health"],
         "refresh_interval_seconds": REFRESH_SECONDS,
     }

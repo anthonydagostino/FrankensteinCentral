@@ -45,52 +45,36 @@ The only browser-facing service.
 
 ---
 
-## assistant — `:8085` — the orchestrator
+## assistant — `:8085` — the home screen, and the calendar sync
 
-Reads all fourteen other sub-apps. The only service that writes across app
-boundaries.
+Reads the services the home screen needs and composes one payload. The only
+service that writes across app boundaries (into `schedule`).
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/briefing` | The attention seed — what needs you right now, assembled across sub-apps. |
-| `GET` | `/home?fresh=0` | The composed homepage payload. `fresh=1` forces a re-read of upstream sub-apps instead of serving the cached composition. |
-| `GET` | `/ask?q=` | Free-text query answered from what the assistant can read. |
-| `POST` | `/sync` | **The main action.** Runs the full cross-app pass: reads gmail, diffs threads against `thread_state`, creates/updates/declines schedule events, refreshes derived state. Runs on a timer via `AUTO_SYNC_SECONDS`; the route is the manual trigger. Idempotent — an unchanged thread is a no-op. |
-| `POST` | `/notify?text=` | Send a digest to the configured channel now. Without `text`, sends the generated digest. This is the "📱 Text me" button. |
+| `GET` | `/home?fresh=0` | The composed homepage payload: `week`, `money`, `budget`, `portfolio`, `resale`, `amex`, `weather`, `deploy`, `data_safety`, `import_run`, `disk`. `fresh=1` forces a re-read of upstream sub-apps instead of serving the cached composition. |
+| `POST` | `/sync` | Reads gmail's triage, books interviews the mail names a time for, diffs availability threads against `thread_state`, pulls Google Calendar, retires stale holds. Runs on a timer via `AUTO_SYNC_SECONDS`; the route is the manual trigger. Idempotent — an unchanged thread is a no-op. |
+| `POST` | `/notify?text=` | Send yourself `text` on the configured channel now. |
 
 `AUTO_SYNC_SECONDS` makes `/sync` run on a timer; `0` (the default) means
-manual only. `NOTIFY_ON_SYNC=true` fires `/notify` after each sync.
+manual only. `NOTIFY_ON_SYNC=true` texts the sync's notable changes after each
+run. The `/briefing`, `/ask` and Telegram question-answering routes were
+removed on 2026-10-06 with the services they read.
 
 ---
 
-## core — `:8098` — personal state & daily score
+## core — `:8098` — the settings store
 
-The daily-score engine: study/focus, water, nutrition, Big 3, captures,
-history. Reads gym from `fitness` and open tasks from `tasks`. Also holds the
-**settings blob** other services read their configuration from.
+One JSONB row. Holds `market.holdings` / `market.watchlist` (read by
+`stocks`), `budgets` and `paycheck` (read by `budget`), `weather` (read by
+`weather`) and `finance.not_spendable` (read by the assistant's runway). The
+⚙ modal on the home screen is what writes it. The habit-tracking and
+daily-score endpoints this service used to carry were removed on 2026-10-06.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/today` | Today's state and the computed daily score. |
-| `GET` | `/settings` | The settings blob. Notably holds `market.holdings` / `market.watchlist` (read by `stocks`) and the budget definitions (read by `budget`). |
-| `PUT` | `/settings` | Patch settings. Body is a partial dict, merged in. |
-| `POST` | `/water` | Log water intake. |
-| `POST` | `/focus` | Log a focus/study session. |
-| `POST` | `/gym` | Log a gym visit. |
-| `POST` | `/nutrition` | Set today's nutrition. |
-| `POST` | `/sleep` | Set today's sleep. |
-| `GET` | `/big3` | Today's three priorities. |
-| `POST` | `/big3` | Set today's three priorities. |
-| `POST` | `/big3/{item_id}/toggle` | Check one off. |
-| `GET` | `/captures` | Quick-capture inbox. |
-| `POST` | `/capture` | Add a capture. |
-| `PATCH` | `/capture/{cap_id}` | Edit a capture. |
-| `DELETE` | `/capture/{cap_id}` | Remove a capture. |
-| `GET` | `/history?days=30` | Daily history. Defaults to 30 days. |
-| `GET` | `/weekly-review` | The week rolled up. |
-
-Day boundaries are computed in `LOCAL_TZ`, not container UTC — see
-[TESTING.md](TESTING.md) for why that distinction is load-bearing.
+| `GET` | `/settings` | The settings blob. |
+| `PUT` | `/settings` | Patch settings. Body is a partial dict, shallow-merged in. |
 
 ---
 
@@ -104,7 +88,6 @@ calls.
 |---|---|---|
 | `GET` | `/needs-reply` | Inbox triage — what actually needs a reply, with deadlines flagged. |
 | `GET` | `/thread-availability` | Scans **sent** mail for your own "I'm available X at Y" proposals and tracks whether the other side confirmed, countered, or declined. This is the input to the calendar pipeline. |
-| `GET` | `/deals` | Real discounts spotted in the inbox — merchant, offer, source email. |
 | `GET` | `/summary` | Rolled-up counts for the dashboard card. |
 | `GET` | `/sync-status` | When the last background poll ran and whether it succeeded. **First thing to check when the Gmail card looks stale.** |
 | `POST` | `/refresh` | Force a poll now instead of waiting for the 6h timer. |
@@ -153,7 +136,7 @@ data. The token never reaches the browser.
 | `GET` | `/spending` | Spending breakdown, including the 30-day category pie. |
 | `GET` | `/month` | This month's figures. |
 | `GET` | `/bills` | Bills known to Firefly. |
-| `GET` | `/networth` | Net worth. Consumed by the `networth` service. |
+| `GET` | `/networth` | Net worth: every asset and liability account with its `kind` and `role`. Feeds the runway and the Settings account picker. |
 | `GET` | `/audit` | Diagnostic view for reconciling the numbers. |
 
 All date windows are computed in `LOCAL_TZ` and are guarded against
@@ -178,25 +161,6 @@ being 50% through a budget on day 3 is not the same as on day 25. The honesty
 rules in [BUDGETS.md](BUDGETS.md) apply here — **zero and unknown are different
 states, suppressed values are `null` and never `0`, and a partial window is
 never presented as complete.**
-
----
-
-## networth — `:8090` — balances
-
-Pulls net worth live from Firefly; falls back to manually entered accounts when
-Firefly is not connected.
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/accounts` | Manual accounts and their balances. |
-| `POST` | `/accounts` | Add a manual account. |
-| `POST` | `/accounts/{account_id}/balance` | Record a new balance for one account. |
-| `DELETE` | `/accounts/{account_id}` | Remove an account. |
-| `GET` | `/recurring` | Recurring balance-change rules. |
-| `POST` | `/recurring` | Add a rule. |
-| `DELETE` | `/recurring/{rule_id}` | Remove a rule. |
-| `POST` | `/recurring/apply` | Apply the recurring rules to current balances. |
-| `GET` | `/summary` | Total and per-account rollup. |
 
 ---
 
@@ -265,46 +229,6 @@ settings (`market.holdings` / `market.watchlist`), not here.
 | `GET` | `/portfolio` | Portfolio value, positions, and daily movers. |
 
 ---
-
-## tasks — `:8087`
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/tasks` | All tasks. |
-| `POST` | `/tasks` | Add a task. |
-| `POST` | `/tasks/{task_id}/toggle` | Check on/off. |
-| `DELETE` | `/tasks/{task_id}` | Delete. |
-| `GET` | `/summary` | Open/done counts. Read by `core` for the daily score. |
-
-## finance — `:8086` — bills & subscriptions
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/bills` | All bills and subscriptions. |
-| `POST` | `/bills` | Add one. |
-| `GET` | `/summary` | Monthly spend and what is due soon. |
-
-Due-day arithmetic uses `LOCAL_TZ`, not container UTC.
-
-## fitness — `:8082`
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/visits` | Logged gym visits. Read by `core`. |
-| `POST` | `/visits` | Log a visit. |
-| `GET` | `/plan` | The optimal week, computed against "today" in `LOCAL_TZ`. |
-| `GET` | `/nutrition` | What to eat and buy. |
-
-## deals — `:8089`
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/deals` | Discounts, with merchant, offer and source email. |
-| `POST` | `/deals` | Add one. |
-| `DELETE` | `/deals/{deal_id}` | Remove one. |
-| `GET` | `/summary` | Count/rollup. |
-
-Populated from `gmail`'s `/deals` during an assistant sync.
 
 ## powerbuy — `:8081` — arbitrage tracker
 

@@ -42,8 +42,7 @@ COMPOSE = ROOT / "docker-compose.yml"
 # an "unreachable" state for it — and for most of these it can — it belongs
 # outside this set, reachable by URL and absent from depends_on.
 FRONT_DOOR_CLOSURE = {
-    "assistant", "db", "core", "fitness", "tasks", "gmail", "schedule",
-    "powerbuy", "finance", "budget", "deals", "networth", "vault", "plex",
+    "assistant", "db", "core", "gmail", "schedule", "powerbuy", "budget",
     "firefly", "stocks",
 }
 
@@ -96,7 +95,7 @@ def closure(start):
 def test_the_scan_understood_the_file():
     """A parser that silently matches nothing turns every assertion below into
     a tautology — and this one has two spellings to get wrong."""
-    assert len(GRAPH) >= 15, f"only found {len(GRAPH)} services: {sorted(GRAPH)}"
+    assert len(GRAPH) >= 10, f"only found {len(GRAPH)} services: {sorted(GRAPH)}"
     assert "assistant" in GRAPH["gateway"], "list-form depends_on went unread"
     assert "db" in GRAPH["assistant"], "mapping-form depends_on went unread"
 
