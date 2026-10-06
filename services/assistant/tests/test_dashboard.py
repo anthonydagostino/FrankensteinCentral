@@ -1855,3 +1855,28 @@ def test_import_attempt_days_are_local_calendar_days():
            "last_import_at": "2026-09-27T23:00:00-04:00"}
     d = dash.import_state(rec, 1, NOW_IMP)
     assert d["attempt_days"] == 1 and d["landed_days"] == 1
+
+
+# --- the Google login itself -------------------------------------------------
+#
+# gmail reports whether Google REVOKED the credential (invalid_grant on a
+# refresh — the token expired, which a Testing-mode OAuth app's tokens do every
+# seven days). The week caveat carries the date and reason, because the reason
+# is the fix. Anything less than a definite answer is unknown, never ok.
+
+def test_a_revoked_login_reaches_the_caveat_with_its_reason():
+    g = dash.google_brief({"sync": {"credential": {
+        "state": "revoked", "since": "2026-10-02T06:00:00+00:00",
+        "reason": "Token has been expired or revoked."}}})
+    assert g == {"state": "revoked", "since": "2026-10-02T06:00:00+00:00",
+                 "reason": "Token has been expired or revoked."}
+
+
+def test_a_healthy_login_is_ok_and_carries_nothing_else():
+    assert dash.google_brief({"sync": {"credential": {"state": "ok"}}})["state"] == "ok"
+
+
+@pytest.mark.parametrize("payload", [{}, None, {"sync": {}}, {"sync": {"credential": "nope"}},
+                                     {"sync": {"credential": {"state": "weird"}}}])
+def test_an_unreachable_or_old_gmail_is_unknown_never_ok(payload):
+    assert dash.google_brief(payload)["state"] == "unknown"

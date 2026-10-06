@@ -33,7 +33,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import notify, runway
 from .dashboard import (amex_brief, card_debt, data_safety, deploy_state,
-                        disk_state, firefly_state, import_state,
+                        disk_state, firefly_state, google_brief, import_state,
                         on_google_calendar, portfolio_alerts, portfolio_state,
                         resale_brief, schedule_state, upcoming_events,
                         weather_brief, week_window)
@@ -477,6 +477,9 @@ async def build_home(fresh: bool = False) -> dict:
         "weather": weather_brief(weather_home),
         "next_event": events[0] if events else None,
         "week": week,
+        # Why Google is disconnected, when it is: a revoked login names its
+        # date and Google's reason, which is usually the fix.
+        "google": google_brief(emails_r),
         # What the box is actually running. A failed deploy leaves the
         # PREVIOUS build serving and is otherwise completely silent from
         # the UI, so this is the only place a stale build announces itself.

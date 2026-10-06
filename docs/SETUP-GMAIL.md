@@ -118,13 +118,53 @@ Events are imported into the schedule service every `GCAL_SYNC_SECONDS`
 
 ---
 
+## Keep it connected
+
+Two things made the connection die on the box, and both are fixed once.
+
+**1. An OAuth app in "Testing" expires its logins after seven days.** That is
+Google's rule for any Cloud project whose consent screen has publishing status
+*Testing*: every refresh token it mints dies a week later, Gmail starts
+answering `invalid_grant`, and the week card shows the reconnect button again.
+Reconnecting buys exactly one more week. The fix is to publish the app:
+
+1. Google Cloud Console → **APIs & Services** → **OAuth consent screen**.
+2. Under *Publishing status*, click **Publish app** and confirm.
+3. You do **not** need to submit it for verification. Google warns that
+   unverified apps with sensitive scopes are limited to 100 users and show an
+   "unverified app" screen on consent — click *Advanced → Go to … (unsafe)*
+   the next time you connect. That screen is the only cost, and it is a
+   personal app with one user.
+4. Reconnect once at `/api/gmail/auth/login` so the saved login was minted
+   under the published status. From then on it does not expire.
+
+The hub tells you when this is what happened: the week card's caveat says
+*Google signed this login out on <date>* with Google's reason, and
+`bash scripts/verify.sh` reports `gmail conn` as `REVOKED` with the same
+line. A revoked login is reported as **disconnected**, never as "checked 4
+minutes ago" — a token Google refuses is not a connection.
+
+**2. The seed token used to win over the real one.** `GOOGLE_REFRESH_TOKEN`
+in `.env` is PowerBuy's token, minted for mail alone. Until 2026-10-06 the
+gmail service loaded it *ahead of* the login you consented to through
+`/auth/login` — so after every restart the calendar went back to
+`needs_consent` until someone reconnected again. The saved consent now
+outranks the environment seed. Once you have connected through the hub, you
+can delete `GOOGLE_REFRESH_TOKEN` from `.env` entirely; it is only a seed for a
+box that has never been connected.
+
+The gmail service refreshes the token every six hours on its own, which also
+keeps it from going stale through disuse. Nothing else needs tending.
+
 ## Troubleshooting
 
-- **"Access blocked / app not verified":** Your Google project may be in
-  "Testing" mode. That's fine for personal use — just make sure your own Gmail
-  address is listed as a test user (Google Cloud Console → APIs & Services →
-  OAuth consent screen → Test users). You already use PowerBuy, so you likely
-  are.
+- **"Access blocked / app not verified":** the Google project is in
+  "Testing" mode. Make sure your own Gmail address is listed as a test user
+  (Google Cloud Console → APIs & Services → OAuth consent screen → Test users)
+  to get connected now — and then publish the app (see *Keep it connected*
+  above), because a Testing-mode login expires every seven days.
+- **It keeps disconnecting about once a week:** that is the Testing-mode
+  expiry. Publish the app; see *Keep it connected*.
 - **"This site can't be reached" right after you pick your Google account:**
   the commonest one, and it is not a fault. Google requires the code to come
   back to a redirect address you registered, and it only accepts plain `http://`

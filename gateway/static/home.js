@@ -508,12 +508,22 @@
       },
     };
     const cv = CAVEAT[week.state];
+    // A login Google revoked says when and why. The reason is usually the
+    // fix: a token that dies every seven days is an OAuth app still in
+    // "Testing" mode, and reconnecting alone just buys another week.
+    const g = (d.google && d.google.state === "revoked") ? d.google : null;
+    const revoked = g
+      ? ` Google signed this login out${g.since ? ` on ${esch(dshort(g.since))}` : ""}${
+          g.reason ? ` (${esch(g.reason)})` : ""}. If this keeps happening about weekly,
+          the Google Cloud app is still in Testing mode — publish it (docs/SETUP-GMAIL.md)
+          so the login stops expiring.`.replace(/\s+/g, " ")
+      : "";
     // The repair is a link, not a sentence telling you to go and find one.
     // /api/gmail/auth/login redirects to Google's consent screen; approving
     // there mints a credential that carries the calendar scope.
     const caveat = cv
       ? `<p class="wk-caveat ${cv.cls}">${cv.icon} ${esch(
-          cv.text.replace(/\s+/g, " ").trim())}${cv.fix
+          cv.text.replace(/\s+/g, " ").trim())}${revoked}${cv.fix
           ? ` <a class="wk-fix" href="/api/gmail/auth/login">Connect Google Calendar →</a>`
           : ""}</p>`
       : "";
@@ -615,9 +625,12 @@
       : (pay.configured ? "not available yet"
         : `<span id="pay-setup" style="cursor:pointer;color:var(--accent-2)">set up your paycheck →</span>`);
 
-    // The arithmetic, spelled out — the card should never show a number the
-    // user can't retrace. "Expected" allocations are labelled as such: they
-    // are the configured amount, not something seen in the ledger.
+    // One muted line: where "left to spend" came from. The hero above already
+    // carries the figure itself, the window and the days to payday, so this
+    // only states the paycheck, the savings taken out of it, and the pace —
+    // plus any configuration problem, which stays loud. "Expected" allocations
+    // are labelled as such: they are the configured amount, not something
+    // seen in the ledger.
     let payLine = "";
     if (pay.available && pay.window_complete === false) {
       // Every money figure is unknown here, so the arithmetic line would read
@@ -626,30 +639,28 @@
     } else if (pay.available && !pay.overdue) {
       const allocs = (pay.allocations || []).map((a) => {
         const tag = a.source === "expected" ? " expected"
-          : a.source === "withheld_before_deposit" ? " withheld pre-deposit" : "";
+          : a.source === "withheld_before_deposit" ? " pre-deposit" : "";
         return `${esch(a.name)} ${money(a.source === "withheld_before_deposit" ? a.planned : a.amount)}${tag}`;
       }).join(" · ");
-      const perDay = pay.per_day != null
-        ? ` · about ${money(pay.per_day, 2)}/day keeps you to payday` : "";
+      const perDay = pay.per_day != null ? ` · ~${money(pay.per_day)}/day to payday` : "";
       // Money that came back out of savings is available but is NOT part of
       // what this paycheck left you, so it is stated separately, never added.
       const fromSav = pay.from_savings
-        ? `<br><span class="sub">${money(pay.from_savings)} moved out of savings this cycle — available, but not counted above.</span>` : "";
+        ? `<br><span class="sub">${money(pay.from_savings)} came back out of savings this cycle — available, not counted above.</span>` : "";
       // A real transfer whose only matching rule is withheld-before-deposit:
       // deducted by nothing, so the configuration needs fixing.
       const withheldConflict = (pay.withheld_rule_conflicts || []).length
-        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} moved to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so nothing was deducted for it. Untick pre-deposit in Settings.</span>` : "";
+        ? `<br><span class="sub warn">⚠ ${money(pay.withheld_rule_conflicts[0].amount)} went to savings after payday but your "${esch(pay.withheld_rule_conflicts[0].rule)}" rule is marked pre-deposit, so it was not deducted. Untick pre-deposit in Settings.</span>` : "";
       // A transfer whose description says "savings" but whose accounts don't.
       // Direction can't be read from a description, so it is named here rather
       // than guessed — silently ignoring it would push "left to spend" up.
       const unmatched = (pay.unmatched_savings || []).length
-        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings by description but its accounts don't match your "${esch(pay.unmatched_savings[0].rule)}" rule — not counted either way. Match on the account name in Settings.</span>` : "";
+        ? `<br><span class="sub warn">⚠ ${money(pay.unmatched_savings.reduce((s2, u) => s2 + (u.amount || 0), 0))} looks like savings but matches no rule's accounts — not counted. Match on the account name in Settings.</span>` : "";
       const overlap = (pay.allocation_overlaps || []).length
         ? `<br><span class="sub warn">⚠ ${esch(pay.allocation_overlaps[0])} — counted once, under the first rule. Fix the match terms in Settings.</span>` : "";
-      payLine = `<p class="mny-pay">💵 Since ${esch(dshort(pay.cycle_start))}: ${money(pay.paycheck)} paycheck
-        − ${money(pay.savings_total)} to savings = <b>${money(pay.spendable)}</b> to spend
-        · ${money(pay.spent)} spent · <b class="${stateCls}">${money(pay.left)} left</b>${perDay}
-        ${allocs ? `<br><span class="sub">${allocs}</span>` : ""}${fromSav}${overlap}${unmatched}${withheldConflict}
+      payLine = `<p class="mny-pay">💵 ${money(pay.paycheck)} paycheck ${esch(dshort(pay.cycle_start))}
+        − ${money(pay.savings_total)} savings${allocs ? ` <span class="sub">(${allocs})</span>` : ""}
+        = <b>${money(pay.spendable)}</b> to spend${perDay}${fromSav}${overlap}${unmatched}${withheldConflict}
         ${!pay.fresh && pay.stale_reason ? `<br><span class="sub">Spending counted only through ${esch(pay.as_of || "the last import")} — ${esch(pay.stale_reason)}</span>` : ""}</p>`;
     } else if (pay.available && pay.overdue) {
       payLine = `<p class="mny-pay">💵 ${esch(pay.text || "The current pay cycle can't be established.")}</p>`;
@@ -689,7 +700,7 @@
         // Two charges set a cadence but not a fact. Every event inferred from
         // one interval says so, including a price move — "Netflix went up" off
         // two charges could as easily be two unrelated purchases.
-        const hedge = e.confidence === "low" ? " (seen twice — may not be a pattern)" : "";
+        const hedge = e.confidence === "low" ? " <i class=\"sub\">(may not be a pattern)</i>" : "";
         if (e.event === "changed")
           return `<b>${esch(e.name)}</b> ${money(e.from, 2)} → <b>${money(e.to, 2)}</b>${hedge}`;
         return `<b>${esch(e.name)}</b> ${money(e.amount, 2)}/${esch(per[e.cadence] || e.cadence || "")} — ${verb[e.event] || "changed"}${hedge}`;
@@ -703,43 +714,45 @@
     // do I last", so it gets stated plainly or not at all — an optimistic
     // runway is worse than no runway, which is why the engine returns null
     // with a reason rather than a cheerful guess.
+    //
+    // One line. Which accounts were counted, which were dropped as debts and
+    // which you excluded yourself are a tap away under "which accounts": an
+    // account that is dropped must still be SEEN to be dropped (Discover once
+    // fell out of this card entirely), but three sentences of account names
+    // under every runway figure is what made the card a wall of text.
     const rw = m.runway || {};
     let runLine = "";
     if (rw.available && rw.months_low != null) {
-      // Name what was COUNTED, not only what wasn't. A bare "64.7 months" is
-      // exactly the number that passed unexamined for a day while it was
-      // silently dividing by brokerages and credit-card balances.
-      const counted = (rw.liquid_accounts || []).length
-        ? `<br><span class="sub">Counting: ${esch((rw.liquid_accounts || []).join(", "))}.</span>` : "";
-      // An account that is dropped must still be SEEN to be dropped.
-      const owed = (rw.debts || []).length
-        ? `<br><span class="sub">${esch((rw.debts || []).join(", "))} ${
-             (rw.debts || []).length === 1 ? "carries a debt" : "carry debts"
-           }, so ${(rw.debts || []).length === 1 ? "it is" : "they are"} not part of the pot.</span>`
-        : "";
-      const excl = (rw.excluded || []).length
-        ? `<br><span class="sub">Not counted, because you said so: ${esch((rw.excluded || []).join(", "))}.</span>` : "";
+      const listed = (xs) => esch((xs || []).join(", "));
+      const owedN = (rw.debts || []).length;
+      const details = [
+        (rw.liquid_accounts || []).length ? `Counting: ${listed(rw.liquid_accounts)}.` : "",
+        (rw.excluded || []).length ? `Not counted, because you said so: ${listed(rw.excluded)}.` : "",
+        owedN ? `${listed(rw.debts)} ${owedN === 1 ? "carries a debt" : "carry debts"}, so ${owedN === 1 ? "it is" : "they are"} not part of the pot.` : "",
+      ].filter(Boolean).join(" ");
+      const why = details
+        ? `<details class="mny-why"><summary>which accounts</summary><span class="sub">${details}</span></details>` : "";
       if (rw.certain) {
         const cls = rw.months < 3 ? "warn" : "";
         const alt = rw.months_without_resale != null
           ? ` · ${rw.months_without_resale} without resale` : "";
-        runLine = `<p class="mny-run ${cls}">🧭 <b>${rw.months} months</b> of runway${alt}
-          <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days</span>${counted}${excl}${owed}</p>`;
+        runLine = `<div class="mny-run ${cls}">🧭 <b>${rw.months} months</b> of runway${alt}
+          <span class="sub">— ${money(rw.liquid)} cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days</span>${why}</div>`;
       } else {
         // The range is open. Lead with the FLOOR, never the ceiling: the high
         // end is the optimistic direction and the expensive one to anchor on.
         // NO warning colour on an open range: `months_low` is a BOUND, not a
         // measurement, and a colour change is an alarm.
         const amb = rw.ambiguous || [];
-        runLine = `<p class="mny-run">🧭 <b>At least ${rw.months_low} months</b> of runway
-          <span class="sub">— ${money(rw.liquid)} of confirmed cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days. Could be as much as ${rw.months_high} months.</span>${counted}
-          <br><span class="sub">Firefly can't say whether ${esch(amb.slice(0, 4).join(", "))}${
+        runLine = `<div class="mny-run">🧭 <b>At least ${rw.months_low} months</b> of runway
+          <span class="sub">— ${money(rw.liquid)} confirmed cash ÷ ${money(rw.burn_monthly)}/mo over the last ${rw.burn_window_days} days. Could be as much as ${rw.months_high} months.</span>
+          <br><span class="sub">Firefly has no account type for a brokerage, so it can't say whether ${esch(amb.slice(0, 4).join(", "))}${
              amb.length > 4 ? ` and ${amb.length - 4} more` : ""
-           } ${amb.length === 1 ? "is" : "are"} spendable — it has no account type for a brokerage, so a TSP and a current account look identical to it. Tell it which of these aren't cash in Settings and this becomes one number.</span>${excl}${owed}</p>`;
+           } ${amb.length === 1 ? "is" : "are"} cash. Tick the ones that aren't cash in Settings and this becomes one number.</span>${why}</div>`;
       }
     } else if (rw.reason) {
       // Named, not blank: a missing runway with no explanation reads as a bug.
-      runLine = `<p class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></p>`;
+      runLine = `<div class="mny-run"><span class="sub">🧭 Runway unavailable — ${esch(rw.reason)}.</span></div>`;
     }
 
     // Secondary context: a rolling window and remaining budget capacity.
@@ -747,7 +760,7 @@
     const subBits = [];
     if (m.last_30 != null) subBits.push(`Past 30 days <b>${money(m.last_30)}</b>${trend30}${through30}`);
     if (bud.fresh && bud.budget_room != null)
-      subBits.push(`Budget room <b>${money(bud.budget_room)}</b> ${esch(bud.budget_room_scope || "across active budgets")}`);
+      subBits.push(`Budget room <b>${money(bud.budget_room)}</b>`);
     // Committed spending, stated as a monthly figure so it is comparable to
     // the other numbers on the card. Suppressed when the read was truncated:
     // a floor presented as a total is the failure docs/BUDGETS.md forbids.

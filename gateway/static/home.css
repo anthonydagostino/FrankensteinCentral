@@ -231,6 +231,18 @@ body.cc::after {
 .mny-run b { font-variant-numeric: tabular-nums; }
 .mny-run.warn b { color: var(--imp, #ff7a7a); }
 .mny-run .sub { color: var(--muted); font-size: 12.5px; }
+/* The account lists behind the runway figure. Closed by default; the figure
+   is the point, the inputs are there for anyone who wants to argue with it. */
+.mny-why { margin-top: 4px; font-size: 12px; }
+.mny-why > summary {
+  cursor: pointer; list-style: none; display: inline-block;
+  color: var(--accent-2); font-weight: 600; font-size: 11.5px;
+}
+.mny-why > summary::-webkit-details-marker { display: none; }
+.mny-why > summary::after { content: " ›"; }
+.mny-why[open] > summary::after { content: " ⌄"; }
+.mny-why[open] > .sub { display: block; margin-top: 4px; line-height: 1.5; }
+.mny-rec i.sub { font-style: normal; }
 /* The portfolio's "past your threshold" line. */
 .pf-alert {
   display: inline-block; font-size: 12px; margin: 2px 0 10px; padding: 4px 10px;

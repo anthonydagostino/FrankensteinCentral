@@ -1,4 +1,4 @@
-# Do this: make Firefly import by itself every morning
+# Do this: make Firefly import by itself every day
 
 Everything in code is already shipped. This is the part only you can do,
 because it needs a secret and your importer's own settings. Budget 20 minutes.
@@ -170,26 +170,28 @@ after. The last line is the verdict. What each one means:
 
 ## Step 7 — Put it on a timer
 
+The timer ships with the hub. Install it once (the `sed` fills in your user):
+
 ```bash
-crontab -e
+cd ~/FrankensteinCentral
+sudo cp scripts/import/frankenstein-import.* /etc/systemd/system/
+sudo sed -i "s/REPLACE_WITH_USER/$(whoami)/g" /etc/systemd/system/frankenstein-import.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now frankenstein-import.timer
 ```
 
-Add this line at the bottom (it runs every day at 6:23 am):
+It tries every hour from 6am to 10pm and stops for the day once a run lands,
+so a morning the box was off still gets its import, and a failed run is
+retried within the hour.
 
-```cron
-23 6 * * *  cd ~/FrankensteinCentral && bash scripts/firefly-import.sh >> ~/.frankenstein/import.log 2>&1
-```
-
-Save and exit.
-
-**Check:** `crontab -l` shows the line. The next morning, open the hub. The
-**Data safety** card's *Import* line no longer says "never run". Or run:
+**Check:** `systemctl list-timers frankenstein-import.timer` shows a next run.
+The next morning, the hub's footer line no longer says "import never run". Or:
 
 ```bash
 bash scripts/verify.sh | grep "import"
 ```
 
-and see `PASS  import cron`.
+and see `PASS  import timer`.
 
 ---
 

@@ -546,6 +546,28 @@ def firefly_state(firefly):
     return "ok"
 
 
+# --- the Google login itself -------------------------------------------------
+
+def google_brief(gmail_payload):
+    """What the week caveat may say about WHY Google is disconnected.
+
+    The gmail service reports its credential in three states: `ok`, `none`
+    (never connected) and `revoked` (Google answered invalid_grant on a
+    refresh — the token expired or was revoked). Only the last one carries
+    information worth a sentence: a login that dies every seven days is the
+    signature of an OAuth app left in Testing mode, and the caveat can say so
+    instead of offering the reconnect button again and again.
+
+    An unreachable gmail (`{}`) is `unknown`, never `ok`.
+    """
+    sync = (gmail_payload or {}).get("sync") if isinstance(gmail_payload, dict) else None
+    cred = (sync or {}).get("credential") if isinstance(sync, dict) else None
+    if not isinstance(cred, dict) or cred.get("state") not in ("ok", "none", "revoked"):
+        return {"state": "unknown", "since": None, "reason": None}
+    return {"state": cred["state"], "since": cred.get("since"),
+            "reason": cred.get("reason")}
+
+
 # --- the seven-day week window ----------------------------------------------
 #
 # The dashboard's schedule card used to be one flat list of the next six

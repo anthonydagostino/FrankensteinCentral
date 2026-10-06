@@ -216,14 +216,14 @@ try:
 except Exception:
     _rec = None
 if not isinstance(_rec, dict):
-    add("WARN", "import cron", "no record — nothing has ever triggered the import from here "
-        "(docs/SETUP-FIREFLY.md → Automate the import)")
+    add("WARN", "import timer", "no record — nothing has ever triggered the import from here "
+        "(install scripts/import/frankenstein-import.timer — docs/SETUP-FIREFLY.md)")
 else:
     _att = _rec.get("last_import_attempt_at"); _res = _rec.get("last_import_result")
     _rsn = _rec.get("last_import_reason"); _land = _rec.get("last_import_at")
     if not _att:
-        add("WARN", "import cron", "NEVER triggered from here — add the cron line "
-            "(docs/SETUP-FIREFLY.md → Automate the import)")
+        add("WARN", "import timer", "NEVER triggered from here — install the timer "
+            "(scripts/import/frankenstein-import.timer — docs/SETUP-FIREFLY.md)")
     else:
         try:
             _age = (datetime.now().astimezone().date()
@@ -231,10 +231,11 @@ else:
         except Exception:
             _age = None
         _agetxt = f"{_age}d ago" if _age is not None else "unreadable stamp"
-        add("PASS" if _age is not None and _age <= 2 else "WARN", "import cron",
+        add("PASS" if _age is not None and _age <= 2 else "WARN", "import timer",
             f"last attempt {_att} ({_agetxt}), result={_res}"
             + (f", reason={_rsn}" if _rsn else "")
-            + ("" if _age is not None and _age <= 2 else " — the cron has stopped"))
+            + ("" if _age is not None and _age <= 2 else
+               " — the timer has stopped (systemctl status frankenstein-import.timer)"))
         if _res == "ok":
             add("PASS", "import lands", f"rows last entered {_land} "
                 f"({_rec.get('import_rows')} rows, {_rec.get('import_kind')})")
@@ -269,8 +270,16 @@ print()
 print("-- Gmail (email) --")
 st, gh, err = get(8083, "/health")
 if st == 200 and gh:
-    add("PASS" if gh.get("connected") else "FAIL", "gmail conn",
-        "connected (token present)" if gh.get("connected") else "NOT connected — no Google token")
+    _cred = gh.get("credential") or {}
+    if _cred.get("state") == "revoked":
+        # The reconnect is one click; the REASON is what stops it recurring. A
+        # login that dies every seven days is an OAuth app still in Testing.
+        add("FAIL", "gmail conn", f"Google REVOKED the login at {_cred.get('since')} "
+            f"({_cred.get('reason')}) — reconnect at /api/gmail/auth/login; if this "
+            "repeats weekly, publish the OAuth app (docs/SETUP-GMAIL.md → Keep it connected)")
+    else:
+        add("PASS" if gh.get("connected") else "FAIL", "gmail conn",
+            "connected (token present)" if gh.get("connected") else "NOT connected — no Google token")
     st2, nr, err2 = get(8083, "/needs-reply", timeout=40)
     if st2 == 200 and nr:
         mode = nr.get("mode")

@@ -315,6 +315,10 @@ owns the backups:
 41 4 * * 0  cd ~/FrankensteinCentral && bash scripts/restore.sh --drill >> ~/.frankenstein/drill.log  2>&1
 ```
 
+The Firefly import is not a cron line: it is a shipped systemd timer,
+`scripts/import/frankenstein-import.timer`, installed per
+[SETUP-FIREFLY.md](SETUP-FIREFLY.md#5-automate-the-import-scrum-142).
+
 The **Data safety** card also shows disk free on the state volume. That
 needs no host agent: the state directory is a bind mount, and a `statvfs`
 through a bind mount reports the host filesystem, so the container is reading

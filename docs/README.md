@@ -30,7 +30,9 @@ This branch — **`production`** — is the branch the box actually deploys.
 |---|---|
 | [SETUP-DEPLOY.md](SETUP-DEPLOY.md) | Auto-deploy on the box, and the review/production boundary. |
 | [SETUP-GMAIL.md](SETUP-GMAIL.md) | Google OAuth for the gmail sub-app. |
+| [DO-THIS-GOOGLE-STAYS-CONNECTED.md](DO-THIS-GOOGLE-STAYS-CONNECTED.md) | The one Google Cloud setting that stops the login expiring weekly. |
 | [SETUP-FIREFLY.md](SETUP-FIREFLY.md) | Connecting a self-hosted Firefly III. |
+| [DO-THIS-FIREFLY-IMPORT.md](DO-THIS-FIREFLY-IMPORT.md) | The daily import: the importer's secret, the config file, the timer. |
 | [SETUP-PLEX.md](SETUP-PLEX.md) | Connecting a shared Plex server. |
 | [SETUP-VAULT.md](SETUP-VAULT.md) | Read-only Vaultwarden password health. |
 | [SETUP-NOTIFICATIONS.md](SETUP-NOTIFICATIONS.md) | Telegram / WhatsApp / SMS / webhook digests. |

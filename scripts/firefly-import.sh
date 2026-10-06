@@ -3,6 +3,7 @@
 # ledger actually moved. (SCRUM-142)
 #
 #   bash scripts/firefly-import.sh           trigger, verify, record
+#   bash scripts/firefly-import.sh --daily   the same, unless today already ran
 #   bash scripts/firefly-import.sh --check   print the last recorded run
 #
 # WHY. Nothing in this repository ever triggered an import. The FC firefly
@@ -85,6 +86,36 @@ for k in ("last_import_attempt_at", "last_import_result", "last_import_reason",
         print(f"  {k:26} {doc[k]}")
 PYCHK
   exit 0
+fi
+
+# ---- --daily: one landed run per calendar day -----------------------------
+# The shipped timer (scripts/import/frankenstein-import.timer) fires HOURLY,
+# not once at dawn: a box that was off at 6am still imports when it wakes,
+# and a run that failed is retried within the hour. This guard is what keeps
+# that from asking the bank sixteen times a day — a day whose import already
+# ran (ok or empty) is left alone. Only the record decides; nothing here talks
+# to the importer before that decision.
+if [ "${1:-}" = "--daily" ]; then
+  if python3 - "$(ds_record_path)" <<'PYDAILY'
+import datetime, json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if doc.get("last_import_result") not in ("ok", "empty"):
+    sys.exit(1)
+try:
+    when = datetime.datetime.fromisoformat(
+        str(doc.get("last_import_attempt_at")).replace("Z", "+00:00")).astimezone().date()
+except Exception:
+    sys.exit(1)
+sys.exit(0 if when == datetime.datetime.now().astimezone().date() else 1)
+PYDAILY
+  then
+    echo "Firefly import: already ran today — nothing to do until tomorrow"
+    exit 0
+  fi
+  shift
 fi
 
 fail() {  # fail <reason> <message>

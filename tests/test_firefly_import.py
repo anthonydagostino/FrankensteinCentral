@@ -228,3 +228,78 @@ def test_the_secret_file_is_gone_afterwards(tmp_path):
     run(tmp_path, [FRESH, MOVED], env_extra={"TMPDIR": str(tmp_path / "tmp")})
     (tmp_path / "tmp").mkdir(exist_ok=True)
     assert not list((tmp_path / "tmp").glob("fc-import.*"))
+
+
+# ---- --daily: the hourly timer asks the bank once a day --------------------
+#
+# scripts/import/frankenstein-import.timer fires hourly so a box that slept
+# through 6am still imports when it wakes and a failure is retried soon. The
+# guard below is what makes that one import a day rather than sixteen.
+
+def _recorded(tmp_path, result, when):
+    state = tmp_path / "state"; state.mkdir(exist_ok=True)
+    (state / "data-safety.json").write_text(json.dumps(
+        {"last_import_attempt_at": when, "last_import_result": result}))
+
+
+def _today_iso():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def test_daily_skips_a_day_that_already_landed(tmp_path):
+    _recorded(tmp_path, "ok", _today_iso())
+    r = run(tmp_path, [FRESH, MOVED], "--daily")
+    assert r.returncode == 0
+    assert "already ran today" in r.stdout
+    assert not (tmp_path / "curl.log").exists(), "the importer was asked anyway"
+
+
+def test_daily_skips_a_day_that_ran_and_found_nothing(tmp_path):
+    """`empty` is a run, not a failure: a quiet banking day must not be
+    re-asked every hour."""
+    _recorded(tmp_path, "empty", _today_iso())
+    r = run(tmp_path, [FRESH, MOVED], "--daily")
+    assert r.returncode == 0 and "already ran today" in r.stdout
+
+
+def test_daily_retries_a_failed_run(tmp_path):
+    _recorded(tmp_path, "failed", _today_iso())
+    r = run(tmp_path, [FRESH, MOVED], "--daily")
+    assert "already ran today" not in r.stdout
+    assert record(tmp_path)["last_import_result"] == "ok"
+
+
+def test_daily_runs_when_the_last_run_was_yesterday(tmp_path):
+    _recorded(tmp_path, "ok", "2026-01-01T06:07:00+00:00")
+    r = run(tmp_path, [FRESH, MOVED], "--daily")
+    assert record(tmp_path)["last_import_result"] == "ok"
+    assert "already ran today" not in r.stdout
+
+
+def test_daily_runs_when_nothing_was_ever_recorded(tmp_path):
+    r = run(tmp_path, [FRESH, MOVED], "--daily")
+    assert record(tmp_path)["last_import_result"] == "ok"
+
+
+# ---- the shipped timer ---------------------------------------------------
+
+UNIT_DIR = ROOT / "scripts" / "import"
+
+
+def test_the_timer_is_hourly_persistent_and_uses_the_daily_guard():
+    timer = (UNIT_DIR / "frankenstein-import.timer").read_text()
+    service = (UNIT_DIR / "frankenstein-import.service").read_text()
+    assert "Persistent=true" in timer, "a box that was off at 6am would skip the day"
+    assert "OnCalendar=*-*-* 06..22:07:00" in timer
+    assert "firefly-import.sh --daily" in service, \
+        "an hourly timer without the guard asks the bank sixteen times a day"
+    assert "Type=oneshot" in service
+    assert "TimeoutStartSec=" in service
+
+
+def test_the_docs_install_the_timer_not_a_cron_line():
+    for doc in ("docs/SETUP-FIREFLY.md", "docs/DO-THIS-FIREFLY-IMPORT.md"):
+        text = (ROOT / doc).read_text()
+        assert "frankenstein-import.timer" in text, f"{doc} does not install the timer"
+        assert "23 6 * * *" not in text, f"{doc} still tells the reader to type a cron line"

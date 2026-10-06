@@ -1,0 +1,29 @@
+# The daily Firefly import, as a systemd unit (SCRUM-142). Install once:
+#
+#   sudo cp scripts/import/frankenstein-import.* /etc/systemd/system/
+#   sudo sed -i "s/REPLACE_WITH_USER/$(whoami)/g" /etc/systemd/system/frankenstein-import.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now frankenstein-import.timer
+#
+# Then `bash scripts/verify.sh` reports "import timer" as PASS, and the
+# dashboard footer's import line stops saying "never run" after the first
+# landed run. Deliberately a timer rather than a crontab line: the timer is
+# visible (`systemctl list-timers`), survives a crontab edit, and with
+# Persistent= it runs the missed tick when the box comes back from being off.
+[Unit]
+Description=FrankensteinCentral Firefly import (one attempt; a day that already landed is a no-op)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=REPLACE_WITH_USER
+WorkingDirectory=/home/REPLACE_WITH_USER/FrankensteinCentral
+Environment=FRANKENSTEIN_STATE_DIR=/home/REPLACE_WITH_USER/.frankenstein
+# --daily: the script refuses to run twice on a day that already imported
+# (ok or empty), so the hourly timer asks the bank once a day and retries
+# only after a failure. The record it writes is what the dashboard reads.
+ExecStart=/usr/bin/env bash scripts/firefly-import.sh --daily
+# The script waits up to two minutes for the ledger to move; the importer
+# itself can take a few. A wedged importer must not hold the timer forever.
+TimeoutStartSec=20min

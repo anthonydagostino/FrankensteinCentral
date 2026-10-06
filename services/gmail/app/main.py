@@ -66,24 +66,38 @@ MANUAL_MIN_SECONDS = int(os.environ.get("GMAIL_MANUAL_MIN_SECONDS", "60"))
 # doesn't blank the Inbox card until the next scheduled poll.
 STATE_FILE = os.environ.get("GMAIL_STATE_FILE", "/data/gmail_state.json")
 
-# Token store. Priority: env override -> saved file -> filled by the OAuth flow.
+# Token store. Priority: the credential SAVED by /auth/login -> the
+# GOOGLE_REFRESH_TOKEN seed from the environment -> filled by the OAuth flow.
+#
+# The order matters, and it used to be the other way round. GOOGLE_REFRESH_TOKEN
+# is the fast-path seed from .env.example: PowerBuy's token, minted for mail
+# alone. When a person then reconnects through /auth/login and approves the
+# calendar, the new grant is saved to TOKEN_FILE — and on the next container
+# restart the env seed was loaded FIRST and won, so the calendar went back to
+# `needs_consent` after every deploy until someone reconnected again. A
+# credential a person consented to here outranks one pasted from another app.
 TOKENS: dict[str, str] = {}
 if os.environ.get("GOOGLE_REFRESH_TOKEN"):
     TOKENS["refresh_token"] = os.environ["GOOGLE_REFRESH_TOKEN"]
 _ACCESS: dict[str, float] = {}  # {"token": ..., "exp": epoch_seconds}
+# Whether Google has REFUSED the refresh token. `invalid_grant` on a refresh is
+# Google's one definitive answer: the token was revoked, or it expired — which
+# a token from an OAuth app still in "Testing" does after seven days. It is
+# recorded here, separately from a network failure, because the two need
+# different things from the person: wait, or reconnect.
+CREDENTIAL: dict = {"revoked_at": None, "reason": None}
 
 
 def _load_saved_token() -> None:
-    """Load a previously saved refresh token so 'Allow' is truly one-time."""
-    if TOKENS.get("refresh_token"):
-        return
+    """Load the refresh token /auth/login saved, so 'Allow' is truly one-time
+    and so that consent outranks the environment seed (see TOKENS above)."""
     try:
         with open(TOKEN_FILE) as f:
             saved = json.load(f).get("refresh_token")
-            if saved:
-                TOKENS["refresh_token"] = saved
     except (OSError, ValueError):
-        pass
+        return
+    if saved:
+        TOKENS["refresh_token"] = saved
 
 
 def _save_token(refresh_token: str) -> None:
@@ -347,8 +361,20 @@ async def _access_token() -> str | None:
             timeout=15,
         )
     if r.status_code != 200:
+        # Only `invalid_grant` means the credential itself is dead. A 5xx or a
+        # malformed answer is Google having a moment, and marking the login
+        # revoked for that would send a person to re-consent for nothing.
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        if isinstance(body, dict) and body.get("error") == "invalid_grant":
+            CREDENTIAL["revoked_at"] = CREDENTIAL["revoked_at"] or _iso()
+            CREDENTIAL["reason"] = body.get("error_description") or "invalid_grant"
+            _ACCESS.clear()
         return None
     tok = r.json()
+    CREDENTIAL.update(revoked_at=None, reason=None)
     _ACCESS["token"] = tok.get("access_token", "")
     _ACCESS["exp"] = time.time() + int(tok.get("expires_in", 3600))
     # Google echoes the scopes the REFRESH TOKEN actually carries, which is
@@ -381,13 +407,35 @@ def has_calendar_scope() -> bool | None:
 
 
 def _connected() -> bool:
+    """A credential exists AND Google has not refused it. A revoked token is
+    not a connection: reporting it as one is how a dashboard says "checked
+    4 minutes ago" for a week about an inbox it has not seen since Tuesday."""
+    if CREDENTIAL.get("revoked_at"):
+        return False
     return bool(TOKENS.get("refresh_token") or TOKENS.get("access_token"))
+
+
+def credential_state() -> dict:
+    """What the Google login is doing, for the dashboard and verify.sh.
+
+    `revoked` carries WHEN and WHY, because the why is usually the fix: a
+    refresh token that dies every seven days is the signature of an OAuth app
+    left in Testing mode, and the dashboard can say so instead of just
+    offering the reconnect button again.
+    """
+    if CREDENTIAL.get("revoked_at"):
+        return {"state": "revoked", "since": CREDENTIAL["revoked_at"],
+                "reason": CREDENTIAL.get("reason")}
+    if TOKENS.get("refresh_token") or TOKENS.get("access_token"):
+        return {"state": "ok", "since": None, "reason": None}
+    return {"state": "none", "since": None, "reason": None}
 
 
 @app.get("/health")
 async def health():
     return {"service": "gmail", "connected": _connected(), "query": INBOX_QUERY,
-            "calendar_scope": has_calendar_scope(), "scopes": granted_scopes()}
+            "calendar_scope": has_calendar_scope(), "scopes": granted_scopes(),
+            "credential": credential_state()}
 
 
 @app.get("/internal/token")
@@ -581,6 +629,7 @@ async def _exchange(code: str) -> tuple[bool, str]:
                        f"{hint}<p class='muted'>{esc(detail)}</p></div>")
 
     tok = r.json()
+    CREDENTIAL.update(revoked_at=None, reason=None)
     TOKENS["access_token"] = tok.get("access_token", "")
     if tok.get("refresh_token"):
         TOKENS["refresh_token"] = tok["refresh_token"]
@@ -738,8 +787,14 @@ async def _refresh(trigger: str = "scheduled") -> dict:
     """
     SYNC["last_attempt"] = _iso()
     if not _connected():
-        SYNC.update(mode="disconnected", sync_status="never",
-                    last_error="no Gmail credentials")
+        # Revoked keeps its last-known-good items on screen like any other
+        # failure would, but the MODE is disconnected: the credential is gone
+        # and only a person can bring it back.
+        cred = credential_state()
+        SYNC.update(mode="disconnected",
+                    sync_status="failed" if cred["state"] == "revoked" else "never",
+                    last_error=(f"Google revoked the login ({cred['reason']})"
+                                if cred["state"] == "revoked" else "no Gmail credentials"))
         _save_state()
         return _sync_meta()
 
@@ -778,6 +833,7 @@ def _sync_meta() -> dict:
         "next_refresh_at": next_at,
         "message_count": SYNC.get("message_count", 0),
         "error": SYNC.get("last_error"),
+        "credential": credential_state(),
     }
 
 

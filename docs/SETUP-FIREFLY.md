@@ -131,12 +131,22 @@ bash scripts/firefly-import.sh          # triggers, waits, judges by the ledger
 bash scripts/firefly-import.sh --check  # prints the last record, triggers nothing
 ```
 
-Then put it on a timer, next to the backup lines from
-[OPERATIONS.md](OPERATIONS.md#backups):
+Then install the shipped timer, once:
 
-```cron
-23 6 * * *  cd ~/FrankensteinCentral && bash scripts/firefly-import.sh >> ~/.frankenstein/import.log 2>&1
+```bash
+sudo cp scripts/import/frankenstein-import.* /etc/systemd/system/
+sudo sed -i "s/REPLACE_WITH_USER/$(whoami)/g" /etc/systemd/system/frankenstein-import.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now frankenstein-import.timer
+systemctl list-timers frankenstein-import.timer     # shows the next run
 ```
+
+It fires at seven past every hour from 6am to 10pm, and the script's
+`--daily` mode makes every run after the day's first landed one (`ok` or
+`empty`) a no-op — so the bank is asked once a day, a failed attempt is
+retried within the hour, and `Persistent=true` runs the missed tick as soon
+as a box that was off at 6am comes back. A timer rather than a crontab line
+because it is visible (`systemctl list-timers`) and survives a crontab edit.
 
 The secret is never printed: not by the script, not by `verify.sh`, and the
 importer's response body is saved to `~/.frankenstein/import-last-response.txt`

@@ -1,0 +1,15 @@
+# Fires at seven past the hour, 6am to 10pm. Hourly on purpose — see the
+# service file: the script makes every run after the day's first landed one a
+# no-op, so this is "retry until it lands today", not sixteen imports.
+[Unit]
+Description=Run the FrankensteinCentral Firefly import until today's run lands
+
+[Timer]
+OnCalendar=*-*-* 06..22:07:00
+# A tick the box slept through runs as soon as it is back. Without this, a
+# morning the OptiPlex was off is a day the ledger does not move.
+Persistent=true
+AccuracySec=2min
+
+[Install]
+WantedBy=timers.target

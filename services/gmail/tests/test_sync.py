@@ -388,3 +388,84 @@ def test_an_unconfigured_client_says_what_to_set(monkeypatch):
     body = TestClient(gm.app).get("/auth/login").text
     assert "GOOGLE_CLIENT_ID" in body
     assert "accounts.google.com" not in body  # nothing to send them to yet
+
+
+# ---- staying connected ---------------------------------------------------
+#
+# Two ways the Google login went dead on the box, and what each needs:
+#
+#   * GOOGLE_REFRESH_TOKEN (PowerBuy's mail-only token) used to outrank the
+#     credential a person consented to through /auth/login, on every restart.
+#     Reconnect, deploy, broken again. The saved consent wins now.
+#   * A refresh token from an OAuth app still in "Testing" expires after seven
+#     days. Google answers `invalid_grant`; the service used to report that as
+#     a failed fetch, indistinguishable from a network blip, and keep claiming
+#     to be connected. It is a revoked credential, named as such, with the
+#     reconnect being the only fix.
+#
+# asyncio.run, not the module's run(): these sit after the TestClient tests,
+# which leave no current event loop behind on Python 3.12+.
+
+def test_a_saved_consent_outranks_the_environment_seed(monkeypatch, tmp_path):
+    token_file = tmp_path / "token.json"
+    token_file.write_text(json.dumps({"refresh_token": "consented-with-calendar"}))
+    monkeypatch.setattr(gm, "TOKEN_FILE", str(token_file))
+    monkeypatch.setattr(gm, "TOKENS", {"refresh_token": "powerbuy-mail-only-seed"})
+    gm._load_saved_token()
+    assert gm.TOKENS["refresh_token"] == "consented-with-calendar"
+
+
+def test_no_saved_file_leaves_the_environment_seed_in_place(monkeypatch, tmp_path):
+    monkeypatch.setattr(gm, "TOKEN_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(gm, "TOKENS", {"refresh_token": "seed"})
+    gm._load_saved_token()
+    assert gm.TOKENS["refresh_token"] == "seed"
+
+
+def test_invalid_grant_on_refresh_marks_the_credential_revoked(monkeypatch):
+    monkeypatch.setattr(gm, "_ACCESS", {})
+    monkeypatch.setattr(gm, "CREDENTIAL", {"revoked_at": None, "reason": None})
+    _stub_token(monkeypatch, {"error": "invalid_grant",
+                              "error_description": "Token has been expired or revoked."},
+                status=400)
+    assert asyncio.run(gm._access_token()) is None
+    cred = gm.credential_state()
+    assert cred["state"] == "revoked"
+    assert cred["since"]
+    assert "expired or revoked" in cred["reason"]
+    assert gm._connected() is False, "a revoked token is not a connection"
+    meta = asyncio.run(gm._refresh())
+    assert meta["sync_status"] == "failed"
+    assert "revoked" in meta["error"]
+    assert gm.SYNC["mode"] == "disconnected"
+    assert meta["credential"]["state"] == "revoked"
+
+
+def test_a_google_outage_is_not_a_revoked_credential(monkeypatch):
+    """A 503 from the token endpoint means wait; marking it revoked would send
+    a person to re-consent for nothing."""
+    monkeypatch.setattr(gm, "_ACCESS", {})
+    monkeypatch.setattr(gm, "CREDENTIAL", {"revoked_at": None, "reason": None})
+    _stub_token(monkeypatch, {"error": "temporarily_unavailable"}, status=503)
+    assert asyncio.run(gm._access_token()) is None
+    assert gm.credential_state()["state"] == "ok"
+    assert gm._connected() is True
+
+
+def test_a_successful_refresh_clears_a_revocation(monkeypatch):
+    monkeypatch.setattr(gm, "_ACCESS", {})
+    monkeypatch.setattr(gm, "CREDENTIAL", {"revoked_at": "2026-10-01T00:00:00+00:00",
+                                           "reason": "old"})
+    _stub_token(monkeypatch, {"access_token": "at", "expires_in": 3600, "scope": MAIL})
+    assert asyncio.run(gm._access_token()) == "at"
+    assert gm.credential_state()["state"] == "ok"
+
+
+def test_a_fresh_consent_clears_a_revocation(connect_client, monkeypatch):
+    monkeypatch.setattr(gm, "CREDENTIAL", {"revoked_at": "2026-10-01T00:00:00+00:00",
+                                           "reason": "old"})
+    _stub_token(monkeypatch, {"access_token": "at", "refresh_token": "rt",
+                              "expires_in": 3600, "scope": f"{MAIL} {CAL}"})
+    connect_client.post("/auth/finish", data={"pasted": "4/newcode"})
+    assert gm.credential_state()["state"] == "ok"
+    assert gm._connected() is True
