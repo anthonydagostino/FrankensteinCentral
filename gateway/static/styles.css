@@ -332,6 +332,20 @@ body {
   .alloc-row .a-match { grid-column: 1 / -2; }
 }
 
+/* settings: one block per brokerage account, and the recurring buys */
+.acct-row { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+.acct-head { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.acct-head label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.acct-head input, .acct-row textarea, .rec-row input { background: rgba(0,0,0,0.25); color: var(--text);
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font-size: 13px; font-family: inherit; min-width: 0; }
+.acct-head .ac-cash { width: 110px; }
+.acct-row textarea { width: 100%; min-height: 72px; resize: vertical; font-variant-numeric: tabular-nums; }
+.acct-head .ac-x, .rec-row .rc-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; }
+.acct-head .ac-x:hover, .rec-row .rc-x:hover { color: var(--down); }
+.rec-row { display: grid; grid-template-columns: 1.2fr auto auto 1.6fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.rec-row label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.rec-row .rc-days { width: 56px; }
+@media (max-width: 640px) { .rec-row { grid-template-columns: 1fr 1fr; } .rec-row .rc-buys { grid-column: 1 / -1; } }
 /* settings budget rows + hints */
 .budget-row { display: grid; grid-template-columns: 1.1fr .6fr 1.6fr auto; gap: 8px; margin-bottom: 8px; }
 .budget-row input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);

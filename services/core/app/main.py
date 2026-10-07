@@ -38,7 +38,15 @@ CREATE TABLE IF NOT EXISTS core_settings (
 DEFAULT_SETTINGS = {
     "morning_end_hour": 12,      # local hour before which = morning mode
     "evening_start_hour": 18,    # local hour at/after which = evening mode
-    "market": {"holdings": [], "watchlist": [], "move_threshold_pct": 3.0},
+    # Investments, per account. `holdings` is the pre-2026-10-07 flat list,
+    # read by the stocks service as one account ("Robinhood") until
+    # `accounts` exists, then retired. `recurring` is money that lands on a
+    # schedule — the stocks service turns each due buy into estimated shares
+    # at that day's quote and advances `next`.
+    #   accounts   [{name, holdings: [{symbol, shares, cost?}], cash}]
+    #   recurring  [{account, cadence_days, next: "YYYY-MM-DD", buys: {SYMBOL: dollars}}]
+    "market": {"holdings": [], "accounts": [], "recurring": [],
+               "watchlist": [], "move_threshold_pct": 3.0},
     # The place the weather pill reports on. Coordinates rather than a name,
     # because a name has to be resolved by somebody and doing it once — when
     # you pick the place — beats doing it on every request forever. `lat`/`lon`

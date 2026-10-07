@@ -220,15 +220,31 @@ period alone — September's Dunkin' credit says nothing about October's.
 
 ## stocks — `:8099` — portfolio & watchlist
 
-Keyless quotes via Stooq. Holdings and watchlist are configured in `core`
-settings (`market.holdings` / `market.watchlist`), not here.
+Keyless quotes via Stooq, with Yahoo as the fallback. Holdings live in `core`
+settings, per account, with each account's cash:
+
+```
+market.accounts   = [{name, holdings: [{symbol, shares, cost?}], cash}]
+market.recurring  = [{account, cadence_days, next: "YYYY-MM-DD", buys: {SYMBOL: dollars}}]
+```
+
+Accounts at one broker share a first word ("Fidelity Roth", "Fidelity
+Individual") and the home card shows them as one total with the split beneath.
+A pre-2026-10-07 settings row carrying only `market.holdings` is read as one
+account named Robinhood.
+
+A recurring plan is money that lands on a schedule. On and after `next`, a
+`/portfolio` read turns each buy into shares at that day's quote, saves them
+back to `core`, and advances `next` by `cadence_days` (every missed period is
+applied). Those shares are **estimates** — the broker filled at its own price —
+so the holding carries `estimated_shares` / `estimated_since` and the card says
+*est.* until the count is replaced from the statement. A basket with any
+unpriced symbol is deferred, never guessed.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/quotes?symbols=` | Quotes for a comma-separated symbol list. |
-| `GET` | `/portfolio` | Portfolio value, positions, and daily movers. |
-
----
+| `GET` | `/quotes?symbols=A,B` | Raw quotes. |
+| `GET` | `/portfolio` | `value` (every account incl. cash), `day_change`, `total_gain`, `accounts[]` (each valued, with its cash, gain and estimated lots), `positions[]` combined by symbol across accounts, `movers`, `watchlist`, `next_contribution`, `applied_contributions` (this read), `contribution_save_failed`. |
 
 ## powerbuy — `:8081` — arbitrage tracker
 

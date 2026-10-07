@@ -243,6 +243,28 @@ body.cc::after {
 .mny-why[open] > summary::after { content: " ⌄"; }
 .mny-why[open] > .sub { display: block; margin-top: 4px; line-height: 1.5; }
 .mny-rec i.sub { font-style: normal; }
+/* ---- the portfolio's accounts ------------------------------------------
+   One row per brokerage; a broker with two accounts shows one figure and the
+   split underneath in small print. */
+.pf-accts { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 10px; }
+.pf-acct {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 2px 12px; align-items: baseline;
+  padding: 8px 11px; border-radius: 12px; background: rgba(255,255,255,0.035);
+  border: 1px solid transparent; font-size: 13.5px;
+}
+.pf-acct:hover { border-color: var(--line); }
+.pf-acct-name { font-weight: 700; }
+.pf-acct-val { font-weight: 700; }
+.pf-acct-day { font-size: 12px; }
+.pf-split { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.pf-split b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pf-est { font-style: normal; font-size: 9.5px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--amber); border: 1px solid currentColor;
+  border-radius: 5px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; }
+.pf-next { margin: 4px 0 8px; font-size: 13px; line-height: 1.5; }
+.pf-next .sub { color: var(--muted); font-size: 12.5px; }
+.pf-est-note { margin: 0 0 8px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.pf-est-note.warn { color: var(--amber); }
 /* The portfolio's "past your threshold" line. */
 .pf-alert {
   display: inline-block; font-size: 12px; margin: 2px 0 10px; padding: 4px 10px;

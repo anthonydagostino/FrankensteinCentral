@@ -863,7 +863,7 @@
     }
     if (p.state === "not_configured" || !p.configured) {
       q("#cc-portfolio").innerHTML = `<h3>Portfolio</h3>
-        <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your stocks →</b><br>Then you'll see daily change, movers & watchlist here.</p>`;
+        <p class="att-empty">No holdings yet. <b id="pf-add" style="cursor:pointer;color:var(--accent-2)">Add your accounts →</b><br>Then you'll see every account, the total, daily change and the next buy here.</p>`;
       const a = q("#pf-add"); if (a) a.onclick = () => openSettings();
       return;
     }
@@ -880,20 +880,76 @@
     const moverRow = (x, label) => x ? `<div class="pos"><span>${label} <b>${esch(x.symbol)}</b></span><span class="${x.change_pct >= 0 ? "up" : "down"} mono">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}% · ${x.day_change >= 0 ? "+" : ""}${money(x.day_change)}</span></div>` : "";
     const live = (p.positions || []).filter((x) => x.available);
     const dead = (p.positions || []).filter((x) => !x.available);
+    // One line per symbol, across every account: VOO held in two places is
+    // one holding. The per-account split is on the account rows above it.
     const positions = live.map((x) =>
-      `<div class="pos"><span><b>${esch(x.symbol)}</b> <span class="${x.change_pct >= 0 ? "up" : "down"}">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}%</span></span><span class="mono">${money(x.value)}</span></div>`).join("");
+      `<div class="pos"><span><b>${esch(x.symbol)}</b> <span class="${x.change_pct >= 0 ? "up" : "down"}">${x.change_pct >= 0 ? "+" : ""}${x.change_pct}%</span>${
+        x.estimated_shares ? ` <i class="pf-est" title="Includes shares estimated from a quote, not the broker's fill">est.</i>` : ""
+      }</span><span class="mono">${money(x.value)}</span></div>`).join("");
     // Unsupported/unreachable symbols must be visible, never silently vanish.
     const deadLine = dead.length
       ? `<p class="att-empty" style="margin-top:8px">⚠ No quote for ${dead.map((x) => esch(x.symbol)).join(", ")} — symbol not on the quote source, or it's unreachable. Other holdings still shown.</p>` : "";
     const noneLive = !live.length
       ? `<p class="att-empty">Quotes unavailable right now — your ${(p.positions || []).length} holding(s) are saved and will price when the quote source responds.</p>` : "";
+
+    // ---- the accounts: one row per brokerage, the broker's accounts under it.
+    // Anthony, 2026-10-07: "just show the total for both" — so the two
+    // Fidelity accounts are one row with one figure, and their split is the
+    // small print. Grouping is by the word before the first space in the
+    // account name ("Fidelity Roth", "Fidelity Individual" → Fidelity).
+    const accts = p.accounts || [];
+    const groups = [];
+    accts.forEach((a) => {
+      const key = String(a.name || "").split(" ")[0] || a.name;
+      let g = groups.find((x) => x.key === key);
+      if (!g) { g = { key, value: 0, day: 0, gain: 0, hasGain: false, members: [] }; groups.push(g); }
+      g.value += a.value || 0; g.day += a.day_change || 0;
+      if (a.total_gain != null) { g.gain += a.total_gain; g.hasGain = true; }
+      g.members.push(a);
+    });
+    const acctRows = groups.map((g) => {
+      const split = g.members.length > 1
+        ? `<span class="pf-split">${g.members.map((a) =>
+            `${esch(String(a.name).slice(g.key.length).trim() || a.name)} <b>${money(a.value)}</b>`).join(" · ")}</span>`
+        : "";
+      const est = g.members.some((a) => ((a.estimated || {}).symbols || []).length)
+        ? ` <i class="pf-est" title="Includes buys estimated from quotes">est.</i>` : "";
+      return `<div class="pf-acct">
+        <span class="pf-acct-name">${esch(g.key)}${est}</span>
+        <span class="pf-acct-val mono">${money(g.value)}</span>
+        <span class="pf-acct-day mono ${g.day >= 0 ? "up" : "down"}">${g.day >= 0 ? "+" : ""}${money(g.day)}</span>
+        ${split}
+      </div>`;
+    }).join("");
+
+    // ---- the next buy: money that lands on a schedule, and where.
+    const nc = p.next_contribution;
+    const basket = nc ? Object.entries(nc.buys || {}).map(([sym, amt]) =>
+      `${esch(sym)} ${money(amt)}`).join(" · ") : "";
+    const when = nc ? (nc.days_until === 0 ? "today" : nc.days_until === 1 ? "tomorrow"
+      : nc.days_until < 0 ? "due" : `${esch(dshort(nc.date))} · ${nc.days_until}d`) : "";
+    const nextLine = nc
+      ? `<p class="pf-next">🗓 <b>${money(nc.amount)}</b> into ${esch(nc.account)} ${when}<span class="sub"> — ${basket}</span></p>`
+      : "";
+    // Buys this service turned into shares itself are estimates until the
+    // broker's own count replaces them; that is said where the number is.
+    const estAccts = accts.filter((a) => ((a.estimated || {}).symbols || []).length);
+    const estLine = estAccts.length
+      ? `<p class="pf-est-note">Includes buys since ${esch(dshort(estAccts[0].estimated.since))} estimated at that day's quote
+         (${estAccts.map((a) => esch(a.name)).join(", ")}). Replace the share counts from the broker's statement in Settings to true up.</p>`
+      : "";
+    const saveFail = p.contribution_save_failed
+      ? `<p class="pf-est-note warn">⚠ A due buy could not be saved to settings, so it is not counted yet. It will be retried.</p>` : "";
+
     q("#cc-portfolio").innerHTML = `
       <h3>Portfolio</h3>
       ${live.length ? `<div class="mny-hero">
+        <div class="mny-stat"><div class="v mono">${money(p.value)}</div><div class="l">All accounts${(p.accounts || []).some((a) => a.cash) ? " · incl. cash" : ""}</div></div>
         <div class="mny-stat"><div class="v mono ${cls}">${arrow} ${p.day_change_pct}%</div><div class="l">${esch(p.session_label || "Last session")} · ${dc >= 0 ? "+" : ""}${money(dc)}${p.session_label ? "" : `<br><span style="font-size:10px">as-of date unavailable</span>`}</div></div>
-        <div class="mny-stat"><div class="v mono" style="font-size:17px">${money(p.value)}</div><div class="l">Value</div></div>
-        ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:17px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
+        ${p.total_gain != null ? `<div class="mny-stat"><div class="v mono ${p.total_gain >= 0 ? "up" : "down"}" style="font-size:22px">${p.total_gain >= 0 ? "+" : ""}${money(p.total_gain)}</div><div class="l">Total gain</div></div>` : ""}
       </div>` : ""}
+      ${acctRows ? `<div class="pf-accts">${acctRows}</div>` : ""}
+      ${nextLine}${estLine}${saveFail}
       ${alertLine}
       ${moverRow(mv.up, "▲")}${moverRow(mv.down, "▼")}
       <div style="margin-top:6px">${positions}</div>${noneLive}${deadLine}`;
@@ -1194,6 +1250,7 @@
   // quotes and an account is named by the user.
   let _runwayAccounts = [];
   let _financeSettings = {};
+  let _marketSettings = {};
   async function openSettings() {
     let s = {};
     try { s = await fetch("/api/core/settings").then((r) => r.json()); } catch {}
@@ -1205,12 +1262,25 @@
     _runwayAccounts = ((nw || {}).accounts || []).filter(
       (a) => a && a.kind !== "liability" && a.role !== "ccAsset");
     _financeSettings = s.finance || {};
-    const mk = (h) => h.map((c) => c.symbol + ":" + c.shares + (c.cost ? ":" + c.cost : "")).join("\n");
+    _marketSettings = s.market || {};
+    const mk = (h) => h.map((c) => c.symbol + " " + c.shares + (c.cost ? " " + c.cost : "")).join("\n");
     const pc = s.paycheck || {};
     q("#settings-body").innerHTML = `
-      <div class="set-group"><h4>Investments</h4><div class="set-grid">
-        <div class="set-field" style="grid-column:1/-1"><label>Holdings — one per line (or comma-separated): SYMBOL shares cost — cost optional, fractional shares OK</label>
-          <textarea id="s-hold" placeholder="NVDA 10 150&#10;AAPL 2.5&#10;VOO:1.25:380">${esch(mk(((s.market || {}).holdings) || []))}</textarea></div>
+      <div class="set-group"><h4>Investments — one block per account</h4>
+        <p class="set-hint">Holdings: one per line, <b>SYMBOL shares cost</b> (cost per share optional, fractional shares OK).
+        Cash is the account's uninvested balance (Fidelity's SPAXX core). Name accounts at the same broker with
+        the same first word — "Fidelity Roth", "Fidelity Individual" — and the card shows them as one total.</p>
+        <div id="s-accounts"></div>
+        <button class="hx-btn" id="s-acct-add" type="button">+ Add account</button>
+      </div>
+      <div class="set-group"><h4>Recurring buys</h4>
+        <p class="set-hint">Money that lands on a schedule. On the due date the stocks service turns each buy into
+        shares at that day's quote (marked <i>est.</i> until you replace the count from the broker's statement)
+        and moves the date forward. Buys: <b>SYMBOL dollars</b>, comma-separated.</p>
+        <div id="s-recurring"></div>
+        <button class="hx-btn" id="s-rec-add" type="button">+ Add recurring buy</button>
+      </div>
+      <div class="set-group"><h4>Watchlist &amp; alerts</h4><div class="set-grid">
         <div class="set-field" style="grid-column:1/-1"><label>Watchlist (comma-separated symbols)</label>
           <input id="s-watch" value="${esch((((s.market || {}).watchlist) || []).join(", "))}"></div>
         <div class="set-field"><label>Alert on move ≥ (%)</label><input id="s-mv" type="number" value="${(s.market || {}).move_threshold_pct ?? 3}"></div>
@@ -1252,6 +1322,55 @@
         }</div></div>
       </div>`;
     q("#settings").hidden = false;
+
+    // accounts editor: one block per brokerage account. A settings row from
+    // before accounts existed carries only the flat holdings list, which is
+    // the brokerage the dashboard was built around: shown as "Robinhood".
+    const mkt = s.market || {};
+    let accounts = (mkt.accounts || []).filter((a) => a && a.name);
+    if (!accounts.length && (mkt.holdings || []).length)
+      accounts = [{ name: "Robinhood", holdings: mkt.holdings, cash: 0 }];
+    const acctRow = (a) => {
+      const div = document.createElement("div");
+      div.className = "acct-row";
+      div.innerHTML = `
+        <div class="acct-head"><input class="ac-name" placeholder="Account (e.g. Fidelity Roth)">
+          <label>Cash $<input class="ac-cash" type="number" step="0.01" min="0"></label>
+          <button class="ac-x" type="button" title="remove">✕</button></div>
+        <textarea class="ac-hold" placeholder="VOO 17.834 562.39&#10;QQQ 8.595 530.96"></textarea>`;
+      // Values set as properties, never interpolated: an account name is the
+      // user's own text and `esch` does not escape quotes.
+      div.querySelector(".ac-name").value = a.name || "";
+      div.querySelector(".ac-cash").value = a.cash != null && a.cash !== 0 ? a.cash : "";
+      div.querySelector(".ac-hold").value = mk(a.holdings || []);
+      div.querySelector(".ac-x").onclick = () => div.remove();
+      return div;
+    };
+    const awrapAcc = q("#s-accounts");
+    accounts.forEach((a) => awrapAcc.appendChild(acctRow(a)));
+    if (!accounts.length) awrapAcc.appendChild(acctRow({}));
+    q("#s-acct-add").onclick = () => awrapAcc.appendChild(acctRow({}));
+
+    // recurring buys editor: account / every N days / next date / the basket
+    const recRow = (r) => {
+      const div = document.createElement("div");
+      div.className = "rec-row";
+      div.innerHTML = `
+        <input class="rc-acct" placeholder="Into account (exact name)">
+        <label>every <input class="rc-days" type="number" min="1" placeholder="14"> days</label>
+        <label>next <input class="rc-next" type="date"></label>
+        <input class="rc-buys" placeholder="VOO 500, QQQ 230, VTI 220, VXUS 150">
+        <button class="rc-x" type="button" title="remove">✕</button>`;
+      div.querySelector(".rc-acct").value = r.account || "";
+      div.querySelector(".rc-days").value = r.cadence_days ?? "";
+      div.querySelector(".rc-next").value = (r.next || "").slice(0, 10);
+      div.querySelector(".rc-buys").value = Object.entries(r.buys || {}).map(([k, v]) => `${k} ${v}`).join(", ");
+      div.querySelector(".rc-x").onclick = () => div.remove();
+      return div;
+    };
+    const rwrap = q("#s-recurring");
+    (mkt.recurring || []).forEach((r) => rwrap.appendChild(recRow(r)));
+    q("#s-rec-add").onclick = () => rwrap.appendChild(recRow({}));
 
     // budgets editor: one row per budget (name / $limit / mapped categories)
     const budRow = (b) => {
@@ -1340,12 +1459,57 @@
     const list = (id) => q(id).value.split(",").map((x) => x.trim()).filter(Boolean);
     const status = q("#settings-status");
 
-    const parsed = parseHoldings(q("#s-hold").value);
-    if (parsed.rejected.length) {
-      status.textContent = "⚠ Couldn't read: " + parsed.rejected.slice(0, 3).map((r) => `"${r}"`).join(", ")
-        + " — use SYMBOL shares [cost], e.g.  NVDA 10 150  or  AAPL:2.5";
-      status.style.color = "var(--down)";
-      return;  // don't silently drop the user's input — let them fix it
+    // accounts: every account with a name is saved; its holdings must parse
+    const accounts = [];
+    for (const row of q("#settings-body").querySelectorAll(".acct-row")) {
+      const name = row.querySelector(".ac-name").value.trim();
+      const text = row.querySelector(".ac-hold").value;
+      const cash = Number(row.querySelector(".ac-cash").value) || 0;
+      if (!name && !text.trim() && !cash) continue;   // untouched blank block
+      if (!name) {
+        status.textContent = "⚠ Every account needs a name (it is what a recurring buy points at).";
+        status.style.color = "var(--down)";
+        return;
+      }
+      const parsed = parseHoldings(text);
+      if (parsed.rejected.length) {
+        status.textContent = `⚠ ${name}: couldn't read ` + parsed.rejected.slice(0, 3).map((r) => `"${r}"`).join(", ")
+          + " — use SYMBOL shares [cost], e.g.  VOO 17.834 562.39";
+        status.style.color = "var(--down)";
+        return;  // don't silently drop the user's input — let them fix it
+      }
+      // A holding the service estimated keeps its estimate flag only while
+      // the share count is unchanged; a retyped count is the broker's truth.
+      const prev = (((_marketSettings.accounts || []).find((a) => a.name === name) || {}).holdings) || [];
+      parsed.holdings.forEach((h) => {
+        const was = prev.find((x) => x.symbol === h.symbol);
+        if (was && was.estimated_shares && Number(was.shares) === h.shares) {
+          h.estimated_shares = was.estimated_shares; h.estimated_since = was.estimated_since;
+        }
+      });
+      accounts.push({ name, holdings: parsed.holdings, cash });
+    }
+    // recurring buys: account, cadence, next date, basket
+    const recurring = [];
+    for (const row of q("#settings-body").querySelectorAll(".rec-row")) {
+      const account = row.querySelector(".rc-acct").value.trim();
+      const days = Number(row.querySelector(".rc-days").value) || 14;
+      const next = row.querySelector(".rc-next").value;
+      const basket = parseHoldings(row.querySelector(".rc-buys").value);
+      if (!account && !next && !basket.holdings.length) continue;
+      if (!account || !next || !basket.holdings.length || basket.rejected.length) {
+        status.textContent = "⚠ A recurring buy needs the account's exact name, a next date, and buys like  VOO 500, QQQ 230";
+        status.style.color = "var(--down)";
+        return;
+      }
+      if (!accounts.some((a) => a.name === account)) {
+        status.textContent = `⚠ Recurring buy points at "${account}", which is not one of the accounts above.`;
+        status.style.color = "var(--down)";
+        return;
+      }
+      const buys = {};
+      basket.holdings.forEach((h) => { buys[h.symbol] = h.shares; });   // "VOO 500" → $500
+      recurring.push({ account, cadence_days: days, next, buys });
     }
 
     // budget rows: a row with any content must have a name and a limit > 0
@@ -1395,7 +1559,10 @@
           .map((c) => (_runwayAccounts[Number(c.dataset.i)] || {}).name)
           .filter(Boolean) },
       budgets: budgets,
-      market: { holdings: parsed.holdings, watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
+      // The flat `holdings` list is retired once accounts exist: two copies
+      // of the same positions is how they drift apart.
+      market: { ..._marketSettings, accounts, recurring, holdings: [],
+                watchlist: list("#s-watch").map((s) => s.toUpperCase()), move_threshold_pct: num("#s-mv", 3) },
     };
     status.style.color = "";
     status.textContent = "Saving…";
@@ -1410,9 +1577,10 @@
       return;  // keep the modal open; never claim success on failure
     }
     // Round-trip confirmation: report what the SERVER now holds, not what we sent.
-    const n = ((saved.market || {}).holdings || []).length;
+    const na = ((saved.market || {}).accounts || []).length;
+    const n = ((saved.market || {}).accounts || []).reduce((t, a) => t + (a.holdings || []).length, 0);
     const nb = (saved.budgets || []).length;
-    status.textContent = `Saved ✓ — ${n} holding${n === 1 ? "" : "s"}, ${nb} budget${nb === 1 ? "" : "s"} stored`;
+    status.textContent = `Saved ✓ — ${na} account${na === 1 ? "" : "s"}, ${n} holding${n === 1 ? "" : "s"}, ${nb} budget${nb === 1 ? "" : "s"} stored`;
     fetch("/api/budget/status?fresh=1").catch(() => {});  // recompute budgets now
     setTimeout(() => { q("#settings").hidden = true; status.textContent = ""; refresh(true); }, 900);
   }
