@@ -274,3 +274,29 @@ def test_the_shell_stays_public_so_the_worker_does_not_cache_the_login_page(lock
     r = locked.get("/", follow_redirects=False)
     assert r.status_code == 200
     assert "<title>FrankensteinCentral" in r.text
+
+
+# --- Google's redirect arrives as a navigation, not a fetch ---------------------
+#
+# The OAuth callback is a top-level navigation to /api/gmail/auth/callback with
+# a single-use code in the query string. On a device with no session the old
+# answer was a JSON 401, which threw the code away. A navigation is sent to the
+# login page instead, with the full callback address (query included) as
+# `next`, and the API stays closed: fetch() callers still get the 401.
+
+def test_a_browser_navigation_to_an_api_page_is_sent_to_login_with_its_query(locked):
+    r = locked.get("/api/gmail/auth/callback?code=4%2Fabc&scope=x%20y",
+                   headers={"accept": "text/html,application/xhtml+xml"}, follow_redirects=False)
+    assert r.status_code == 303
+    from urllib.parse import parse_qs, urlparse
+    nxt = parse_qs(urlparse(r.headers["location"]).query)["next"][0]
+    # the query keeps Google's own encoding, so the code arrives intact after login
+    assert nxt == "/api/gmail/auth/callback?code=4%2Fabc&scope=x%20y"
+    assert auth.safe_next(nxt) == nxt, "the login page must be willing to return there"
+
+
+def test_a_fetch_to_an_api_route_still_gets_the_json_401(locked):
+    r = locked.get("/api/gmail/auth/callback?code=4%2Fabc", headers={"accept": "*/*"})
+    assert r.status_code == 401
+    assert r.json() == {"error": "login required"}
+

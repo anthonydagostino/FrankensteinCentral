@@ -27,11 +27,24 @@ Total time: ~5 minutes. You'll copy 2 values, add 1 web address, click "Allow".
 2. Make sure the project selected at the top is the same one PowerBuy uses.
 3. Under **OAuth 2.0 Client IDs**, click the client whose ID matches the one
    you copied in Step 1.
-4. Under **Authorized redirect URIs**, click **+ ADD URI** and paste exactly:
+4. Under **Authorized redirect URIs**, click **+ ADD URI** and paste the
+   address you open the dashboard at, with `/api/gmail/auth/callback` on the
+   end. On the OptiPlex that is:
 
    ```
-   http://localhost:8083/auth/callback
+   http://192.168.1.185.nip.io:8080/api/gmail/auth/callback
    ```
+
+   Why the `nip.io` name: Google refuses plain `http://` redirects to a raw
+   IP address, and `192.168.1.185.nip.io` is a public DNS name that resolves
+   to the box's LAN address, so the console accepts it. Open the dashboard at
+   that same name when you connect. If the box's LAN address ever changes,
+   change the name here to match.
+
+   The callback goes through the gateway on port 8080, the same port the
+   dashboard is served on, so it works from any browser on the network. The
+   gmail service's own port (8083) is bound to the box's loopback address and
+   is never reachable from another device.
 
 5. Click **Save**.
 
@@ -59,18 +72,17 @@ Total time: ~5 minutes. You'll copy 2 values, add 1 web address, click "Allow".
    docker compose up --build
    ```
 
-2. In your browser, go to the connect page:
-   - on the OptiPlex itself: **http://localhost:8083/auth/login**
-   - from any other device: **http://&lt;the box's address&gt;:8080/api/gmail/auth/login**
-     (the same address you open the dashboard at, with `/api/gmail/auth/login`
-     on the end) — or just click **Connect Google Calendar** on the week card.
+2. In your browser, open the dashboard at the address you registered in
+   step 2 (**http://192.168.1.185.nip.io:8080**) and click **Connect Google
+   Calendar** on the week card, or go straight to
+   **http://192.168.1.185.nip.io:8080/api/gmail/auth/login**.
 3. Click **Continue to Google**, sign in, and click **Allow**. Leave the
    calendar permission ticked.
-4. You'll land on a "✅ Google connected" page. That's it.
+4. You land on a "✅ Google connected" page. That's it.
 
-**If step 3 lands on "site can't be reached", that is expected and nothing is
-lost** — see the next section. The connect page has a paste box for exactly
-this; finish there and you are done.
+**If the page after Google does not load**, nothing is lost: the connect page
+has a paste box for exactly this. Copy the whole address of the failed page
+and paste it there (see *Troubleshooting*).
 
 From now on your real inbox shows up in the hub, and the assistant triages it.
 You won't have to do this again — the connection is saved, even across
@@ -92,8 +104,8 @@ will work perfectly, and every single Calendar call will be refused — not
 because anything is broken, but because that login was never allowed near your
 calendar. Waiting does not fix it and neither does restarting.
 
-The fix is one click: open **http://localhost:8083/auth/login**, approve the
-calendar permission, and a new login is minted and saved with both. The
+The fix is one click: open **/api/gmail/auth/login** on the dashboard, approve
+the calendar permission, and a new login is minted and saved with both. The
 dashboard also offers this as a **Connect Google Calendar** button on the week
 card whenever it detects this state.
 
@@ -165,27 +177,25 @@ keeps it from going stale through disuse. Nothing else needs tending.
   above), because a Testing-mode login expires every seven days.
 - **It keeps disconnecting about once a week:** that is the Testing-mode
   expiry. Publish the app; see *Keep it connected*.
-- **"This site can't be reached" right after you pick your Google account:**
-  the commonest one, and it is not a fault. Google requires the code to come
-  back to a redirect address you registered, and it only accepts plain `http://`
-  addresses when the host is `localhost` or `127.0.0.1` — a LAN address like
-  `http://192.168.1.50:8080/...` is rejected outright in the Cloud console, so
-  the callback *cannot* be pointed at the box's network address. On a browser
-  running on the OptiPlex, `localhost:8083` is the box and everything works.
-  From your laptop or phone, `localhost` is *that* device, where nothing is
-  listening — so the page fails.
+- **The page after Google never loads (spinner, then a timeout):** the
+  redirect URI points somewhere this browser cannot reach. Until 2026-11 the
+  default pointed at the gmail service's own port, 8083, which is bound to
+  the box's loopback address, so the callback only worked in a browser on the
+  OptiPlex itself. Make sure `GOOGLE_REDIRECT_URI` in `.env` is empty (or set
+  to the gateway address from step 2), restart the stack, and check that the
+  connect page says Google sends the browser back to
+  `http://192.168.1.185.nip.io:8080/api/gmail/auth/callback`.
 
-  Nothing is lost: the authorization code is sitting in the failed page's
-  address bar. Copy the whole address, go back to the connect page
-  (`/auth/login`), and paste it into the **"If the page after Google says site
-  can't be reached"** box. That completes the connection server-side and saves
-  the credential exactly as the redirect would have.
-
-  If you would rather not paste, the alternatives are to run the flow in a
-  browser on the OptiPlex, or to tunnel the port first:
-  `ssh -L 8083:localhost:8083 you@the-box`, then use
-  `http://localhost:8083/auth/login` on your laptop.
-- **"redirect_uri_mismatch":** The address in Step 2 must match exactly,
-  including `http://` and no trailing slash: `http://localhost:8083/auth/callback`.
+  Whatever the cause, nothing is lost: the authorization code is sitting in
+  the failed page's address bar. Copy the whole address, go back to the
+  connect page, and paste it into the **"If the page after Google does not
+  load"** box. That completes the connection server-side and saves the
+  credential exactly as the redirect would have.
+- **The callback lands on the sign-in page:** this device had no dashboard
+  session. Sign in; the gateway carries the callback address through and
+  finishes the connection right after.
+- **"redirect_uri_mismatch":** the address in Step 2 must match exactly what
+  the connect page shows, including `http://`, the port and no trailing slash:
+  `http://192.168.1.185.nip.io:8080/api/gmail/auth/callback`.
 - **Want to disconnect:** delete the `gmail_token` docker volume
   (`docker compose down -v` removes it) and the connection is wiped.

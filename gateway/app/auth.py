@@ -135,12 +135,18 @@ async def guard(request: Request, call_next):
         return await call_next(request)
     if cookie_is_valid(request.cookies.get(COOKIE)):
         return await call_next(request)
-    if request.url.path.startswith("/api/"):
+    accepts_html = "text/html" in request.headers.get("accept", "")
+    if request.url.path.startswith("/api/") and not accepts_html:
         # A fetch() from the page. auth.js turns this into a trip to /login.
         return JSONResponse({"error": "login required"}, status_code=401,
                             headers={"WWW-Authenticate": "Cookie"})
-    target = "/login?next=" + quote(request.url.path, safe="/")
-    return RedirectResponse(target, status_code=303)
+    # A top-level navigation, including Google's redirect to
+    # /api/gmail/auth/callback?code=... on a device with no session yet. A JSON
+    # 401 there would throw away a single-use code, so the query string rides
+    # along in `next` and the page is reached after signing in. Nothing becomes
+    # public: the login is still required, it is just offered instead of refused.
+    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    return RedirectResponse("/login?next=" + quote(target, safe="/"), status_code=303)
 
 
 # --- routes --------------------------------------------------------------------

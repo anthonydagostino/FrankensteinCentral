@@ -136,6 +136,18 @@ async def proxy(app_key: str, path: str, request: Request):
 
     target = f"{sub.url}/{path}"
     body = await request.body()
+    # The sub-app sees Host: <service>:8000, so it cannot know the address the
+    # browser used. gmail needs it to build an OAuth redirect URI Google can
+    # send a LAN browser back to (/api/gmail/auth/callback on THIS host). Set
+    # here, not copied from the caller, so a client cannot forge them.
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length") and not k.lower().startswith("x-forwarded-")
+    }
+    headers["x-forwarded-host"] = request.headers.get("host", "")
+    headers["x-forwarded-proto"] = request.headers.get("x-forwarded-proto", request.url.scheme)
+    headers["x-forwarded-prefix"] = f"/api/{app_key}"
     async with httpx.AsyncClient() as client:
         try:
             upstream = await client.request(
@@ -143,11 +155,7 @@ async def proxy(app_key: str, path: str, request: Request):
                 target,
                 params=request.query_params,
                 content=body,
-                headers={
-                    k: v
-                    for k, v in request.headers.items()
-                    if k.lower() not in ("host", "content-length")
-                },
+                headers=headers,
                 timeout=15,
             )
         except Exception as exc:  # noqa: BLE001

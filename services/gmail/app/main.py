@@ -22,7 +22,11 @@ TOKEN_FILE = os.environ.get("GMAIL_TOKEN_FILE", "/data/token.json")
 
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8083/auth/callback")
+# Where Google sends the browser after consent. Empty (the default) means
+# "the address this page was opened at", see redirect_uri() below; set it only
+# to pin one exact value.
+REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "")
+DEFAULT_REDIRECT_URI = "http://localhost:8080/api/gmail/auth/callback"
 # gmail.modify matches the scope your PowerBuy app already holds, so its
 # existing refresh token can be reused here (and lets us label/archive later).
 # calendar.events was added so Bones can write pending/confirmed events to the
@@ -478,18 +482,22 @@ async def internal_token(x_internal_secret: str | None = Header(default=None)):
 
 # --- the browser-facing OAuth pages -----------------------------------------
 #
-# Google will only accept an `http://` redirect URI when its host is localhost
-# or 127.0.0.1 — a LAN address like http://192.168.1.50:8080/... is rejected
-# outright in the Cloud console, so the callback CANNOT be pointed at the box's
-# network address. That is fine when you run the flow in a browser on the
-# OptiPlex itself, and broken everywhere else: Google sends your laptop to
-# `localhost:8083`, which is your laptop, where nothing is listening. The page
-# fails to load and the connection is never finished.
+# The callback goes through the gateway. This service's own port (8083) is
+# bound to 127.0.0.1 on the box and is unreachable from any other device, so a
+# redirect URI pointing at it only ever worked in a browser running on the
+# OptiPlex itself; from a laptop the callback page hung and the code was never
+# exchanged. The gateway already proxies /api/gmail/<path> here, so the
+# redirect is http://<the dashboard's address>/api/gmail/auth/callback, which
+# every LAN browser can reach. Google refuses plain-http redirects to raw IPs,
+# so the dashboard address is a name: 192.168.1.185.nip.io resolves to the
+# box's LAN address and is what the Cloud console accepts.
 #
-# The rescue is that the failed page still has `?code=...` in the address bar.
-# It was delivered; only the thing meant to receive it was on the wrong
-# machine. `/auth/finish` takes that pasted address and completes the exchange
-# server-side, so the flow works from any device with nothing to configure.
+# redirect_uri() derives that address from the request (the gateway forwards
+# the original host, scheme and /api/gmail prefix), so nothing has to be
+# configured as long as the registered URI matches the address the dashboard
+# is opened at. The paste box stays as the fallback: if the callback page
+# fails for any reason, the code is still in the address bar, and
+# /auth/finish completes the exchange server-side.
 
 PAGE = """<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -519,10 +527,36 @@ def _page(body: str) -> HTMLResponse:
     return HTMLResponse(PAGE.format(body=body))
 
 
-def _consent_url() -> str:
+def redirect_uri(request: Request | None) -> str:
+    """The callback address for this request, and the value the token
+    exchange must repeat exactly.
+
+    GOOGLE_REDIRECT_URI wins when set. Otherwise it follows the address the
+    request arrived on: through the gateway that is
+    http://<dashboard host>/api/gmail/auth/callback (the gateway sends
+    X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-Prefix); on this
+    service's own port it is http://<host>:8083/auth/callback.
+    """
+    if REDIRECT_URI:
+        return REDIRECT_URI
+    if request is None:
+        return DEFAULT_REDIRECT_URI
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "localhost:8080"
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return f"{proto}://{host}{prefix}/auth/callback"
+
+
+# The redirect the consent link was last built with. The exchange must send the
+# same value, and the paste box may be used from a different address than the
+# one the consent started from, so it is remembered rather than re-derived.
+_CONSENT: dict = {"redirect_uri": ""}
+
+
+def _consent_url(redirect: str) -> str:
     params = {
         "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect,
         "response_type": "code",
         "scope": SCOPES,
         "access_type": "offline",
@@ -531,21 +565,23 @@ def _consent_url() -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
 
-def _rescue_form(note: str = "") -> str:
+def _rescue_form(redirect: str, note: str = "") -> str:
     """The paste box. Deliberately shown BEFORE anything goes wrong, because
     once the callback page fails to load there is no link left to follow —
     the browser is sitting on an error page belonging to no site at all."""
+    host = urllib.parse.urlparse(redirect).hostname or ""
+    local = (" <code>localhost</code> means <em>this</em> device, so that only "
+             "works in a browser on the OptiPlex itself."
+             if host in ("localhost", "127.0.0.1") else "")
     return f"""
 <form class="box" method="post" action="finish">
-  <b>If the page after Google says "site can't be reached"</b>
-  <p class="muted">That is expected unless this browser is running on the
-  OptiPlex itself: Google is required to send the code back to
-  <code>{esc(REDIRECT_URI)}</code>, and <code>localhost</code> means
-  <em>this</em> device. Nothing is broken and nothing is lost — the code is
-  in the failed page's address bar. Copy that whole address and paste it
-  here.</p>
+  <b>If the page after Google does not load</b>
+  <p class="muted">Google sends your browser back to
+  <code>{esc(redirect)}</code>.{local} If that page fails, nothing is lost:
+  the code is in the failed page's address bar. Copy that whole address and
+  paste it here.</p>
   <input name="pasted" autocomplete="off" spellcheck="false"
-         placeholder="http://localhost:8083/auth/callback?code=4/0Ab...&amp;scope=...">
+         placeholder="{esc(redirect)}?code=4/0Ab...&amp;scope=...">
   <button type="submit">Finish connecting</button>
   {note}
 </form>"""
@@ -575,9 +611,11 @@ def _extract_code(pasted: str) -> str | None:
 
 
 @app.get("/auth/login")
-async def login():
+async def login(request: Request):
     """The connect page: a link to Google's consent screen, plus the rescue
-    form for the redirect that cannot reach a browser off the box."""
+    form for a callback page that fails to load."""
+    redirect = redirect_uri(request)
+    _CONSENT["redirect_uri"] = redirect
     if not CLIENT_ID or not CLIENT_SECRET:
         return _page(
             "<h2>Google isn't configured yet</h2>"
@@ -590,16 +628,17 @@ async def login():
         "<p>One approval covers both Gmail and Google Calendar. Make sure you "
         "leave the calendar permission ticked — unticking it is what leaves the "
         "week grid showing local events only.</p>"
-        f"<a class='go' href='{esc(_consent_url())}'>Continue to Google →</a>"
-        + _rescue_form())
+        f"<a class='go' href='{esc(_consent_url(redirect))}'>Continue to Google →</a>"
+        + _rescue_form(redirect))
 
 
-async def _exchange(code: str) -> tuple[bool, str]:
+async def _exchange(code: str, redirect: str) -> tuple[bool, str]:
     """Trade an authorization code for tokens and adopt them.
 
     Returns (ok, html). Shared by the callback and the paste form so both
     routes save the credential identically — a token obtained by pasting is
-    exactly as good as one that arrived by redirect.
+    exactly as good as one that arrived by redirect. `redirect` must be the
+    value the consent link carried; Google refuses the exchange otherwise.
     """
     async with httpx.AsyncClient() as client:
         r = await client.post(
@@ -608,7 +647,7 @@ async def _exchange(code: str) -> tuple[bool, str]:
                 "code": code,
                 "client_id": CLIENT_ID,
                 "client_secret": CLIENT_SECRET,
-                "redirect_uri": REDIRECT_URI,
+                "redirect_uri": redirect,
                 "grant_type": "authorization_code",
             },
             timeout=15,
@@ -624,7 +663,7 @@ async def _exchange(code: str) -> tuple[bool, str]:
         elif "redirect_uri_mismatch" in detail:
             hint = (f"<p class='muted'>Google Cloud console → Credentials → your "
                     f"OAuth client → Authorized redirect URIs must contain exactly "
-                    f"<code>{esc(REDIRECT_URI)}</code>.</p>")
+                    f"<code>{esc(redirect)}</code>.</p>")
         return False, ("<div class='box warn'><b>Google refused the code.</b>"
                        f"{hint}<p class='muted'>{esc(detail)}</p></div>")
 
@@ -657,19 +696,26 @@ async def _exchange(code: str) -> tuple[bool, str]:
                   "dashboard to see the change.</p>")
 
 
+def _exchange_redirect(request: Request) -> str:
+    """The redirect to repeat in the exchange: the one the consent link used,
+    or, after a restart in between, the one this request implies."""
+    return _CONSENT["redirect_uri"] or redirect_uri(request)
+
+
 @app.get("/auth/callback")
-async def callback(code: str | None = None, error: str | None = None):
-    """Where Google sends the browser. Only reachable when the browser is on
-    the same machine as this service — see the note above `PAGE`."""
+async def callback(request: Request, code: str | None = None, error: str | None = None):
+    """Where Google sends the browser, normally through the gateway as
+    /api/gmail/auth/callback — see the note above `PAGE`."""
+    redirect = _exchange_redirect(request)
     if error:
         return _page(f"<h2>Google returned an error</h2>"
                      f"<div class='box warn'><p>{esc(error)}</p></div>"
-                     + _rescue_form())
+                     + _rescue_form(redirect))
     if not code:
         return _page("<h2>No authorization code in that address</h2>"
-                     + _rescue_form())
-    ok, body = await _exchange(code)
-    return _page(body if ok else body + _rescue_form())
+                     + _rescue_form(redirect))
+    ok, body = await _exchange(code, redirect)
+    return _page(body if ok else body + _rescue_form(redirect))
 
 
 @app.post("/auth/finish")
@@ -681,6 +727,7 @@ async def finish(request: Request):
     list it, and a connect page that 500s on the box because of a missing
     dependency is worse than four lines of urllib.
     """
+    redirect = _exchange_redirect(request)
     raw = (await request.body()).decode("utf-8", "replace")
     pasted = urllib.parse.parse_qs(raw).get("pasted", [""])[0]
     code = _extract_code(pasted)
@@ -688,9 +735,9 @@ async def finish(request: Request):
         return _page("<h2>Couldn't find a code in that</h2>"
                      "<div class='box warn'><p>Paste the <em>whole</em> address "
                      "of the page that failed to load — it should contain "
-                     "<code>code=</code>.</p></div>" + _rescue_form())
-    ok, body = await _exchange(code)
-    return _page(body if ok else body + _rescue_form())
+                     "<code>code=</code>.</p></div>" + _rescue_form(redirect))
+    ok, body = await _exchange(code, redirect)
+    return _page(body if ok else body + _rescue_form(redirect))
 
 
 

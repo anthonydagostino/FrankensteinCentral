@@ -197,3 +197,42 @@ def test_no_registered_app_can_expose_an_internal_route_through_the_proxy(client
     FakeClient.response = FakeUpstream(200, {}, b"{}")
     for app_key in list(gw.REGISTRY)[:6]:
         assert client.get(f"/api/{app_key}/internal/anything").status_code == 404
+
+
+# --- the sub-app learns where the browser came from -----------------------------
+#
+# gmail builds the OAuth redirect URI from the address the dashboard was opened
+# at, so the callback can go through the gateway (/api/gmail/auth/callback) and
+# reach a browser on any LAN device. The proxy sends Host as X-Forwarded-Host
+# and the route prefix as X-Forwarded-Prefix, so that is what the sub-app sees.
+
+def test_the_original_host_scheme_and_prefix_are_forwarded(client):
+    FakeClient.response = FakeUpstream(200, {"content-type": "text/html"}, b"ok")
+    # an absolute URL sets Host; an IP literal is one the allowlist accepts
+    client.get("http://192.168.1.185:8080/api/gmail/auth/login")
+    sent = {k.lower(): v for k, v in FakeClient.seen["headers"].items()}
+    assert sent["x-forwarded-host"] == "192.168.1.185:8080"
+    assert sent["x-forwarded-proto"] == "http"
+    assert sent["x-forwarded-prefix"] == "/api/gmail"
+    assert "host" not in sent
+
+
+def test_a_caller_cannot_forge_the_forwarded_host(client):
+    """The redirect URI Google is told about must describe THIS gateway, not a
+    header the caller chose."""
+    FakeClient.response = FakeUpstream(200, {"content-type": "text/html"}, b"ok")
+    client.get("http://localhost:8080/api/gmail/auth/login",
+               headers={"x-forwarded-host": "evil.example", "x-forwarded-prefix": "/elsewhere"})
+    sent = {k.lower(): v for k, v in FakeClient.seen["headers"].items()}
+    assert sent["x-forwarded-host"] == "localhost:8080"
+    assert sent["x-forwarded-prefix"] == "/api/gmail"
+
+
+def test_an_upstream_https_terminator_is_believed(client):
+    """Behind Tailscale serve the browser speaks https to the terminator and
+    plain http to us; the redirect URI must say https or Google will refuse."""
+    FakeClient.response = FakeUpstream(200, {"content-type": "text/html"}, b"ok")
+    client.get("http://localhost:8080/api/gmail/auth/login", headers={"x-forwarded-proto": "https"})
+    sent = {k.lower(): v for k, v in FakeClient.seen["headers"].items()}
+    assert sent["x-forwarded-proto"] == "https"
+

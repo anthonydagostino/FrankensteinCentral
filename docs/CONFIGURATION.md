@@ -79,7 +79,7 @@ docker-network hostname.
 |---|---|---|
 | `GOOGLE_CLIENT_ID` | empty | From Google Cloud Console. |
 | `GOOGLE_CLIENT_SECRET` | empty | |
-| `GOOGLE_REDIRECT_URI` | `http://localhost:8083/auth/callback` | Must match the Google Cloud config exactly, including host and port. |
+| `GOOGLE_REDIRECT_URI` | empty | Empty derives `http://<dashboard address>/api/gmail/auth/callback` from the request, through the gateway. Set only to pin one value. Whichever applies must be registered in the Google Cloud console exactly. |
 | `GOOGLE_REFRESH_TOKEN` | empty | Optional headless path — reuse an existing token instead of clicking through consent. |
 | `GMAIL_QUERY` | empty | Override which inbox slice to triage. Empty = primary tab, last 7 days. |
 | `GMAIL_TOKEN_FILE` | `/data/token.json` | On the `gmail_token` volume. |

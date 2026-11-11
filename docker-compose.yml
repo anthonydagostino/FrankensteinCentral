@@ -199,7 +199,8 @@ services:
     environment:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8083/auth/callback}
+      # Empty means "the address the dashboard was opened at" + /api/gmail/auth/callback.
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       # Reuse the Gmail connection PowerBuy already has (headless, no browser click).
       GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
       # Override which slice of the inbox to triage (default: primary tab, last 7d).

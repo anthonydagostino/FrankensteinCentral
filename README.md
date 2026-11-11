@@ -83,7 +83,7 @@ which is which, and what each one holds, is in
   `/purchases` and a rolled-up `/summary` (expected profit, unpaid, not
   delivered, expiring soon). Empty creds = mock data.
 - **Gmail** — create OAuth credentials in Google Cloud, set `GOOGLE_CLIENT_ID`
-  / `GOOGLE_CLIENT_SECRET`. Visit `http://localhost:8083/auth/login` to connect.
+  / `GOOGLE_CLIENT_SECRET`. Visit `/api/gmail/auth/login` on the dashboard to connect.
   Once connected, `/needs-reply` reads your real unread inbox, and
   `/thread-availability` scans your **sent** mail for "I'm available X at Y"
   proposals and tracks whether the other side confirmed, countered, or

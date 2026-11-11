@@ -276,7 +276,7 @@ def test_the_connect_page_offers_the_rescue_before_anything_breaks():
     body = c.get("/auth/login").text
     assert "accounts.google.com" in body       # the consent link
     assert 'action="finish"' in body           # and the way back from a dead end
-    assert "site can&#x27;t be reached" in body or "site can't be reached" in body
+    assert "If the page after Google does not load" in body
 
 
 def test_the_connect_page_uses_a_relative_form_action():
@@ -342,7 +342,9 @@ def test_a_pasted_address_connects_the_account(connect_client, monkeypatch):
     assert r.status_code == 200
     assert "connected" in r.text.lower()
     assert sent.sent["code"] == "4/real"
-    assert sent.sent["redirect_uri"] == gm.REDIRECT_URI  # must match the auth request
+    # must match the auth request: with nothing pinned, the address this
+    # service was reached at (TestClient's own host, directly, no gateway)
+    assert sent.sent["redirect_uri"] == "http://testserver/auth/callback"
     assert gm.TOKENS["refresh_token"] == "rt"            # and it is persisted
     assert gm.has_calendar_scope() is True
 

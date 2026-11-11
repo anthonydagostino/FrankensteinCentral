@@ -92,7 +92,7 @@ calls.
 | `GET` | `/sync-status` | When the last background poll ran and whether it succeeded. **First thing to check when the Gmail card looks stale.** |
 | `POST` | `/refresh` | Force a poll now instead of waiting for the 6h timer. |
 | `GET` | `/auth/login` | Starts the Google OAuth consent flow. Visit in a browser. |
-| `GET` | `/auth/callback?code=&error=` | OAuth redirect target. Set as `GOOGLE_REDIRECT_URI`. |
+| `GET` | `/auth/callback?code=&error=` | OAuth redirect target, reached through the gateway as `/api/gmail/auth/callback`. |
 | `GET` | `/internal/token` | **Internal.** Hands the current Google access token to the `schedule` service so it can write to Calendar. Not intended for the browser — but note it *is* reachable through the gateway as `/api/gmail/internal/token`, which is only acceptable because the LAN is the trust boundary. |
 | `GET` | `/sample` | Sample payload for development without a connected account. |
 
